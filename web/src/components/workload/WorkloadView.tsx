@@ -1,3 +1,4 @@
+import { ApplicationEvidenceAction } from '../application-evidence/ApplicationEvidenceAction'
 import { RayJobRenderer } from '../resources/renderers/RayJobRenderer'
 import { JobRenderer, JobSetRenderer } from '../resources/renderers/JobAdmissionRenderers'
 import { RayClusterRenderer } from '../resources/renderers/RayClusterRenderer'
@@ -1334,6 +1335,7 @@ export function WorkloadView({
           <>
             {diagnoseInline}
             {diagnoseHint}
+            <ApplicationEvidenceAction kind={k} namespace={ns} name={n} group={g} uid={resource?.metadata?.uid ?? ''} />
             <FluxSourceConsumersSection kind={k} namespace={ns} name={n} />
             <AuditOverviewSection
               findings={auditFindings ?? []}
