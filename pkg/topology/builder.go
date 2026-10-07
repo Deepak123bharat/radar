@@ -4282,6 +4282,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			nodes = append(nodes, Node{
 				ID:     cnpID,
 				Kind:   KindCiliumNetworkPolicy,
+				uid:    cnp.GetUID(),
 				Name:   name,
 				Status: StatusHealthy,
 				Data:   nodeData,
