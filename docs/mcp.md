@@ -703,3 +703,5 @@ all-declared-owners context array remain separate concerns. The final metadata
 join applies to the resource graph, including resource neighborhoods; traffic
 views retain their existing flow-oriented edges. Shared UI coloring prefers `ownerController: true` over other parents, while a
 sole non-controller owner still participates in the hierarchy.
+
+With generic CRDs enabled, resource topology enrolls observed custom-resource parents declared by visible dependents as well as children of visible owners. Upward enrollment requires a nonempty matching owner UID and exact API group/scope. It uses the cached candidate snapshot, preserves existing exclusions and the 50-per-kind bound, and does not fetch individual owners or add unrelated roots. Unwatched parents and excluded kinds remain outside this closure; spec references and traffic topology remain separate.
