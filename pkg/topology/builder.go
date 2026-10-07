@@ -5859,6 +5859,9 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	// Only includes CRDs already being watched and with owner refs to existing nodes
 	if opts.IncludeGenericCRDs {
 		nodes, edges = b.addGenericCRDNodes(nodes, edges, opts)
+		var issuerWarnings []string
+		nodes, edges, issuerWarnings = b.addIssuanceIssuerEdges(nodes, edges, opts)
+		warnings = append(warnings, issuerWarnings...)
 	}
 	edges = addGitOpsManagedResourceEdges(
 		nodes,
@@ -8927,6 +8930,13 @@ func isCRDGVR(provider DynamicProvider, gvr schema.GroupVersionResource, kind st
 // multi-level CRD chains (e.g., Certificate → CertificateRequest → Order) where
 // intermediate nodes only become resolvable after their parents are added.
 func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptions) ([]Node, []Edge) {
+	if b.dynamic == nil {
+		return nodes, edges
+	}
+	return b.addGenericCRDNodesForResources(nodes, edges, opts, b.dynamic.GetWatchedResources())
+}
+
+func (b *Builder) addGenericCRDNodesForResources(nodes []Node, edges []Edge, opts BuildOptions, resources []schema.GroupVersionResource) ([]Node, []Edge) {
 	dynamicCache := b.dynamic
 	resourceDiscovery := b.dynamic
 	if dynamicCache == nil || resourceDiscovery == nil {
@@ -8974,7 +8984,7 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 		gvr  schema.GroupVersionResource
 		kind string
 	}
-	watched := append([]schema.GroupVersionResource(nil), dynamicCache.GetWatchedResources()...)
+	watched := append([]schema.GroupVersionResource(nil), resources...)
 	sort.Slice(watched, func(i, j int) bool {
 		if watched[i].Group != watched[j].Group {
 			return watched[i].Group < watched[j].Group
