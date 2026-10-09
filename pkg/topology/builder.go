@@ -1215,13 +1215,8 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			}
 
 			// ScaledObject → target workload edge (via spec.scaleTargetRef)
-			targetAPIVersion, _, _ := unstructured.NestedString(so.Object, "spec", "scaleTargetRef", "apiVersion")
-			targetKind, _, _ := unstructured.NestedString(so.Object, "spec", "scaleTargetRef", "kind")
-			targetName, _, _ := unstructured.NestedString(so.Object, "spec", "scaleTargetRef", "name")
-			if targetKind == "" {
-				targetKind = "Deployment" // KEDA defaults to Deployment when kind is omitted
-			}
-			if targetName != "" && targetRefMatchesTopologyKind(targetKind, targetAPIVersion) {
+			targetAPIVersion, targetKind, targetName, hasTarget := configrefs.KEDAScaleTarget(so)
+			if hasTarget && targetRefMatchesTopologyKind(targetKind, targetAPIVersion) {
 				targetKey := ns + "/" + targetName
 				var targetID string
 				switch targetKind {
