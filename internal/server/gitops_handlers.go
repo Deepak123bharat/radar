@@ -103,7 +103,7 @@ func (s *Server) buildGitOpsTree(ctx context.Context, req *gitopsRequest) (*gito
 	opts.IncludeReplicaSets = true
 	opts.ForRelationshipCache = true
 
-	topo, err := s.topoMemo.Get(opts, func() (*topology.Topology, error) {
+	topo, err := s.topoMemo.GetScoped(req.Cache.Generation(), opts, func() (*topology.Topology, error) {
 		return topology.NewBuilder(k8s.NewTopologyResourceProvider(req.Cache)).
 			WithDynamic(k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())).
 			Build(opts)

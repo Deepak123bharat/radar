@@ -129,6 +129,18 @@ type ResourceCache struct {
 	// secretWriteTimes preserves verified Secret data-owner write times that
 	// the shared informer transform intentionally strips before caching.
 	secretWriteTimes *secretDataManagerWriteIndex
+	// generation is the cacheGeneration this cache was built under.
+	generation uint64
+}
+
+// Generation identifies the construction this cache came from. Every
+// context switch and namespace rescope replaces the cache through
+// ResetResourceCache, so the replacement always has a different value. Use
+// it to scope anything derived from the cache's contents, so a result built
+// from the previous cluster is never served to a request holding the new
+// cache.
+func (c *ResourceCache) Generation() uint64 {
+	return c.generation
 }
 
 type secretDataManagerWrite struct {
@@ -455,6 +467,7 @@ func InitResourceCache(ctx context.Context) error {
 			argoDrift:                   newArgoDriftTracker(),
 			cronJobScheduleObservations: cronJobScheduleObservations,
 			secretWriteTimes:            secretWriteTimes,
+			generation:                  gen,
 		}
 		// OnInformersStarted runs synchronously inside NewResourceCache, so
 		// wrapped.ResourceCache is visible-before-publication under cacheMu.

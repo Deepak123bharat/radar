@@ -536,7 +536,7 @@ func (s *Server) topologyForContext(namespace string) (*topology.Topology, topol
 	provider := k8s.NewTopologyResourceProvider(cache)
 	dyn := k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())
 
-	topo, err := s.topoMemo.Get(opts, func() (*topology.Topology, error) {
+	topo, err := s.topoMemo.GetScoped(cache.Generation(), opts, func() (*topology.Topology, error) {
 		return topology.NewBuilder(provider).WithDynamic(dyn).Build(opts)
 	})
 	if err != nil || topo == nil {

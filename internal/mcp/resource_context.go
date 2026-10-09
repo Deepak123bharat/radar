@@ -236,7 +236,7 @@ func mcpTopologyForContext(namespace string) (*topo.Topology, topo.ResourceProvi
 	provider := k8s.NewTopologyResourceProvider(cache)
 	dyn := k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())
 
-	topology, err := summaryCtxTopoMemo.Get(opts, func() (*topo.Topology, error) {
+	topology, err := summaryCtxTopoMemo.GetScoped(cache.Generation(), opts, func() (*topo.Topology, error) {
 		return topo.NewBuilder(provider).WithDynamic(dyn).Build(opts)
 	})
 	if err != nil || topology == nil {
