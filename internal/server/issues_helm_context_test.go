@@ -92,9 +92,7 @@ func useStalledHelmStorage(t *testing.T) *stalledHelmStorage {
 
 // A caller that stops waiting (a closed browser tab, or a proxy whose own
 // timeout fired) must get its issues request back promptly, and the Helm
-// release Secret read behind it must stop with it. Before Helm reads were
-// tied to the request, the handler held the response until the API server
-// answered and the read kept running after the caller had gone.
+// release Secret read behind it must stop with it.
 func TestIssuesStopReadingHelmStorageWhenCallerGivesUp(t *testing.T) {
 	storage := useStalledHelmStorage(t)
 
@@ -138,7 +136,6 @@ func TestIssuesStopReadingHelmStorageWhenCallerGivesUp(t *testing.T) {
 	}
 }
 
-// The packages inventory reads Helm releases on the request's context too.
 func TestPackagesHelmReadStopsWithItsRequest(t *testing.T) {
 	storage := useStalledHelmStorage(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
