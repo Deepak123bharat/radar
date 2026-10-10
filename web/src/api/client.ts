@@ -4317,6 +4317,7 @@ export interface CascadeDeletePreview {
     controller: string;
     action: string;
     resources?: { kind: string; namespace: string; name: string; group?: string }[];
+    terminating?: boolean;
   };
 }
 
