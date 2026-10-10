@@ -85,6 +85,7 @@ const (
 	CategoryNodeProvisioningFail     Category = "node_provisioning_failed"
 	CategoryCrossplaneReconcile      Category = "crossplane_reconcile_failed"
 	CategoryOperatorConditionFail    Category = "operator_condition_failed"
+	CategoryGitOpsResourceWarning    Category = "gitops_resource_warning"
 	CategoryGitOpsSyncFailed         Category = "gitops_sync_failed"
 	// Specific GitOps failure modes — split out from the gitops_sync_failed
 	// catch-all so the Issues page + MCP can distinguish "couldn't render from
@@ -165,6 +166,7 @@ var categoryGroup = map[Category]CategoryGroup{
 	CategoryCrossplaneReconcile:      GroupControlPlane,
 	CategoryOperatorConditionFail:    GroupControlPlane,
 	CategoryGitOpsSyncFailed:         GroupControlPlane,
+	CategoryGitOpsResourceWarning:    GroupControlPlane,
 	CategoryGitOpsRenderFailed:       GroupControlPlane,
 	CategoryGitOpsSpecInvalid:        GroupControlPlane,
 	CategoryGitOpsOperationFailed:    GroupControlPlane,
