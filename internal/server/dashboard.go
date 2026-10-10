@@ -1244,7 +1244,9 @@ func (s *Server) getDashboardHelmSummary(r *http.Request, namespaces []string) D
 		if helm.IsForbiddenError(err) {
 			return DashboardHelmSummary{Releases: []DashboardHelmRelease{}, Restricted: true}
 		}
-		log.Printf("[dashboard] Failed to list Helm releases: %v", err)
+		if r.Context().Err() == nil {
+			log.Printf("[dashboard] Failed to list Helm releases: %v", err)
+		}
 		return DashboardHelmSummary{
 			Releases:  []DashboardHelmRelease{},
 			Error:     err.Error(),

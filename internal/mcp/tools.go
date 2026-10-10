@@ -2751,7 +2751,9 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 				// still sees everything else. Surface to LLM consumers via
 				// Unavailable so they don't confidently report "Total=0
 				// releases" when in fact the read failed.
-				log.Printf("[mcp] Dashboard helm list failed: %v", err)
+				if ctx.Err() == nil {
+					log.Printf("[mcp] Dashboard helm list failed: %v", err)
+				}
 				d.HelmReleases.Unavailable = true
 				if helm.IsForbiddenError(err) {
 					d.HelmReleases.UnavailableReason = "RBAC denied: caller cannot list Helm release secrets in this scope."
@@ -3119,7 +3121,7 @@ func nativeHelmIssuesForContext(ctx context.Context, namespaces []string, filter
 	}
 	releases, err := helmClient.ListIssueReleasesAcrossNamespaces(ctx, helmNamespaces, username, groups)
 	if err != nil {
-		if !helm.IsForbiddenError(err) {
+		if ctx.Err() == nil && !helm.IsForbiddenError(err) {
 			log.Printf("[mcp] Failed to list Helm releases for issue stream: %v", err)
 		}
 		return nil

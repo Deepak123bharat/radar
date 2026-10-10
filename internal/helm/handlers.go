@@ -184,6 +184,9 @@ func (h *Handlers) handleListReleases(w http.ResponseWriter, r *http.Request) {
 	username, groups := userCreds(r)
 	releases, err := client.ListReleasesAcrossNamespaces(r.Context(), namespaces, username, groups)
 	if err != nil {
+		if r.Context().Err() != nil {
+			return // the caller left; this is not a Helm failure
+		}
 		if IsForbiddenError(err) {
 			writeError(w, http.StatusForbidden, "insufficient permissions to list Helm releases")
 			return
@@ -494,6 +497,9 @@ func (h *Handlers) handleBatchUpgradeCheck(w http.ResponseWriter, r *http.Reques
 	username, groups := userCreds(r)
 	info, err := client.BatchCheckUpgradesAcrossNamespaces(r.Context(), namespaces, username, groups)
 	if err != nil {
+		if r.Context().Err() != nil {
+			return // the caller left; this is not a Helm failure
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
