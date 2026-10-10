@@ -25,6 +25,7 @@ import (
 	"github.com/Masterminds/semver/v3"
 	"github.com/skyhook-io/radar/internal/k8s"
 	aicontext "github.com/skyhook-io/radar/pkg/ai/context"
+	pkgauth "github.com/skyhook-io/radar/pkg/auth"
 	"github.com/skyhook-io/radar/pkg/gitops"
 	"github.com/skyhook-io/radar/pkg/helmhistory"
 
@@ -330,7 +331,7 @@ func (c *Client) ListReleasesAsUser(ctx context.Context, namespace, username str
 	if err != nil {
 		return nil, err
 	}
-	return listReleasesWith(ctx, actionConfig, contextName, namespace, username, groups)
+	return c.listReleasesWith(ctx, actionConfig, contextName, namespace, username, groups)
 }
 
 // ListReleases returns all Helm releases, optionally filtered by namespace
@@ -340,7 +341,7 @@ func (c *Client) ListReleases(ctx context.Context, namespace string) ([]HelmRele
 	if err != nil {
 		return nil, err
 	}
-	return listReleasesWith(ctx, actionConfig, contextName, namespace, "", nil)
+	return c.listReleasesWith(ctx, actionConfig, contextName, namespace, "", nil)
 }
 
 // ListReleasesAcrossNamespaces lists releases for an explicit set of namespaces
@@ -373,7 +374,7 @@ func (c *Client) listReleasesAcrossNamespaces(ctx context.Context, namespaces []
 		return []HelmRelease{}, nil
 	}
 	contextName := k8s.GetContextName()
-	client, err := helmStorageClient(username, groups)
+	client, err := c.storageClient(username, groups)
 	if err != nil {
 		return nil, err
 	}
@@ -489,7 +490,7 @@ func (c *Client) listManifestResourcesAsUser(ctx context.Context, namespace, use
 	if err := actionConfig.KubeClient.IsReachable(); err != nil {
 		return nil, 0, fmt.Errorf("failed to inspect helm manifests: %w", err)
 	}
-	client, err := helmStorageClient(username, groups)
+	client, err := c.storageClient(username, groups)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -519,12 +520,12 @@ func (c *Client) listManifestResourcesAsUser(ctx context.Context, namespace, use
 	return resources, parseErrors, nil
 }
 
-func listReleasesWith(ctx context.Context, actionConfig *action.Configuration, contextName, namespace, username string, groups []string) ([]HelmRelease, error) {
+func (c *Client) listReleasesWith(ctx context.Context, actionConfig *action.Configuration, contextName, namespace, username string, groups []string) ([]HelmRelease, error) {
 	if err := actionConfig.KubeClient.IsReachable(); err != nil {
 		return nil, fmt.Errorf("failed to list helm releases: %w", err)
 	}
 
-	client, err := helmStorageClient(username, groups)
+	client, err := c.storageClient(username, groups)
 	if err != nil {
 		return nil, err
 	}
@@ -1478,8 +1479,27 @@ type helmReleaseStorageSnapshot struct {
 	latest            []*release.Release
 }
 
-func helmStorageClient(username string, groups []string) (kubernetes.Interface, error) {
-	var client kubernetes.Interface = k8s.GetClient()
+// storageClient reads Helm release Secrets on the same cluster as c's action
+// configurations: the explicit rest.Config when c has one, else Radar's
+// current cluster.
+func (c *Client) storageClient(username string, groups []string) (kubernetes.Interface, error) {
+	c.mu.RLock()
+	restConfig := c.restConfig
+	c.mu.RUnlock()
+	if restConfig != nil {
+		var client kubernetes.Interface
+		var err error
+		if username != "" {
+			client, err = pkgauth.ImpersonatedClient(restConfig, username, groups)
+		} else {
+			client, err = kubernetes.NewForConfig(restConfig)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to build client for release storage lookup: %w", err)
+		}
+		return client, nil
+	}
+	client := k8s.GetClientInterface()
 	if username != "" {
 		impersonated, err := k8s.ImpersonatedClient(username, groups)
 		if err != nil {
@@ -3200,7 +3220,7 @@ func (c *Client) batchCheckUpgrades(ctx context.Context, namespace, username str
 	// drive source-affinity disambiguation). The storage snapshot carries
 	// them along with each release's storage namespace from one Secret list
 	// that stops with ctx, which Helm's own list action can't do.
-	client, err := helmStorageClient(username, groups)
+	client, err := c.storageClient(username, groups)
 	if err != nil {
 		return nil, err
 	}
