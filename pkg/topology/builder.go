@@ -4474,11 +4474,6 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			depNS := depParts[0]
 			depName := depParts[1]
 
-			// Must be in same namespace
-			if depNS != hrNS {
-				continue
-			}
-
 			// Check if deployment has matching label
 			var dep *appsv1.Deployment
 			for _, d := range deployments {
@@ -4491,7 +4486,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				continue
 			}
 
-			if matchesHelmRelease(dep.Labels, hrName, hrNS) {
+			if matchesHelmRelease(dep.Labels, hrName, hrNS, depNS) {
 				edges = append(edges, Edge{
 					ID:     fmt.Sprintf("%s-to-%s", hrID, depID),
 					Source: hrID,
@@ -4510,11 +4505,6 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			svcNS := svcParts[0]
 			svcName := svcParts[1]
 
-			// Must be in same namespace
-			if svcNS != hrNS {
-				continue
-			}
-
 			// Check if service has matching label
 			var svc *corev1.Service
 			for _, s := range services {
@@ -4527,7 +4517,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				continue
 			}
 
-			if matchesHelmRelease(svc.Labels, hrName, hrNS) {
+			if matchesHelmRelease(svc.Labels, hrName, hrNS, svcNS) {
 				edges = append(edges, Edge{
 					ID:     fmt.Sprintf("%s-to-%s", hrID, svcID),
 					Source: hrID,
@@ -4546,11 +4536,6 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			stsNS := stsParts[0]
 			stsName := stsParts[1]
 
-			// Must be in same namespace
-			if stsNS != hrNS {
-				continue
-			}
-
 			// Check if statefulset has matching label
 			var sts *appsv1.StatefulSet
 			for _, s := range statefulsets {
@@ -4563,7 +4548,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				continue
 			}
 
-			if matchesHelmRelease(sts.Labels, hrName, hrNS) {
+			if matchesHelmRelease(sts.Labels, hrName, hrNS, stsNS) {
 				edges = append(edges, Edge{
 					ID:     fmt.Sprintf("%s-to-%s", hrID, stsID),
 					Source: hrID,
@@ -4574,8 +4559,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		}
 
 		// Find DaemonSets with matching label
-		for _, ds := range daemonsetsByNS[hrNS] {
-			if matchesHelmRelease(ds.Labels, hrName, hrNS) {
+		for _, ds := range daemonsets {
+			if !opts.MatchesNamespaceFilter(ds.Namespace) {
+				continue
+			}
+			if matchesHelmRelease(ds.Labels, hrName, hrNS, ds.Namespace) {
 				dsID := fmt.Sprintf("daemonset/%s/%s", ds.Namespace, ds.Name)
 				edges = append(edges, Edge{
 					ID:     fmt.Sprintf("%s-to-%s", hrID, dsID),
@@ -4589,7 +4577,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		// Find Jobs with matching label
 		for jobKey, jobID := range jobIDs {
 			jobParts := strings.Split(jobKey, "/")
-			if len(jobParts) != 2 || jobParts[0] != hrNS {
+			if len(jobParts) != 2 {
 				continue
 			}
 			var job *batchv1.Job
@@ -4602,7 +4590,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			if job == nil {
 				continue
 			}
-			if matchesHelmRelease(job.Labels, hrName, hrNS) {
+			if matchesHelmRelease(job.Labels, hrName, hrNS, job.Namespace) {
 				edges = append(edges, Edge{
 					ID:     fmt.Sprintf("%s-to-%s", hrID, jobID),
 					Source: hrID,
@@ -4615,7 +4603,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		// Find CronJobs with matching label
 		for cjKey, cjID := range cronJobIDs {
 			cjParts := strings.Split(cjKey, "/")
-			if len(cjParts) != 2 || cjParts[0] != hrNS {
+			if len(cjParts) != 2 {
 				continue
 			}
 			var cj *batchv1.CronJob
@@ -4628,7 +4616,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			if cj == nil {
 				continue
 			}
-			if matchesHelmRelease(cj.Labels, hrName, hrNS) {
+			if matchesHelmRelease(cj.Labels, hrName, hrNS, cj.Namespace) {
 				edges = append(edges, Edge{
 					ID:     fmt.Sprintf("%s-to-%s", hrID, cjID),
 					Source: hrID,
@@ -4642,14 +4630,14 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		if hasRollouts && dynamicCache != nil {
 			for rolloutKey, rolloutID := range rolloutIDs {
 				rolloutParts := strings.Split(rolloutKey, "/")
-				if len(rolloutParts) != 2 || rolloutParts[0] != hrNS {
+				if len(rolloutParts) != 2 {
 					continue
 				}
 				rolloutRes, rolloutGetErr := dynamicCache.Get(rolloutGVR, rolloutParts[0], rolloutParts[1])
 				if rolloutGetErr != nil || rolloutRes == nil {
 					continue
 				}
-				if matchesHelmRelease(rolloutRes.GetLabels(), hrName, hrNS) {
+				if matchesHelmRelease(rolloutRes.GetLabels(), hrName, hrNS, rolloutRes.GetNamespace()) {
 					edges = append(edges, Edge{
 						ID:     fmt.Sprintf("%s-to-%s", hrID, rolloutID),
 						Source: hrID,
@@ -8123,26 +8111,18 @@ func monitorNodeData(monitor *unstructured.Unstructured, endpointField string) m
 	}
 }
 
-// matchesHelmRelease checks if a resource's labels indicate it's managed by a FluxCD HelmRelease
-// Checks both FluxCD-specific labels and standard Helm labels
-func matchesHelmRelease(labels map[string]string, hrName, hrNamespace string) bool {
-	// FluxCD adds these labels to resources deployed by HelmRelease
-	// helm.toolkit.fluxcd.io/name: <helmrelease-name>
-	// helm.toolkit.fluxcd.io/namespace: <helmrelease-namespace>
-	fluxName := labels["helm.toolkit.fluxcd.io/name"]
-	fluxNS := labels["helm.toolkit.fluxcd.io/namespace"]
-	if fluxName == hrName && (fluxNS == "" || fluxNS == hrNamespace) {
-		return true
+func matchesHelmRelease(labels map[string]string, hrName, hrNamespace, resourceNamespace string) bool {
+	fluxName, hasName := labels[fluxHelmNameLabel]
+	fluxNS, hasNS := labels[fluxHelmNSLabel]
+	if hasName || hasNS {
+		return fluxName == hrName && fluxNS == hrNamespace
 	}
-
-	// Fallback to standard Helm label (app.kubernetes.io/instance)
-	// This is set by charts that follow Helm best practices
-	instanceLabel := labels["app.kubernetes.io/instance"]
-	if instanceLabel == hrName {
-		return true
+	_, hasKustomizeName := labels[fluxKustomizeNameLabel]
+	_, hasKustomizeNS := labels[fluxKustomizeNSLabel]
+	if hasKustomizeName || hasKustomizeNS {
+		return false
 	}
-
-	return false
+	return resourceNamespace == hrNamespace && labels["app.kubernetes.io/instance"] == hrName
 }
 
 // Istio expands only hosts without dots. Radar has no discovered cluster domain,
