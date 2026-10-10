@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -1244,7 +1245,7 @@ func (s *Server) getDashboardHelmSummary(r *http.Request, namespaces []string) D
 		if helm.IsForbiddenError(err) {
 			return DashboardHelmSummary{Releases: []DashboardHelmRelease{}, Restricted: true}
 		}
-		if r.Context().Err() == nil {
+		if !errors.Is(r.Context().Err(), context.Canceled) {
 			log.Printf("[dashboard] Failed to list Helm releases: %v", err)
 		}
 		return DashboardHelmSummary{

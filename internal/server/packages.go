@@ -226,8 +226,10 @@ func ListPackages(ctx context.Context, p ListPackagesParams) (PackagesResponse, 
 		}
 		// The entry is shared by every caller with this scope, so a read cut
 		// short by this caller leaving must not be stored as the inventory.
-		if err := ctx.Err(); err != nil {
-			return PackagesResponse{}, err
+		// A deadline is the server's own budget, and its partial result is
+		// what every caller would get, so that one is kept.
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return PackagesResponse{}, ctx.Err()
 		}
 		generatedAt = time.Now()
 		if len(sourceErrs) > 0 {
@@ -339,7 +341,7 @@ func (s *Server) handleListPackages(w http.ResponseWriter, r *http.Request) {
 			s.writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if r.Context().Err() != nil {
+		if errors.Is(r.Context().Err(), context.Canceled) {
 			return // the caller left; there is no one to answer
 		}
 		log.Printf("[packages] ListPackages failed: %v", err)

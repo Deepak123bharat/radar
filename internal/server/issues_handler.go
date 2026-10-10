@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	pkgauth "github.com/skyhook-io/radar/pkg/auth"
 	"log"
@@ -222,7 +223,7 @@ func (s *Server) nativeHelmIssuesForRequest(r *http.Request, namespaces []string
 	releases, err := helmClient.ListIssueReleasesAcrossNamespaces(ctx, helmNamespaces, username, groups)
 	if err != nil {
 		switch {
-		case ctx.Err() != nil:
+		case errors.Is(ctx.Err(), context.Canceled):
 			// The caller went away; nobody is left to tell.
 		case !helm.IsForbiddenError(err):
 			log.Printf("[issues] Failed to list Helm releases for issue stream: %v", err)

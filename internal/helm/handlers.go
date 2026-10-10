@@ -1,6 +1,7 @@
 package helm
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -184,7 +185,7 @@ func (h *Handlers) handleListReleases(w http.ResponseWriter, r *http.Request) {
 	username, groups := userCreds(r)
 	releases, err := client.ListReleasesAcrossNamespaces(r.Context(), namespaces, username, groups)
 	if err != nil {
-		if r.Context().Err() != nil {
+		if errors.Is(r.Context().Err(), context.Canceled) {
 			return // the caller left; this is not a Helm failure
 		}
 		if IsForbiddenError(err) {
@@ -497,7 +498,7 @@ func (h *Handlers) handleBatchUpgradeCheck(w http.ResponseWriter, r *http.Reques
 	username, groups := userCreds(r)
 	info, err := client.BatchCheckUpgradesAcrossNamespaces(r.Context(), namespaces, username, groups)
 	if err != nil {
-		if r.Context().Err() != nil {
+		if errors.Is(r.Context().Err(), context.Canceled) {
 			return // the caller left; this is not a Helm failure
 		}
 		writeError(w, http.StatusInternalServerError, err.Error())

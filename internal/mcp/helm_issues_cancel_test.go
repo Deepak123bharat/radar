@@ -74,8 +74,9 @@ func TestHelmIssueStreamDoesNotLogCallerLeavingAsFailure(t *testing.T) {
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(previousLog) })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	time.AfterFunc(200*time.Millisecond, cancel)
 	safety := time.AfterFunc(3*time.Second, func() { close(release) })
 	defer safety.Stop()
 	nativeHelmIssuesForContext(ctx, []string{"shop"}, issues.Filters{})

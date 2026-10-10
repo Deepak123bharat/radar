@@ -210,3 +210,25 @@ func TestPackagesAbandonedRequestIsNotCachedForOthers(t *testing.T) {
 		}
 	})
 }
+
+// A Helm read that outlasts the server's own request deadline still answers
+// with the other sources and a Helm source error, instead of nothing.
+func TestPackagesPastTheDeadlineAnswerWithoutHelm(t *testing.T) {
+	storage := useStalledHelmStorage(t)
+	safety := time.AfterFunc(3*time.Second, func() { close(storage.release) })
+	defer safety.Stop()
+	withCleanCache(t, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		resp, err := ListPackages(ctx, ListPackagesParams{Namespaces: []string{"shop"}})
+		if err != nil {
+			t.Fatalf("ListPackages: %v", err)
+		}
+		for _, se := range resp.SourcesErrored {
+			if se.Source == packages.SourceHelm {
+				return
+			}
+		}
+		t.Fatalf("no Helm source error after the deadline: %+v", resp.SourcesErrored)
+	})
+}

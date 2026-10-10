@@ -18,8 +18,9 @@ import (
 // A caller that leaves while Helm storage is still being read is not a Helm
 // error. Recording it as one fills the diagnostics error log with failures
 // that never happened, and a 5xx Helm error is also what can mark the
-// cluster disconnected.
-func TestHelmListAndUpgradeCheckDoNotRecordCallerLeavingAsError(t *testing.T) {
+// cluster disconnected. A read that outlasts the server's own request
+// deadline is a real failure and is still recorded.
+func TestHelmListAndUpgradeCheckRecordOnlyRealFailures(t *testing.T) {
 	release := make(chan struct{})
 	storage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -55,14 +56,26 @@ func TestHelmListAndUpgradeCheckDoNotRecordCallerLeavingAsError(t *testing.T) {
 		"list":          h.handleListReleases,
 		"upgrade check": h.handleBatchUpgradeCheck,
 	} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name+", caller leaves", func(t *testing.T) {
 			errorlog.Reset()
-			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
+			time.AfterFunc(200*time.Millisecond, cancel)
 			request := httptest.NewRequest(http.MethodGet, "/api/helm/releases?namespace=shop", nil).WithContext(ctx)
 			handle(httptest.NewRecorder(), request)
 			if entries := errorlog.GetEntries(); len(entries) > 0 {
 				t.Errorf("a caller leaving was recorded as a Helm error: %+v", entries)
+			}
+		})
+		t.Run(name+", server deadline", func(t *testing.T) {
+			errorlog.Reset()
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+			request := httptest.NewRequest(http.MethodGet, "/api/helm/releases?namespace=shop", nil).WithContext(ctx)
+			recorder := httptest.NewRecorder()
+			handle(recorder, request)
+			if recorder.Code < 500 || len(errorlog.GetEntries()) == 0 {
+				t.Errorf("a read past the deadline answered %d and recorded %d errors; want a 5xx and a record", recorder.Code, len(errorlog.GetEntries()))
 			}
 		})
 	}
