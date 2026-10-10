@@ -224,6 +224,11 @@ func ListPackages(ctx context.Context, p ListPackagesParams) (PackagesResponse, 
 		if err != nil {
 			return PackagesResponse{}, err
 		}
+		// The entry is shared by every caller with this scope, so a read cut
+		// short by this caller leaving must not be stored as the inventory.
+		if err := ctx.Err(); err != nil {
+			return PackagesResponse{}, err
+		}
 		generatedAt = time.Now()
 		if len(sourceErrs) > 0 {
 			log.Printf("[packages] computed with %d source errors: %+v", len(sourceErrs), sourceErrs)
@@ -333,6 +338,9 @@ func (s *Server) handleListPackages(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, ErrInvalidSourceCode) {
 			s.writeError(w, http.StatusBadRequest, err.Error())
 			return
+		}
+		if r.Context().Err() != nil {
+			return // the caller left; there is no one to answer
 		}
 		log.Printf("[packages] ListPackages failed: %v", err)
 		s.writeError(w, http.StatusInternalServerError, err.Error())

@@ -12,6 +12,7 @@ import (
 
 	"github.com/skyhook-io/radar/internal/helm"
 	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/pkg/packages"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -167,4 +168,48 @@ func TestPackagesHelmReadStopsWithItsRequest(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Error("Helm release Secret list kept running after the request ended")
 	}
+}
+
+// The packages inventory is cached per namespace scope for every caller, so
+// a read cut short by one caller leaving must not be stored as the scope's
+// inventory. Otherwise everyone asking about that scope gets the inventory
+// without Helm releases, plus a "context canceled" Helm error, until the
+// entry expires.
+func TestPackagesAbandonedRequestIsNotCachedForOthers(t *testing.T) {
+	storage := useStalledHelmStorage(t)
+	withCleanCache(t, func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = ListPackages(ctx, ListPackagesParams{Namespaces: []string{"shop"}})
+		}()
+		select {
+		case <-storage.listStarted:
+		case <-time.After(5 * time.Second):
+			t.Fatal("packages never read Helm storage")
+		}
+		cancel()
+		safety := time.AfterFunc(3*time.Second, func() { close(storage.release) })
+		defer safety.Stop()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("abandoned packages request did not return")
+		}
+
+		// Helm storage answers promptly from here on.
+		if safety.Stop() {
+			close(storage.release)
+		}
+		resp, err := ListPackages(context.Background(), ListPackagesParams{Namespaces: []string{"shop"}})
+		if err != nil {
+			t.Fatalf("ListPackages: %v", err)
+		}
+		for _, se := range resp.SourcesErrored {
+			if se.Source == packages.SourceHelm {
+				t.Fatalf("a later caller got the abandoned request's Helm error: %+v", se)
+			}
+		}
+	})
 }
