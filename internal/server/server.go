@@ -569,6 +569,7 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 			r.Post("/cloud/install/dismiss", s.handleCloudInstallDismiss)
 			r.Get("/cloud/connect/self", s.handleCloudConnectSelf)
 			r.Get("/topology", s.handleTopology)
+			r.Get("/gitops/capabilities/{kind}/{namespace}/{name}", s.handleGitOpsCapabilities)
 			r.Get("/gitops/tree/{kind}/{namespace}/{name}", s.handleGitOpsTree)
 			r.Get("/gitops/destination/{kind}/{namespace}/{name}", s.handleGitOpsDestination)
 			r.Get("/gitops/insights/{kind}/{namespace}/{name}", s.handleGitOpsInsights)
@@ -1353,17 +1354,18 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	caps.Deployment = k8s.DeploymentInfo{Mode: deploymentMode()}
 	caps.CloudConnect = s.cloudConnectCapability()
 	caps.Features = k8s.FeatureCapabilities{
-		YAMLReview:            true,
-		YAMLSchemas:           true,
-		WorkloadImages:        true,
-		ResourceIssues:        true,
-		ResourceIssueCoverage: true,
-		PodEnvironment:        true,
-		PolicyResource:        true,
-		WorkloadHistory:       true,
-		ServiceEndpointSlices: true,
-		TrafficRecords:        true,
-		GitOpsWriteEvidence:   true,
+		YAMLReview:               true,
+		YAMLSchemas:              true,
+		WorkloadImages:           true,
+		ResourceIssues:           true,
+		ResourceIssueCoverage:    true,
+		PodEnvironment:           true,
+		PolicyResource:           true,
+		WorkloadHistory:          true,
+		ServiceEndpointSlices:    true,
+		TrafficRecords:           true,
+		GitOpsWriteEvidence:      true,
+		GitOpsActionCapabilities: true,
 	}
 	caps.AuthEnabled = s.authConfig.Enabled()
 	caps.ConfigManagement = s.configManagement()
