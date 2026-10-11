@@ -49,7 +49,9 @@ type Provider interface {
 	ListDynamic(ctx context.Context, gvr schema.GroupVersionResource, namespace string) ([]*unstructured.Unstructured, error)
 	DynamicResources() ([]schema.GroupVersionResource, error)
 	TypedCoverage(kind string, namespaces []string) readreason.Code
-	DynamicObservation(gvr schema.GroupVersionResource) k8score.DynamicResourceObservation
+	// DynamicObservation reports the kind's observation, with readiness taken
+	// from the informer serving namespace; "" means the whole kind.
+	DynamicObservation(gvr schema.GroupVersionResource, namespace string) k8score.DynamicResourceObservation
 	WarmDynamic(ctx context.Context, gvr schema.GroupVersionResource, namespace string) error
 	KindForGVR(gvr schema.GroupVersionResource) string
 }
@@ -369,7 +371,7 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		if k8s.TypedKindOwnsGroup(kind, gvr.Group) || (k8score.IsBuiltInAPIGroup(gvr.Group) && slices.ContainsFunc(typedKinds, func(tk struct{ Kind, Plural, Group string }) bool { return tk.Kind == kind })) {
 			continue
 		}
-		observation := p.DynamicObservation(gvr)
+		observation := p.DynamicObservation(gvr, "")
 		if observation.State == k8score.DynamicObservationUnsupported && len(q.KindFilter) == 0 {
 			continue
 		}
@@ -384,7 +386,11 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		}
 		reason := dynamicObservationReason(observation)
 		warm := len(q.KindFilter) > 0 && reason == readreason.KindNotWatched
-		if reason != "" && !warm {
+		// Namespace informers sync independently, so while one is still
+		// loading the others can answer: their readiness is judged per
+		// namespace below.
+		perNamespace := observation.State == k8score.DynamicObservationSyncing && observation.Scope == k8score.DynamicObservationScopeExplicitNamespaces
+		if reason != "" && !warm && !perNamespace {
 			addGap(kind, gvr.Group, reason)
 			continue
 		}
@@ -404,14 +410,30 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 			namespaces = []string{""}
 		}
 		var items []*unstructured.Unstructured
+		read := func(ns string, nsObservation k8score.DynamicResourceObservation) {
+			if reason := dynamicObservationReason(nsObservation); reason != "" {
+				addGap(kind, gvr.Group, reason)
+				return
+			}
+			its, err := p.ListDynamic(ctx, gvr, ns)
+			if err != nil {
+				addGap(kind, gvr.Group, listErrorReason(err))
+				return
+			}
+			items = append(items, its...)
+		}
+		outside := func(ns string, nsObservation k8score.DynamicResourceObservation) bool {
+			return nsObservation.Scope == k8score.DynamicObservationScopeExplicitNamespaces && (ns == "" || !slices.Contains(nsObservation.Namespaces, ns))
+		}
 		for _, ns := range namespaces {
-			outsideScope := observation.Scope == k8score.DynamicObservationScopeExplicitNamespaces && (ns == "" || !slices.Contains(observation.Namespaces, ns))
+			nsObservation := p.DynamicObservation(gvr, ns)
+			outsideScope := outside(ns, nsObservation)
 			if len(q.KindFilter) > 0 && (warm || outsideScope) {
 				if err := p.WarmDynamic(warmCtx, gvr, ns); err != nil {
 					if outsideScope {
 						addGap(kind, gvr.Group, readreason.CollectorScopeLimited)
 					}
-					reason := dynamicObservationReason(p.DynamicObservation(gvr))
+					reason := dynamicObservationReason(p.DynamicObservation(gvr, ns))
 					if reason == "" || reason == readreason.KindNotWatched {
 						reason = listErrorReason(err)
 					}
@@ -420,34 +442,20 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 						continue
 					}
 				} else {
-					observation = p.DynamicObservation(gvr)
+					nsObservation = p.DynamicObservation(gvr, ns)
+					outsideScope = outside(ns, nsObservation)
 				}
 			}
-			if reason := dynamicObservationReason(observation); reason != "" {
-				addGap(kind, gvr.Group, reason)
+			if !outsideScope {
+				read(ns, nsObservation)
 				continue
 			}
-			if observation.Scope == k8score.DynamicObservationScopeExplicitNamespaces && (ns == "" || !slices.Contains(observation.Namespaces, ns)) {
-				addGap(kind, gvr.Group, readreason.CollectorScopeLimited)
-				if ns != "" {
-					continue
+			addGap(kind, gvr.Group, readreason.CollectorScopeLimited)
+			if ns == "" {
+				for _, watchedNS := range nsObservation.Namespaces {
+					read(watchedNS, p.DynamicObservation(gvr, watchedNS))
 				}
-				for _, watchedNS := range observation.Namespaces {
-					its, err := p.ListDynamic(ctx, gvr, watchedNS)
-					if err != nil {
-						addGap(kind, gvr.Group, listErrorReason(err))
-						continue
-					}
-					items = append(items, its...)
-				}
-				continue
 			}
-			its, err := p.ListDynamic(ctx, gvr, ns)
-			if err != nil {
-				addGap(kind, gvr.Group, listErrorReason(err))
-				continue
-			}
-			items = append(items, its...)
 		}
 		res.Searched += len(items)
 		var inScope map[string]bool

@@ -3,11 +3,18 @@ package search
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
+	ktesting "k8s.io/client-go/testing"
 
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/k8score"
@@ -45,7 +52,7 @@ func TestCacheProviderNilDynamic(t *testing.T) {
 	if _, err := p.DynamicResources(); !errors.Is(err, k8s.ErrDynamicNotReady) {
 		t.Fatalf("catalog: %v", err)
 	}
-	if got := p.DynamicObservation(schema.GroupVersionResource{}); got.State != k8score.DynamicObservationSyncing {
+	if got := p.DynamicObservation(schema.GroupVersionResource{}, ""); got.State != k8score.DynamicObservationSyncing {
 		t.Fatalf("observation: %+v", got)
 	}
 	if err := p.WarmDynamic(context.Background(), schema.GroupVersionResource{}, ""); !errors.Is(err, k8s.ErrDynamicNotReady) {
@@ -87,7 +94,7 @@ func TestCacheProviderNeverWarmsDirectReadBuiltins(t *testing.T) {
 		{Group: "discovery.k8s.io", Version: "v1", Resource: "endpointslices"},
 		{Group: "", Version: "v1", Resource: "endpoints"},
 	} {
-		if got := p.DynamicObservation(gvr); got.State != k8score.DynamicObservationUnsupported {
+		if got := p.DynamicObservation(gvr, ""); got.State != k8score.DynamicObservationUnsupported {
 			t.Errorf("%s observation: %+v", gvr.Resource, got)
 		}
 		if err := p.WarmDynamic(context.Background(), gvr, ""); listErrorReason(err) != "collection_not_supported" {
@@ -95,7 +102,72 @@ func TestCacheProviderNeverWarmsDirectReadBuiltins(t *testing.T) {
 		}
 	}
 	crd := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
-	if got := dynamicObservationReason(p.DynamicObservation(crd)); got != "kind_not_watched" {
+	if got := dynamicObservationReason(p.DynamicObservation(crd, "")); got != "kind_not_watched" {
 		t.Fatalf("unwatched CRD: %q", got)
+	}
+}
+
+// Namespace informers sync independently, and in a shared Radar the one still
+// loading may be another user's. It must not hide hits from a namespace whose
+// informer is ready.
+func TestDynamicReadinessIsJudgedPerNamespace(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	widget := func(ns string) runtime.Object {
+		return &unstructured.Unstructured{Object: map[string]any{"apiVersion": "example.io/v1", "kind": "Widget", "metadata": map[string]any{"name": "robusta-" + ns, "namespace": ns}}}
+	}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "WidgetList"}, widget("a"), widget("b"))
+	release := make(chan struct{})
+	defer close(release)
+	dyn.PrependReactor("list", "widgets", func(action ktesting.Action) (bool, runtime.Object, error) {
+		switch {
+		case action.GetNamespace() == "":
+			return true, nil, apierrors.NewForbidden(gvr.GroupResource(), "", errors.New("cluster-wide list denied"))
+		case action.GetNamespace() == "b" && action.(interface{ GetListOptions() metav1.ListOptions }).GetListOptions().Limit != 1:
+			// b's informer never finishes its initial list.
+			<-release
+		}
+		return false, nil, nil
+	})
+	discovery, err := k8score.NewResourceDiscovery(fake.NewClientset().Discovery())
+	if err != nil {
+		t.Fatal(err)
+	}
+	discovery.AddAPIResource(k8score.APIResource{Group: gvr.Group, Version: gvr.Version, Name: gvr.Resource, Kind: "Widget", Namespaced: true, Verbs: []string{"get", "list", "watch"}})
+	dynamic, err := k8score.NewDynamicResourceCache(k8score.DynamicCacheConfig{DynamicClient: dyn, Discovery: discovery})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(dynamic.Stop)
+	ctx := context.Background()
+	if err := dynamic.EnsureWatchingContext(ctx, gvr, "a"); err != nil {
+		t.Fatal(err)
+	}
+	syncCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if !dynamic.WaitForSyncContext(syncCtx, gvr, "a") {
+		t.Fatal("namespace a did not sync")
+	}
+	if err := dynamic.EnsureWatchingContext(ctx, gvr, "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &CacheProvider{dynamic: &k8s.DynamicResourceCache{DynamicResourceCache: dynamic}, discovery: &k8s.ResourceDiscovery{ResourceDiscovery: discovery}}
+	for _, tc := range []struct {
+		namespaces []string
+		want       []UnsearchedKind
+	}{
+		{[]string{"a"}, []UnsearchedKind{}},
+		{[]string{"a", "b"}, []UnsearchedKind{{Kind: "Widget", Group: "example.io", Reason: "kind_sync_pending"}}},
+	} {
+		res, err := Search(ctx, p, Parse("kind:Widget robusta"), Options{Include: IncludeNone, Namespaces: tc.namespaces})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := hitNames(res); !reflect.DeepEqual(got, []string{"Widget/a/robusta-a"}) {
+			t.Errorf("namespaces %v: hits %v, want a's widget while b is still loading", tc.namespaces, got)
+		}
+		if !reflect.DeepEqual(res.Unsearched, tc.want) || res.Partial != (len(tc.want) > 0) {
+			t.Errorf("namespaces %v: coverage %+v partial=%v, want %+v", tc.namespaces, res.Unsearched, res.Partial, tc.want)
+		}
 	}
 }

@@ -164,6 +164,32 @@ func (d *DynamicResourceCache) retainDeniedObservation(gvr schema.GroupVersionRe
 // It only reads cache bookkeeping; it never probes the API server, creates an
 // informer, or waits for sync.
 func (d *DynamicResourceCache) Observation(gvr schema.GroupVersionResource) DynamicResourceObservation {
+	return d.observation(gvr, "")
+}
+
+// NamespaceObservation is Observation with State and ReasonCode taken only
+// from the informer that serves reads of gvr in namespace: the cluster-wide
+// informer when there is one, otherwise namespace's own. Per-namespace
+// informers sync independently, so a namespace's readiness never reflects an
+// informer started for another namespace, which in a shared cache may be
+// another user's. Scope, Namespaces and Truncated still describe the whole
+// kind. When the kind has informers but none serves namespace, State is
+// DynamicObservationUnwatched. An empty namespace, or a kind with no
+// informers, gets Observation(gvr).
+func (d *DynamicResourceCache) NamespaceObservation(gvr schema.GroupVersionResource, namespace string) DynamicResourceObservation {
+	return d.observation(gvr, namespace)
+}
+
+// syncStallAfter is how long an informer may stay unsynced before its
+// observation reports sync_stalled.
+func (d *DynamicResourceCache) syncStallAfter() time.Duration {
+	if d.config.SyncStallAfter > 0 {
+		return d.config.SyncStallAfter
+	}
+	return 30 * time.Second
+}
+
+func (d *DynamicResourceCache) observation(gvr schema.GroupVersionResource, namespace string) DynamicResourceObservation {
 	if d == nil {
 		return DynamicResourceObservation{State: DynamicObservationUnwatched, ReasonCode: "not_observed"}
 	}
@@ -207,9 +233,23 @@ func (d *DynamicResourceCache) Observation(gvr schema.GroupVersionResource) Dyna
 		return DynamicResourceObservation{State: DynamicObservationUnwatched, ReasonCode: "not_observed"}
 	}
 
+	readiness := entries
+	if namespace != "" {
+		readiness = nil
+		for i, candidate := range entries {
+			if candidate.ns == "" || candidate.ns == namespace {
+				readiness = entries[i : i+1]
+				break
+			}
+		}
+	}
+
 	state := DynamicObservationSynced
+	if len(readiness) == 0 {
+		state = DynamicObservationUnwatched
+	}
 	var oldestUnsynced *informerEntry
-	for _, candidate := range entries {
+	for _, candidate := range readiness {
 		if !candidate.entry.informer.HasSynced() {
 			if oldestUnsynced == nil || candidate.entry.startedAt.Before(oldestUnsynced.startedAt) {
 				oldestUnsynced = candidate.entry
@@ -229,7 +269,9 @@ func (d *DynamicResourceCache) Observation(gvr schema.GroupVersionResource) Dyna
 	}
 
 	switch {
-	case state == DynamicObservationSyncing && time.Since(oldestUnsynced.startedAt) >= 30*time.Second:
+	case state == DynamicObservationUnwatched:
+		observation.ReasonCode = "not_observed"
+	case state == DynamicObservationSyncing && time.Since(oldestUnsynced.startedAt) >= d.syncStallAfter():
 		observation.ReasonCode = "sync_stalled"
 	case state == DynamicObservationSyncing:
 		observation.ReasonCode = "initial_sync"
@@ -279,8 +321,9 @@ func (d *DynamicResourceCache) ensureWatching(gvr schema.GroupVersionResource, p
 	return d.EnsureWatchingContext(context.Background(), gvr, preferredNS)
 }
 
-// EnsureWatchingContext bounds discovery waiting and permission probes by ctx.
-// Started informers belong to the cache lifecycle, not the requesting context.
+// EnsureWatchingContext is ensureWatching with ctx bounding how long this
+// caller waits for discovery and for the permission probe. The probe and the
+// informers it starts belong to the cache, not to the requesting context.
 func (d *DynamicResourceCache) EnsureWatchingContext(ctx context.Context, gvr schema.GroupVersionResource, preferredNS string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -317,15 +360,15 @@ func (d *DynamicResourceCache) EnsureWatchingContext(ctx context.Context, gvr sc
 	// Singleflight per (gvr, preferredNS): concurrent callers — e.g. a
 	// parallel enrichment fan-out over many objects of one unwatched kind —
 	// share one probe fan-out + informer start instead of stampeding the
-	// apiserver with redundant limit=1 lists.
+	// apiserver with redundant limit=1 lists. The shared probe runs under the
+	// cache's own budget, never a caller's context: every caller that joined
+	// it would otherwise inherit the deadline and cancellation of whichever
+	// request started it. ctx bounds only this caller's wait.
 	result := d.watchStarts.DoChan(gvr.String()+"|"+preferredNS, func() (any, error) {
 		if d.hasCoveringInformer(gvr, preferredNS) {
 			return nil, nil
 		}
-		scopes, complete, err := d.probeScopesContext(ctx, gvr, preferredNS)
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
+		scopes, complete, err := d.probeScopes(gvr, preferredNS)
 		if err != nil {
 			if isAuthProbeError(err) {
 				d.retainDeniedObservation(gvr, preferredNS, complete)
@@ -551,10 +594,6 @@ func (d *DynamicResourceCache) fallbackNamespaces() []string {
 // is denied and the caller named none, every configured fallback namespace
 // is probed and each granted one becomes a scope.
 func (d *DynamicResourceCache) probeScopes(gvr schema.GroupVersionResource, preferredNS string) (scopes []string, complete bool, err error) {
-	return d.probeScopesContext(context.Background(), gvr, preferredNS)
-}
-
-func (d *DynamicResourceCache) probeScopesContext(parent context.Context, gvr schema.GroupVersionResource, preferredNS string) (scopes []string, complete bool, err error) {
 	// The budget covers the cluster-wide probe plus the whole candidate walk;
 	// scale it with the candidate count so a 20-namespace fanout isn't judged
 	// by a budget sized for the single-fallback case, while staying bounded
@@ -563,7 +602,7 @@ func (d *DynamicResourceCache) probeScopesContext(parent context.Context, gvr sc
 	if n := len(d.fallbackNamespaces()); n > 1 {
 		budget = min(5*time.Second+time.Duration(n)*500*time.Millisecond, 15*time.Second)
 	}
-	ctx, cancel := context.WithTimeout(parent, budget)
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 
 	// Forced namespace mode (--namespace-scope): pin NAMESPACED resources to the
@@ -1332,7 +1371,8 @@ func (d *DynamicResourceCache) List(gvr schema.GroupVersionResource, namespace s
 	return d.ListContext(context.Background(), gvr, namespace)
 }
 
-// ListContext bounds on-demand watch creation by ctx before reading cached data.
+// ListContext is List with ctx bounding how long the caller waits for an
+// on-demand watch to start.
 func (d *DynamicResourceCache) ListContext(ctx context.Context, gvr schema.GroupVersionResource, namespace string) ([]*unstructured.Unstructured, error) {
 	if d == nil {
 		return nil, fmt.Errorf("dynamic resource cache not initialized")

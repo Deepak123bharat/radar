@@ -120,11 +120,11 @@ func (p *CacheProvider) TypedCoverage(kind string, namespaces []string) readreas
 	return ""
 }
 
-func (p *CacheProvider) DynamicObservation(gvr schema.GroupVersionResource) k8score.DynamicResourceObservation {
+func (p *CacheProvider) DynamicObservation(gvr schema.GroupVersionResource, namespace string) k8score.DynamicResourceObservation {
 	if p.dynamic == nil {
 		return k8score.DynamicResourceObservation{State: k8score.DynamicObservationSyncing}
 	}
-	observation := p.dynamic.Observation(gvr)
+	observation := p.dynamic.NamespaceObservation(gvr, namespace)
 	// Radar reads these high-churn built-ins directly and never watches them,
 	// so search treats them like list-only APIs instead of warming an informer.
 	if k8s.ShouldBypassDynamicInformer(gvr) && observation.State != k8score.DynamicObservationSynced && observation.State != k8score.DynamicObservationSyncing {

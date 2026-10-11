@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -203,5 +204,49 @@ func TestDynamicNamespaceCoveragePrecedesReadiness(t *testing.T) {
 		if !reflect.DeepEqual(res.Unsearched, tc.want) || len(p.warmed) != 0 {
 			t.Fatalf("%s: coverage %+v, want %+v (warmed %v)", tc.query, res.Unsearched, tc.want, p.warmed)
 		}
+	}
+}
+
+// Per-namespace readiness holds in every scope: a stalled namespace reports
+// kind_sync_failed for itself only, and a namespace no informer serves is out
+// of the collector's scope whatever the other namespaces' state.
+func TestDynamicNamespaceReadinessInEveryScope(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	explicit := func(state k8score.DynamicObservationState, reason string) k8score.DynamicResourceObservation {
+		return k8score.DynamicResourceObservation{State: state, ReasonCode: reason, Scope: k8score.DynamicObservationScopeExplicitNamespaces, Namespaces: []string{"a", "b"}}
+	}
+	for _, tc := range []struct {
+		name, query string
+		namespaces  []string
+		want        []UnsearchedKind
+	}{
+		{"ready namespace only", "kind:Widget", []string{"a"}, []UnsearchedKind{}},
+		{"stalled namespace", "kind:Widget", []string{"a", "b"}, []UnsearchedKind{{Kind: "Widget", Group: "example.io", Reason: "kind_sync_failed"}}},
+		{"all namespaces", "robusta", nil, []UnsearchedKind{
+			{Kind: "*", Group: "", Reason: "collector_scope_limited"},
+			{Kind: "Widget", Group: "example.io", Reason: "kind_sync_failed"},
+		}},
+		{"unwatched namespace", "robusta", []string{"a", "c"}, []UnsearchedKind{{Kind: "*", Group: "", Reason: "collector_scope_limited"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &fakeProvider{
+				kinds:        map[schema.GroupVersionResource]string{gvr: "Widget"},
+				namespaced:   map[schema.GroupVersionResource]bool{gvr: true},
+				observations: map[schema.GroupVersionResource]k8score.DynamicResourceObservation{gvr: explicit(k8score.DynamicObservationSyncing, "sync_stalled")},
+				namespaceObservations: map[schema.GroupVersionResource]map[string]k8score.DynamicResourceObservation{gvr: {
+					"a": explicit(k8score.DynamicObservationSynced, "namespace_partial"),
+					"b": explicit(k8score.DynamicObservationSyncing, "sync_stalled"),
+					"c": explicit(k8score.DynamicObservationUnwatched, "not_observed"),
+				}},
+				dynamic: map[schema.GroupVersionResource][]*unstructured.Unstructured{gvr: {{Object: map[string]any{"metadata": map[string]any{"name": "robusta-a", "namespace": "a"}}}}},
+			}
+			res, _ := Search(context.Background(), p, Parse(tc.query), Options{Include: IncludeNone, Namespaces: tc.namespaces})
+			if !reflect.DeepEqual(res.Unsearched, tc.want) || !reflect.DeepEqual(p.dynamicListNamespaces, []string{"a"}) || len(p.warmed) != 0 {
+				t.Fatalf("coverage %+v lists %v warmed %v, want %+v listing only a", res.Unsearched, p.dynamicListNamespaces, p.warmed, tc.want)
+			}
+			if got := hitNames(res); !reflect.DeepEqual(got, []string{"Widget/a/robusta-a"}) {
+				t.Fatalf("hits %v", got)
+			}
+		})
 	}
 }

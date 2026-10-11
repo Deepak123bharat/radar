@@ -594,11 +594,16 @@ pick and `--namespace-scope` never hide cluster-scoped objects: each cluster-sco
 kind is gated only by the caller's own list permission for it.
 Coverage is bounded by the discovered catalog; it cannot describe undiscovered APIs.
 Explicit searches share one two-second warmup deadline across matching dynamic
-kinds and namespaces, including permission probes and initial sync. A requested
+kinds and namespaces, including permission probes and initial sync. The deadline
+bounds only how long the search waits: a permission probe other requests share
+keeps running, and the watch it grants still starts. A requested
 namespace can start its own watch even when another namespace is already cached.
 Failed or unfinished warming reports partial coverage and preserves cached hits
-from covered namespaces. Third-party CRDs named Event are searched normally; only
-built-in Events are excluded from broad searches.
+from covered namespaces. Readiness is judged per namespace: a namespace whose
+watch is still loading reports `kind_sync_pending` (`kind_sync_failed` once it
+stalls) without hiding hits from namespaces that are ready. Third-party CRDs
+named Event are searched normally; only built-in Events are excluded from broad
+searches.
 Leases, Endpoints and EndpointSlices, which Radar reads directly instead of
 watching, are never warmed: broad searches omit them and `kind:` reports
 `collection_not_supported`. Use `list_resources` for them.
