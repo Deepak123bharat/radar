@@ -1015,6 +1015,45 @@ func TestResourceReadsDynamicUnauthorizedPrefix(t *testing.T) {
 	}
 }
 
+func TestResourceReadsDynamicUnauthorizedIsNotMissingCoverage(t *testing.T) {
+	for _, tc := range []struct {
+		name, rejectedNamespace, namespace string
+	}{
+		{"cluster rejection with readable fallback", "", ""},
+		{"cluster rejection with readable requested namespace", "", "alpha"},
+		{"namespace rejection with readable fallback", "beta", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(k8s.ResetTestState)
+			t.Cleanup(k8s.SetTestPermissionResult(&k8s.PermissionCheckResult{Perms: &k8s.ResourcePermissions{}, ScopeCandidates: []string{"alpha", "beta"}}))
+			gvr := schema.GroupVersionResource{Group: "example.test", Version: "v1", Resource: "widgets"}
+			dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "WidgetList"})
+			dyn.PrependReactor("list", "widgets", func(action ktesting.Action) (bool, runtime.Object, error) {
+				switch action.GetNamespace() {
+				case tc.rejectedNamespace:
+					return true, nil, apierrors.NewUnauthorized(collectorIdentity + " token rejected")
+				case "":
+					return true, nil, collectorRefusal(gvr.GroupResource(), "list", "")
+				default:
+					return false, nil, nil
+				}
+			})
+			if err := k8s.InitTestDynamicResourceCache(dyn, []k8s.APIResource{{Group: gvr.Group, Version: gvr.Version, Kind: "Widget", Name: gvr.Resource, Namespaced: true, Verbs: []string{"list", "watch", "get"}}}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(k8s.ResetTestDynamicState)
+			_, _, err := handleListResources(context.Background(), nil, listResourcesInput{Kind: "widgets", Namespace: tc.namespace, Context: "none"})
+			if err == nil || !strings.HasPrefix(err.Error(), "collector_unauthorized:") {
+				t.Fatalf("credential rejection must fail the read even with readable namespaces: %v", err)
+			}
+			assertNoCollectorLeak(t, err)
+		})
+	}
+}
+
 func TestResourceReadsCollectorCoverageRespectsGroupCollision(t *testing.T) {
 	if err := k8s.InitScopedTestResourceCache(fake.NewClientset(), map[string]k8score.ResourceScope{"services": {Enabled: true, Namespace: "alpha"}}); err != nil {
 		t.Fatal(err)

@@ -602,6 +602,9 @@ func (d *DynamicResourceCache) probeScopes(gvr schema.GroupVersionResource, pref
 	if err == nil {
 		return []string{""}, true, nil
 	}
+	if apierrors.IsUnauthorized(err) {
+		return nil, true, err
+	}
 	if !isAuthProbeError(err) {
 		// Transient/NotFound on proxy-fronted clusters — fail open to a
 		// cluster-wide informer rather than disabling the kind; real
@@ -639,6 +642,9 @@ func (d *DynamicResourceCache) probeScopes(gvr schema.GroupVersionResource, pref
 		nsCtx, nsCancel := context.WithTimeout(ctx, 2*time.Second)
 		probeErr := d.listProbe(nsCtx, gvr, ns)
 		nsCancel()
+		if apierrors.IsUnauthorized(probeErr) {
+			return nil, true, probeErr
+		}
 		scoped, nsErr := d.classifyScope(gvr, ns, probeErr)
 		if ctx.Err() != nil {
 			// The probe ran into the shared deadline — classifyScope's
