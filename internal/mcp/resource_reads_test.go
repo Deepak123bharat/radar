@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -18,10 +20,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ktesting "k8s.io/client-go/testing"
 
 	"github.com/skyhook-io/radar/internal/k8s"
@@ -620,7 +624,11 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 		// so it reports coverage only when directCoverage is set.
 		coverage       []string
 		directCoverage bool
-		hidden         []string
+		// typedOnly limits coverage to typed kinds, whose coverage the
+		// startup probe established. A refusal for this request says nothing
+		// about where else Radar can read a custom resource or direct kind.
+		typedOnly bool
+		hidden    []string
 	}{
 		{name: "auth disabled reads the covered namespaces", rows: []string{"alpha-object"}},
 		{name: "cluster-wide caller reads the covered namespaces", caller: "admin", rows: []string{"alpha-object"}},
@@ -629,8 +637,8 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 		{name: "explicit covered and empty", namespace: "gamma", rows: []string{}},
 		{name: "restricted partial overlap", caller: "restricted", allowed: []string{"alpha", "beta"}, wantErr: []string{`namespace "beta"`}, coverage: []string{`covered namespaces you can read: "alpha"`, "retry with one of them as the namespace"}, directCoverage: true, hidden: []string{"gamma"}},
 		{name: "restricted partial overlap with an empty covered namespace", caller: "restricted", allowed: []string{"gamma", "beta"}, wantErr: []string{`namespace "beta"`}, coverage: []string{`covered namespaces you can read: "gamma"`}, directCoverage: true, hidden: []string{"alpha"}},
-		{name: "no overlap", caller: "restricted", allowed: []string{"beta"}, wantErr: []string{`namespace "beta"`}, coverage: []string{anyHidden}, hidden: []string{"alpha", "gamma"}},
-		{name: "no overlap across namespaces", caller: "restricted", allowed: []string{"beta", "delta"}, wantErr: []string{`namespaces "beta,delta"`}, coverage: []string{anyHidden}, hidden: []string{"alpha", "gamma"}},
+		{name: "no overlap", caller: "restricted", allowed: []string{"beta"}, wantErr: []string{`namespace "beta"`}, coverage: []string{anyHidden}, typedOnly: true, hidden: []string{"alpha", "gamma"}},
+		{name: "no overlap across namespaces", caller: "restricted", allowed: []string{"beta", "delta"}, wantErr: []string{`namespaces "beta,delta"`}, coverage: []string{anyHidden}, typedOnly: true, hidden: []string{"alpha", "gamma"}},
 		{name: "explicit uncovered", namespace: "beta", wantErr: []string{`namespace "beta"`}, coverage: []string{`covered namespaces you can read: "alpha,gamma"`}},
 		{name: "restricted explicit uncovered", caller: "restricted", allowed: []string{"alpha", "beta"}, namespace: "beta", wantErr: []string{`namespace "beta"`}, coverage: []string{`covered namespaces you can read: "alpha"`}, hidden: []string{"gamma"}},
 	}
@@ -652,10 +660,10 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 						t.Fatalf("uncovered scope must fail with %s, got %v", coverageReason(class), err)
 					}
 					want := tc.wantErr
-					if class != coverageDirect || tc.directCoverage {
+					if (class != coverageDirect || tc.directCoverage) && (class == coverageTyped || !tc.typedOnly) {
 						want = append(slices.Clone(want), tc.coverage...)
 					} else if strings.Contains(err.Error(), "covered namespaces") || strings.Contains(err.Error(), anyHidden) {
-						t.Fatalf("a direct kind cannot claim coverage it did not read: %v", err)
+						t.Fatalf("%s cannot claim coverage it did not establish: %v", class, err)
 					}
 					for _, text := range want {
 						if !strings.Contains(err.Error(), text) {
@@ -721,6 +729,89 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 			t.Fatalf("unscoped denial must not name the pinned namespace: %v", err)
 		}
 	})
+}
+
+// A caller who can read only beta gets the same refusal whether or not the
+// collector already watches namespaces the caller cannot read.
+func TestResourceReadsHiddenCoverageDoesNotChangeTheError(t *testing.T) {
+	for _, verb := range []string{"list", "get"} {
+		t.Run(verb, func(t *testing.T) {
+			kind, prewarm := setupCoverageRuleFixture(t, coverageCRD)
+			ctx := withRestrictedUser(t, "hidden-coverage-reader", []string{"beta"})
+			read := func() string {
+				var err error
+				if verb == "list" {
+					_, _, err = handleListResources(ctx, nil, listResourcesInput{Kind: kind, Context: "none"})
+				} else {
+					_, _, err = handleGetResource(ctx, nil, getResourceInput{Kind: kind, Namespace: "beta", Name: "beta-object"})
+				}
+				if err == nil || !strings.HasPrefix(err.Error(), "collector_access_denied:") {
+					t.Fatalf("beta must be refused, got %v", err)
+				}
+				return err.Error()
+			}
+			cold := read()
+			prewarm()
+			if warm := read(); warm != cold {
+				t.Fatalf("coverage the caller cannot read changed the error:\nbefore: %s\nafter:  %s", cold, warm)
+			}
+		})
+	}
+}
+
+// Namespace informers sync independently, and in a shared Radar another user
+// may have started a stalled one. A read of a namespace whose informer just
+// started is still loading: its own informer decides, not the kind's oldest.
+func TestResourceReadsDynamicStallIsPerNamespace(t *testing.T) {
+	const stallAfter = 5 * time.Second
+	previousWait := dynamicSyncWait
+	dynamicSyncWait = 200 * time.Millisecond
+	t.Cleanup(func() { dynamicSyncWait = previousWait })
+	gvr := schema.GroupVersionResource{Group: "example.test", Version: "v1", Resource: "widgets"}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/apis/example.test/v1/widgets":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Forbidden","code":403}`))
+		case r.URL.Query().Get("limit") == "1":
+			_, _ = w.Write([]byte(`{"kind":"WidgetList","apiVersion":"example.test/v1","metadata":{"resourceVersion":"1"},"items":[]}`))
+		default:
+			// Informer lists and watches never complete, so no informer syncs.
+			<-r.Context().Done()
+		}
+	}))
+	t.Cleanup(api.Close)
+	client, err := dynamic.NewForConfig(&rest.Config{Host: api.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(k8s.ResetTestState)
+	t.Cleanup(k8s.SetTestDynamicSyncStallAfter(stallAfter))
+	t.Cleanup(k8s.SetTestPermissionResult(&k8s.PermissionCheckResult{Perms: &k8s.ResourcePermissions{}, ScopeCandidates: []string{"beta"}}))
+	if err := k8s.InitTestDynamicResourceCache(client, []k8s.APIResource{{Group: gvr.Group, Version: gvr.Version, Kind: "Widget", Name: gvr.Resource, Namespaced: true, Verbs: []string{"list", "watch", "get"}}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(k8s.ResetTestDynamicState)
+
+	if err := k8s.GetDynamicResourceCache().EnsureWatching(gvr); err != nil {
+		t.Fatal(err)
+	}
+	// Beta is past stallAfter for both reads; alpha's informer, started by its
+	// own read, is a fraction of stallAfter old when the read classifies it.
+	time.Sleep(stallAfter)
+	for _, tc := range []struct{ namespace, want string }{
+		{"alpha", "kind_sync_pending:"},
+		{"beta", "kind_sync_failed:"},
+	} {
+		_, _, err := handleListResources(context.Background(), nil, listResourcesInput{Kind: "Widget", Group: gvr.Group, Namespace: tc.namespace, Context: "none"})
+		if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
+			t.Fatalf("%s: want %s, got %v", tc.namespace, tc.want, err)
+		}
+	}
 }
 
 func TestResourceReadsColdDynamicKinds(t *testing.T) {

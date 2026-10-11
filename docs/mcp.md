@@ -487,7 +487,7 @@ Reasons separate the calling user's permissions from Radar's collection access:
 | `collector_unauthorized` | Kubernetes rejected Radar's credentials. This is distinct from an RBAC denial. | Refresh Radar's service-account credentials or local kubeconfig token. |
 | `collector_scope_limited` | A requested namespace is outside the coverage Radar's collector established, so Radar did not read it (see the coverage rule below). The error names the uncovered namespaces and the covered namespaces you can read. | Retry with a covered namespace, or widen Radar's collection. |
 | `kind_sync_pending` | Initial cache synchronization is still in progress. Unavailable discovery also reports this rather than claiming a kind is unknown. | Retry shortly. |
-| `kind_sync_failed` | The typed sync deadline elapsed, or a dynamic sync stalled. | Inspect Radar's connection and collector list/watch permissions. |
+| `kind_sync_failed` | The typed sync deadline elapsed, or the requested namespace's dynamic sync stalled. Another namespace's stalled informer does not fail a read of this one. | Inspect Radar's connection and collector list/watch permissions. |
 | `kind_not_watched` | Radar has no watch for the kind, and nothing more precise is known. | Inspect collector permissions and collection configuration. |
 | `collection_not_supported` | The API does not support list/watch, so Radar cannot collect it. | Do not retry; a watch cannot be started. |
 | `unknown_kind` | Neither the built-in catalog nor discovery recognizes the kind. | Check the spelling, the `group`, and that the API is installed. |
@@ -551,9 +551,11 @@ or Leases); a caller allowed only in `gamma`, covered but empty, gets `[]`; a
 cluster-wide caller gets `alpha`'s objects.
 
 Tool errors name only namespaces the caller may read or named in the request.
-Covered namespaces outside the caller's access are left out; when none remain,
-the error says the collector's coverage does not include any namespace the
-caller can read.
+Covered namespaces outside the caller's access are left out and never change the
+wording. When none remain, a `collector_scope_limited` error says the collector's
+coverage does not include any namespace the caller can read; a
+`collector_access_denied` error offers no namespaces, because Radar being refused
+for this request says nothing about where else it can read.
 
 An unrestricted, unscoped read of Endpoints, EndpointSlices or Leases lists the
 cluster scope first. When Radar's identity is refused there, it reads each of

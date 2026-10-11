@@ -214,10 +214,10 @@ func directRead(gvr schema.GroupVersionResource, verb string) bool {
 // denied its identity — the reason is collector_access_denied; without one
 // they lie outside the coverage the collector established, Radar did not read
 // them, and the reason is collector_scope_limited. No uncovered namespaces
-// means the cluster scope. Only namespaces the caller may read are named, so
-// the collector's coverage never discloses other tenants' namespaces.
+// means the cluster scope. Only namespaces the caller may read are named, and
+// coverage in namespaces the caller cannot read never changes the wording, so
+// the error discloses nothing about other tenants' namespaces.
 func coverageError(ctx context.Context, target collectorTarget, uncovered, covered []string, refusal error) error {
-	knownCoverage := refusal == nil || len(covered) > 0
 	covered = slices.DeleteFunc(slices.Clone(covered), func(ns string) bool { return slices.Contains(uncovered, ns) })
 	covered = callerVisibleNamespaces(ctx, covered)
 	where := "at cluster scope"
@@ -236,7 +236,9 @@ func coverageError(ctx context.Context, target collectorTarget, uncovered, cover
 	switch {
 	case len(covered) > 0:
 		coverage = fmt.Sprintf("; covered namespaces you can read: %q; retry with one of them as the namespace", namespaceForError(covered))
-	case knownCoverage:
+	case refusal == nil:
+		// A refusal for this request says nothing about where else the
+		// collector could read, so only established coverage gets this.
 		coverage = "; the collector's coverage does not include any namespace you can read"
 	}
 	if refusal != nil {
@@ -371,7 +373,9 @@ func checkDynamicResourceRead(ctx context.Context, kind, group, namespace, verb 
 	switch observation.State {
 	case k8score.DynamicObservationSyncing:
 		if !dynamicCache.IsNamespaceSynced(gvr, namespace) {
-			if observation.ReasonCode == "sync_stalled" {
+			// Stalled is this namespace's informer, not the oldest one any
+			// request started for the kind.
+			if dynamicCache.NamespaceObservation(gvr, namespace).ReasonCode == "sync_stalled" {
 				return false, readErrorf(readreason.KindSyncFailed, "%s initial cache sync has stalled; check Radar's collector connection and list/watch permissions", kind)
 			}
 			return false, readErrorf(readreason.KindSyncPending, "%s are still loading, please retry shortly", kind)
@@ -386,7 +390,9 @@ func checkDynamicResourceRead(ctx context.Context, kind, group, namespace, verb 
 	return dynamicCache.IsNamespaceSynced(gvr, namespace), readErr
 }
 
-const dynamicSyncWait = 3 * time.Second
+// dynamicSyncWait bounds a read's wait for a cold informer. A variable so tests
+// can wait less than the production three seconds.
+var dynamicSyncWait = 3 * time.Second
 
 func discoveredGVR(kind, group string) (schema.GroupVersionResource, bool) {
 	discovery := k8s.GetResourceDiscovery()

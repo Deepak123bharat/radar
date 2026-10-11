@@ -164,6 +164,32 @@ func (d *DynamicResourceCache) retainDeniedObservation(gvr schema.GroupVersionRe
 // It only reads cache bookkeeping; it never probes the API server, creates an
 // informer, or waits for sync.
 func (d *DynamicResourceCache) Observation(gvr schema.GroupVersionResource) DynamicResourceObservation {
+	return d.observation(gvr, "")
+}
+
+// NamespaceObservation is Observation with State and ReasonCode taken only
+// from the informer that serves reads of gvr in namespace: the cluster-wide
+// informer when there is one, otherwise namespace's own. Per-namespace
+// informers sync independently, so a namespace's readiness never reflects an
+// informer started for another namespace, which in a shared cache may be
+// another user's. Scope, Namespaces and Truncated still describe the whole
+// kind. When the kind has informers but none serves namespace, State is
+// DynamicObservationUnwatched. An empty namespace, or a kind with no
+// informers, gets Observation(gvr).
+func (d *DynamicResourceCache) NamespaceObservation(gvr schema.GroupVersionResource, namespace string) DynamicResourceObservation {
+	return d.observation(gvr, namespace)
+}
+
+// syncStallAfter is how long an informer may stay unsynced before its
+// observation reports sync_stalled.
+func (d *DynamicResourceCache) syncStallAfter() time.Duration {
+	if d.config.SyncStallAfter > 0 {
+		return d.config.SyncStallAfter
+	}
+	return 30 * time.Second
+}
+
+func (d *DynamicResourceCache) observation(gvr schema.GroupVersionResource, namespace string) DynamicResourceObservation {
 	if d == nil {
 		return DynamicResourceObservation{State: DynamicObservationUnwatched, ReasonCode: "not_observed"}
 	}
@@ -207,9 +233,23 @@ func (d *DynamicResourceCache) Observation(gvr schema.GroupVersionResource) Dyna
 		return DynamicResourceObservation{State: DynamicObservationUnwatched, ReasonCode: "not_observed"}
 	}
 
+	readiness := entries
+	if namespace != "" {
+		readiness = nil
+		for i, candidate := range entries {
+			if candidate.ns == "" || candidate.ns == namespace {
+				readiness = entries[i : i+1]
+				break
+			}
+		}
+	}
+
 	state := DynamicObservationSynced
+	if len(readiness) == 0 {
+		state = DynamicObservationUnwatched
+	}
 	var oldestUnsynced *informerEntry
-	for _, candidate := range entries {
+	for _, candidate := range readiness {
 		if !candidate.entry.informer.HasSynced() {
 			if oldestUnsynced == nil || candidate.entry.startedAt.Before(oldestUnsynced.startedAt) {
 				oldestUnsynced = candidate.entry
@@ -229,7 +269,9 @@ func (d *DynamicResourceCache) Observation(gvr schema.GroupVersionResource) Dyna
 	}
 
 	switch {
-	case state == DynamicObservationSyncing && time.Since(oldestUnsynced.startedAt) >= 30*time.Second:
+	case state == DynamicObservationUnwatched:
+		observation.ReasonCode = "not_observed"
+	case state == DynamicObservationSyncing && time.Since(oldestUnsynced.startedAt) >= d.syncStallAfter():
 		observation.ReasonCode = "sync_stalled"
 	case state == DynamicObservationSyncing:
 		observation.ReasonCode = "initial_sync"

@@ -271,6 +271,16 @@ func InitTestDynamicResourceCache(dynClient dynamic.Interface, resources []APIRe
 	return InitDynamicResourceCache(nil)
 }
 
+// SetTestDynamicSyncStallAfter sets how long a dynamic informer may stay
+// unsynced before it reads as stalled, for dynamic caches initialized after
+// the call. The production threshold, 30 seconds, is longer than a test should
+// wait. Returns a restore func.
+func SetTestDynamicSyncStallAfter(d time.Duration) func() {
+	previous := dynamicSyncStallAfter
+	dynamicSyncStallAfter = d
+	return func() { dynamicSyncStallAfter = previous }
+}
+
 // ResetTestDynamicState tears down the dynamic cache + discovery singletons
 // and clears the dynamic client. Pairs with InitTestDynamicResourceCache.
 func ResetTestDynamicState() {
