@@ -727,7 +727,7 @@ posture priority (`warning` in the raw scan):
 |---|---|
 | `pvcNoConsumer` | A Bound PVC older than 24 hours, without a controller owner, has no consumer observed among readable Pods and built-in workload templates. Findings include requested size, storage class, PVC age, bound PV and reclaim policy when visible. |
 | `pvcLongPending` | A PVC without a controller owner has been Pending since creation, more than 24 hours ago, and no Pod or built-in workload template references it. WaitForFirstConsumer claims without a consumer are included. |
-| `releasedPV` | A Released PV with Retain is kept after claim deletion for more than 24 hours. With Delete, deletion has not completed after one hour, even without warning events. A Warning `VolumeFailedDelete` event for the PV's UID within the last 24 hours reports deletion failure immediately; when the current Released transition time is known, warnings before that transition are excluded. The latest applicable warning message is included, with its age when older. |
+| `releasedPV` | A Released PV with Retain is kept after claim deletion for more than 24 hours. With Delete, deletion has not completed after one hour, even without warning events. A Warning `VolumeFailedDelete` event for the PV's UID within the last 24 hours reports deletion failure immediately; when the current Released transition time is known, warnings before that transition are excluded. The latest applicable warning message is included, with its age when older. A **Failed** PV (the PV controller could not delete or recycle it after its claim was deleted, as happens with in-tree volume plugins) is reported immediately, with the latest current `VolumeFailedDelete` / `VolumeFailedRecycle` warning or else the PV's status message. |
 
 Consumer evidence includes Deployments, ReplicaSets, StatefulSets, DaemonSets,
 Jobs and CronJobs. Templates count at zero replicas, and retained StatefulSet
@@ -760,16 +760,21 @@ The namespace picker selects PVC subjects. Released PVs remain cluster-scoped
 and require their own grant; without it they are not subjects of that caller's
 scan. When the caller may read PVs but the inventory is unreadable or initially
 unsynced, `releasedPV` evaluates nothing and `persistentvolumes` is reported.
-Readable PVs count toward `releasedPV`, including healthy volumes. Events are
-listed only when a Released Delete volume needs deletion evidence, and only from
-namespaces the caller may see. A Released Delete volume still within its
+Bound PVs count toward `releasedPV` as passing subjects; Released and Failed PVs
+are judged; Available and Pending PVs have no claim to have outlived and are not
+counted at all, so a pool of unclaimed static volumes does not inflate the pass
+count. Events are listed only when a Released Delete or a Failed volume needs
+reclaim evidence, and only from namespaces the caller may see. A Failed volume
+is always evaluated and reported: the phase itself establishes the failure, so
+incomplete event coverage only adds the caveat below and never reports
+`pv-deletion-events`. A Released Delete volume still within its
 one-hour grace period, with unreadable, partial or unsynced event coverage and
 no observed current deletion warning, has an unknown outcome: it contributes
 neither an evaluated nor a passing subject and reports `pv-deletion-events`.
 An observed current warning establishes failure even with partial coverage, and
 after the grace period the delayed-deletion finding appears based on the PV
 itself; either finding says **Deletion warning events not fully visible** when
-coverage is incomplete. PV findings use time in Released when
+coverage is incomplete. PV findings use time in Released (or Failed) when
 `status.lastPhaseTransitionTime` is present, otherwise use and explicitly show
 **PV age** for the thresholds. Neither is a history of how long the data was
 unneeded.

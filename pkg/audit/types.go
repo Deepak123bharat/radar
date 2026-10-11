@@ -51,7 +51,8 @@ type CheckInput struct {
 	// CRD consumers are outside this check's coverage.
 	PVCConsumerNamespaces []string
 	// PVDeletionEventsComplete requires cluster-wide, initially synced Event
-	// coverage. Visible warnings establish failure even with partial coverage.
+	// coverage. Visible warnings establish failure even with partial coverage;
+	// a Failed volume's phase establishes it without any.
 	PVDeletionEventsComplete bool
 	// ClusterVersion is the K8s server version (e.g. "1.30"). Used for deprecated API checks.
 	ClusterVersion string

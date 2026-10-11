@@ -103,11 +103,34 @@ func checkStorage(tr *evalTracker, input *CheckInput, now time.Time) []Finding {
 	if input.PersistentVolumes == nil {
 		tr.skip("persistentvolumes")
 	}
-	deleteFailures := latestPVDeleteFailures(input.PersistentVolumes, input.Events, now)
+	reclaimWarnings := latestPVReclaimWarnings(input.PersistentVolumes, input.Events, now)
 	deletionEventsComplete := input.Events != nil && input.PVDeletionEventsComplete
 	for _, pv := range input.PersistentVolumes {
-		if pv.Status.Phase != corev1.VolumeReleased {
+		warning, hasWarning := reclaimWarnings[pv.UID]
+		switch pv.Status.Phase {
+		case corev1.VolumeBound:
 			tr.record("releasedPV", "")
+			continue
+		case corev1.VolumeFailed:
+			// The PV controller sets Failed only when reclaiming the volume
+			// failed, so the phase alone establishes the finding; events add
+			// detail and never decide whether the volume is evaluated.
+			tr.record("releasedPV", "")
+			message := fmt.Sprintf("Failed PV: reclaiming the volume failed after its claim was deleted (reclaim policy %s).", pv.Spec.PersistentVolumeReclaimPolicy)
+			if hasWarning {
+				message += " Latest reclaim warning (" + timeutil.FormatAgeShort(now.Sub(warning.at)) + " ago): " + asSentence(warning.event.Message)
+			} else if pv.Status.Message != "" {
+				message += " Status message: " + asSentence(pv.Status.Message)
+			}
+			if !deletionEventsComplete {
+				message += " Deletion warning events not fully visible."
+			}
+			findings = append(findings, releasedPVFinding(pv, message, now))
+			continue
+		case corev1.VolumeReleased:
+		default:
+			// An Available or Pending volume has no claim to have outlived;
+			// this check has no verdict on it, so it is not a passing subject.
 			continue
 		}
 		releasedAt := pv.CreationTimestamp
@@ -115,8 +138,7 @@ func checkStorage(tr *evalTracker, input *CheckInput, now time.Time) []Finding {
 			releasedAt = *pv.Status.LastPhaseTransitionTime
 		}
 		inDeleteGrace := releasedAt.IsZero() || now.Sub(releasedAt.Time) <= pvDeleteGrace
-		failure, hasFailure := deleteFailures[pv.UID]
-		recentFailure := hasFailure && now.Sub(failure.at) <= pvDeleteEventWindow
+		recentFailure := hasWarning && now.Sub(warning.at) <= pvDeleteEventWindow
 		if pv.Spec.PersistentVolumeReclaimPolicy == corev1.PersistentVolumeReclaimDelete && inDeleteGrace && !recentFailure && !deletionEventsComplete {
 			// A warning Radar can't see may already show this deletion failing.
 			tr.skip("pv-deletion-events")
@@ -132,14 +154,14 @@ func checkStorage(tr *evalTracker, input *CheckInput, now time.Time) []Finding {
 			message = "Released PV is kept after its claim was deleted (reclaim policy Retain)."
 		case corev1.PersistentVolumeReclaimDelete:
 			if recentFailure {
-				message = "Released PV deletion is failing: " + failure.event.Message
+				message = "Released PV deletion is failing: " + asSentence(warning.event.Message)
 			} else {
 				if inDeleteGrace {
 					continue
 				}
 				message = "Released PV deletion has not completed (reclaim policy Delete)."
-				if hasFailure {
-					message += " Latest deletion warning (" + timeutil.FormatAgeShort(now.Sub(failure.at)) + " ago): " + failure.event.Message
+				if hasWarning {
+					message += " Latest deletion warning (" + timeutil.FormatAgeShort(now.Sub(warning.at)) + " ago): " + asSentence(warning.event.Message)
 				}
 			}
 			if !deletionEventsComplete {
@@ -148,18 +170,22 @@ func checkStorage(tr *evalTracker, input *CheckInput, now time.Time) []Finding {
 		default:
 			continue
 		}
-		age := "PV age " + storageAge(pv.CreationTimestamp, now)
-		if pv.Status.LastPhaseTransitionTime != nil && !pv.Status.LastPhaseTransitionTime.IsZero() {
-			age = "Released for " + storageAge(*pv.Status.LastPhaseTransitionTime, now)
-		}
-		formerClaim := "unknown"
-		if pv.Spec.ClaimRef != nil {
-			formerClaim = pv.Spec.ClaimRef.Namespace + "/" + pv.Spec.ClaimRef.Name
-		}
-		message += fmt.Sprintf(" Capacity %s; storage class %q; former claim %s; %s.", storageQuantity(pv.Spec.Capacity), pv.Spec.StorageClassName, formerClaim, age)
-		findings = append(findings, Finding{Kind: "PersistentVolume", Name: pv.Name, CheckID: "releasedPV", Category: CategoryEfficiency, Severity: SeverityWarning, Message: message})
+		findings = append(findings, releasedPVFinding(pv, message, now))
 	}
 	return findings
+}
+
+func releasedPVFinding(pv *corev1.PersistentVolume, message string, now time.Time) Finding {
+	age := "PV age " + storageAge(pv.CreationTimestamp, now)
+	if pv.Status.LastPhaseTransitionTime != nil && !pv.Status.LastPhaseTransitionTime.IsZero() {
+		age = string(pv.Status.Phase) + " for " + storageAge(*pv.Status.LastPhaseTransitionTime, now)
+	}
+	formerClaim := "unknown"
+	if pv.Spec.ClaimRef != nil {
+		formerClaim = pv.Spec.ClaimRef.Namespace + "/" + pv.Spec.ClaimRef.Name
+	}
+	message += fmt.Sprintf(" Capacity %s; storage class %q; former claim %s; %s.", storageQuantity(pv.Spec.Capacity), pv.Spec.StorageClassName, formerClaim, age)
+	return Finding{Kind: "PersistentVolume", Name: pv.Name, CheckID: "releasedPV", Category: CategoryEfficiency, Severity: SeverityWarning, Message: message}
 }
 
 func collectPVCConsumers(input *CheckInput) map[string]bool {
@@ -249,26 +275,40 @@ func storageAge(created metav1.Time, now time.Time) string {
 	return timeutil.FormatAgeShort(now.Sub(created.Time))
 }
 
-type pvDeleteFailure struct {
+// PVNeedsReclaimEvents reports whether a releasedPV finding for pv can draw
+// on reclaim warning events: a Released volume awaiting deletion, or a volume
+// whose reclaim already failed.
+func PVNeedsReclaimEvents(pv *corev1.PersistentVolume) bool {
+	return pv.Status.Phase == corev1.VolumeFailed || pv.Status.Phase == corev1.VolumeReleased && pv.Spec.PersistentVolumeReclaimPolicy == corev1.PersistentVolumeReclaimDelete
+}
+
+// isReclaimWarning matches the warnings the PV controllers record when a
+// reclaim fails. Recycling failures only apply once the volume is Failed: a
+// Released volume is judged on deletion alone.
+func isReclaimWarning(pv *corev1.PersistentVolume, reason string) bool {
+	return reason == "VolumeFailedDelete" || reason == "VolumeFailedRecycle" && pv.Status.Phase == corev1.VolumeFailed
+}
+
+type pvReclaimWarning struct {
 	event *corev1.Event
 	at    time.Time
 }
 
-func latestPVDeleteFailures(pvs []*corev1.PersistentVolume, events []*corev1.Event, now time.Time) map[types.UID]pvDeleteFailure {
+func latestPVReclaimWarnings(pvs []*corev1.PersistentVolume, events []*corev1.Event, now time.Time) map[types.UID]pvReclaimWarning {
 	volumes := map[types.UID]*corev1.PersistentVolume{}
 	for _, pv := range pvs {
-		if pv.UID != "" && pv.Status.Phase == corev1.VolumeReleased && pv.Spec.PersistentVolumeReclaimPolicy == corev1.PersistentVolumeReclaimDelete {
+		if pv.UID != "" && PVNeedsReclaimEvents(pv) {
 			volumes[pv.UID] = pv
 		}
 	}
-	latest := map[types.UID]pvDeleteFailure{}
+	latest := map[types.UID]pvReclaimWarning{}
 	if len(volumes) == 0 {
 		return latest
 	}
 	for _, e := range events {
 		ref := e.InvolvedObject
 		pv := volumes[ref.UID]
-		if pv == nil || e.Type != corev1.EventTypeWarning || e.Reason != "VolumeFailedDelete" || ref.Kind != "PersistentVolume" || ref.Name != pv.Name || ref.Namespace != "" || resourceid.GroupFromAPIVersion(ref.APIVersion) != "" {
+		if pv == nil || e.Type != corev1.EventTypeWarning || !isReclaimWarning(pv, e.Reason) || ref.Kind != "PersistentVolume" || ref.Name != pv.Name || ref.Namespace != "" || resourceid.GroupFromAPIVersion(ref.APIVersion) != "" {
 			continue
 		}
 		at := e.LastTimestamp.Time
@@ -287,7 +327,15 @@ func latestPVDeleteFailures(pvs []*corev1.PersistentVolume, events []*corev1.Eve
 		if pv.Status.LastPhaseTransitionTime != nil && !pv.Status.LastPhaseTransitionTime.IsZero() && at.Before(pv.Status.LastPhaseTransitionTime.Time) {
 			continue
 		}
-		latest[ref.UID] = pvDeleteFailure{event: e, at: at}
+		latest[ref.UID] = pvReclaimWarning{event: e, at: at}
 	}
 	return latest
+}
+
+func asSentence(message string) string {
+	message = strings.TrimSpace(message)
+	if message == "" || strings.HasSuffix(message, ".") || strings.HasSuffix(message, "!") || strings.HasSuffix(message, "?") {
+		return message
+	}
+	return message + "."
 }

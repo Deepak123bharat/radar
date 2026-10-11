@@ -12,6 +12,7 @@ import (
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 func storageInput() *CheckInput {
@@ -240,6 +241,12 @@ func TestStorageMissingInputsOnlyForSkippedSubjects(t *testing.T) {
 			i.PersistentVolumes[0].Status.LastPhaseTransitionTime = ptr(metav1.NewTime(time.Now().Add(-time.Minute)))
 			i.Events = nil
 		}, []string{"pv-deletion-events"}, 1, ""},
+		{"Failed volume with unreadable events", func(i *CheckInput) {
+			i.PersistentVolumes[0].Spec.PersistentVolumeReclaimPolicy = corev1.PersistentVolumeReclaimDelete
+			i.PersistentVolumes[0].Status.Phase = corev1.VolumeFailed
+			i.PersistentVolumes[0].Status.LastPhaseTransitionTime = ptr(metav1.NewTime(time.Now().Add(-time.Minute)))
+			i.Events = nil
+		}, nil, 2, "Deletion warning events not fully visible"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			i := storageInput()
@@ -278,14 +285,110 @@ func TestStorageMissingInputsOnlyForSkippedSubjects(t *testing.T) {
 	}
 }
 
-func TestReleasedPVHealthyCounts(t *testing.T) {
+// Bound volumes pass; Available and Pending volumes have no claim to have
+// outlived, so they are neither passes nor findings; Failed volumes never pass.
+func TestReleasedPVCounts(t *testing.T) {
 	i := storageInput()
 	i.PersistentVolumeClaims = []*corev1.PersistentVolumeClaim{}
 	i.PersistentVolumes[0].Status.Phase = corev1.VolumeBound
-	i.PersistentVolumes = append(i.PersistentVolumes, &corev1.PersistentVolume{ObjectMeta: metav1.ObjectMeta{Name: "available"}, Status: corev1.PersistentVolumeStatus{Phase: corev1.VolumeAvailable}})
+	for name, phase := range map[string]corev1.PersistentVolumePhase{"available": corev1.VolumeAvailable, "pending": corev1.VolumePending, "failed": corev1.VolumeFailed} {
+		i.PersistentVolumes = append(i.PersistentVolumes, &corev1.PersistentVolume{ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID(name)}, Spec: corev1.PersistentVolumeSpec{PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimDelete}, Status: corev1.PersistentVolumeStatus{Phase: phase}})
+	}
 	r := RunChecks(i)
-	if count := r.CheckCounts["releasedPV"]; count.Evaluated != 2 || count.Passed != 2 || len(r.Findings) != 0 {
-		t.Fatalf("healthy PVs lost from counts: %+v", count)
+	if count := r.CheckCounts["releasedPV"]; count.Evaluated != 2 || count.Passed != 1 {
+		t.Fatalf("releasedPV counts: %+v", count)
+	}
+	if got := findingNames(r.Findings, "releasedPV"); len(got) != 1 || !got["failed"] {
+		t.Fatalf("releasedPV findings: %+v", r.Findings)
+	}
+}
+
+func TestFailedPV(t *testing.T) {
+	now := time.Now()
+	failedAt := now.Add(-5 * time.Minute)
+	for _, tc := range []struct {
+		name   string
+		change func(*CheckInput)
+		text   []string
+		absent []string
+		caveat bool
+	}{
+		{"Delete with warning", func(i *CheckInput) {
+			i.Events = []*corev1.Event{deleteFailure(failedAt, "host_path deleter only supports /tmp/.+")}
+		}, []string{"Failed PV: reclaiming the volume failed after its claim was deleted (reclaim policy Delete).", "Latest reclaim warning (5m ago): host_path deleter only supports /tmp/.+.", "Failed for 5m."}, []string{"Status message"}, false},
+		{"status message without events", func(*CheckInput) {}, []string{"Status message: status failure."}, []string{"Latest reclaim warning"}, false},
+		{"partial event coverage", func(i *CheckInput) { i.PVDeletionEventsComplete = false }, []string{"Status message: status failure."}, nil, true},
+		{"unreadable events", func(i *CheckInput) { i.Events = nil }, []string{"Failed PV"}, nil, true},
+		{"visible warning with partial coverage", func(i *CheckInput) {
+			i.PVDeletionEventsComplete = false
+			i.Events = []*corev1.Event{deleteFailure(failedAt, "visible failure")}
+		}, []string{"Latest reclaim warning (5m ago): visible failure."}, nil, true},
+		{"no message anywhere", func(i *CheckInput) {
+			i.PersistentVolumes[0].Status.Message = ""
+			i.PVDeletionEventsComplete = false
+		}, []string{"Failed PV", "Deletion warning events not fully visible.", "8Gi"}, []string{"Status message", "Latest reclaim warning"}, true},
+		{"warning before the Failed transition", func(i *CheckInput) {
+			i.Events = []*corev1.Event{deleteFailure(failedAt.Add(-time.Hour), "previous release failure")}
+		}, []string{"Status message: status failure."}, []string{"previous release failure"}, false},
+		{"Recycle", func(i *CheckInput) {
+			i.PersistentVolumes[0].Spec.PersistentVolumeReclaimPolicy = corev1.PersistentVolumeReclaimRecycle
+			e := deleteFailure(failedAt, "recycler pod failed")
+			e.Reason = "VolumeFailedRecycle"
+			i.Events = []*corev1.Event{e}
+		}, []string{"(reclaim policy Recycle)", "Latest reclaim warning (5m ago): recycler pod failed."}, nil, false},
+		{"policy changed to Retain after the failure", func(i *CheckInput) {
+			i.PersistentVolumes[0].Spec.PersistentVolumeReclaimPolicy = corev1.PersistentVolumeReclaimRetain
+		}, []string{"(reclaim policy Retain)", "Status message: status failure."}, nil, false},
+		{"transition unavailable", func(i *CheckInput) {
+			i.PersistentVolumes[0].Status.LastPhaseTransitionTime = nil
+		}, []string{"; PV age "}, []string{"Failed for"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			i := storageInput()
+			i.PersistentVolumeClaims = []*corev1.PersistentVolumeClaim{}
+			pv := i.PersistentVolumes[0]
+			pv.Spec.PersistentVolumeReclaimPolicy = corev1.PersistentVolumeReclaimDelete
+			pv.Status = corev1.PersistentVolumeStatus{Phase: corev1.VolumeFailed, Message: "status failure", LastPhaseTransitionTime: ptr(metav1.NewTime(failedAt))}
+			tc.change(i)
+			tr := newEvalTracker()
+			r := buildResults(checkStorage(tr, i, now), tr, nil)
+			// The phase establishes the failure, so incomplete events never
+			// leave the volume unevaluated.
+			if count := r.CheckCounts["releasedPV"]; count.Evaluated != 1 || count.Passed != 0 || len(r.MissingInputs) != 0 {
+				t.Fatalf("Failed PV counted as passed or skipped: %+v missing=%v", count, r.MissingInputs)
+			}
+			if len(r.Findings) != 1 || r.Findings[0].CheckID != "releasedPV" || r.Findings[0].Kind != "PersistentVolume" {
+				t.Fatalf("Failed PV not reported: %+v", r.Findings)
+			}
+			message := r.Findings[0].Message
+			for _, text := range append(tc.text, "Capacity 8Gi", `storage class "local"`, "former claim app/data-db-0") {
+				if !strings.Contains(message, text) {
+					t.Errorf("message lacks %q: %s", text, message)
+				}
+			}
+			for _, text := range tc.absent {
+				if strings.Contains(message, text) {
+					t.Errorf("message has %q: %s", text, message)
+				}
+			}
+			if strings.Contains(message, "Deletion warning events not fully visible") != tc.caveat {
+				t.Errorf("event coverage caveat want %v: %s", tc.caveat, message)
+			}
+		})
+	}
+}
+
+func TestReleasedPVIgnoresRecycleWarnings(t *testing.T) {
+	now := time.Now()
+	i := storageInput()
+	i.PersistentVolumes[0].Status.Phase = corev1.VolumeReleased
+	i.PersistentVolumes[0].Spec.PersistentVolumeReclaimPolicy = corev1.PersistentVolumeReclaimDelete
+	i.PersistentVolumes[0].Status.LastPhaseTransitionTime = ptr(metav1.NewTime(now.Add(-time.Minute)))
+	e := deleteFailure(now, "recycler pod failed")
+	e.Reason = "VolumeFailedRecycle"
+	i.Events = []*corev1.Event{e}
+	if got := latestPVReclaimWarnings(i.PersistentVolumes, i.Events, now); len(got) != 0 {
+		t.Fatalf("recycle warning read as a deletion failure: %+v", got)
 	}
 }
 
@@ -402,7 +505,7 @@ func TestPVDeletionEventIdentityAndTimes(t *testing.T) {
 			i.PersistentVolumes[0].Spec.PersistentVolumeReclaimPolicy = corev1.PersistentVolumeReclaimDelete
 			e := deleteFailure(now, "warning")
 			tc.change(e)
-			got := latestPVDeleteFailures(i.PersistentVolumes, []*corev1.Event{e}, now)
+			got := latestPVReclaimWarnings(i.PersistentVolumes, []*corev1.Event{e}, now)
 			if (got["disk-uid"].event != nil) != tc.want {
 				t.Fatalf("event identity/timestamp: %+v", got)
 			}

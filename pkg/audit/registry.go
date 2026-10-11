@@ -335,10 +335,10 @@ var CheckRegistry = map[string]CheckMeta{
 	},
 	"releasedPV": {
 		ID:          "releasedPV",
-		Title:       "Released persistent volume",
+		Title:       "Released or Failed persistent volume",
 		Category:    CategoryEfficiency,
-		Description: "A Released volume has been retained for more than 24 hours after claim deletion, deletion has not completed after one hour with reclaim policy Delete, or a recent VolumeFailedDelete warning shows deletion is failing. Phase-transition time is used when present; otherwise the threshold uses PV age. Capacity is provisioned storage, not a cost estimate.",
-		Remediation: "For Retain, confirm the data retention and recovery plan before reclaiming storage. For Delete failures, inspect the latest warning, storage controller, and provider permissions. Do not remove finalizers without understanding the cleanup they protect.",
+		Description: "A Released volume has been retained for more than 24 hours after claim deletion, deletion has not completed after one hour with reclaim policy Delete, or a recent VolumeFailedDelete warning shows deletion is failing. A Failed volume, whose deletion or recycling failed after claim deletion, is reported immediately. Phase-transition time is used when present; otherwise the threshold uses PV age. Capacity is provisioned storage, not a cost estimate.",
+		Remediation: "For Retain, confirm the data retention and recovery plan before reclaiming storage. For Delete failures and Failed volumes, inspect the latest warning or status message, storage controller, and provider permissions. Do not remove finalizers without understanding the cleanup they protect.",
 		References:  []Reference{refPV},
 	},
 

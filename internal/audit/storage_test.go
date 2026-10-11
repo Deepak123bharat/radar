@@ -124,10 +124,17 @@ func TestStorageRecentPVEventCoverage(t *testing.T) {
 		{"hidden warning", true, true, false, 0, 0, 0, true},
 		{"visible warning with partial coverage", true, true, true, 1, 0, 1, false},
 		{"complete empty events", true, false, false, 1, 1, 0, false},
+		{"Failed with unreadable events", false, false, false, 1, 0, 1, false},
+		{"Failed with hidden warning", true, true, false, 1, 0, 1, false},
+		{"Failed with visible warning", true, true, true, 1, 0, 1, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			phase := corev1.VolumeReleased
+			if strings.HasPrefix(tc.name, "Failed") {
+				phase = corev1.VolumeFailed
+			}
 			releasedAt := metav1.NewTime(time.Now().Add(-time.Minute))
-			pv := &corev1.PersistentVolume{ObjectMeta: metav1.ObjectMeta{Name: "disk", UID: "disk-uid"}, Spec: corev1.PersistentVolumeSpec{PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimDelete}, Status: corev1.PersistentVolumeStatus{Phase: corev1.VolumeReleased, LastPhaseTransitionTime: &releasedAt}}
+			pv := &corev1.PersistentVolume{ObjectMeta: metav1.ObjectMeta{Name: "disk", UID: "disk-uid"}, Spec: corev1.PersistentVolumeSpec{PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimDelete}, Status: corev1.PersistentVolumeStatus{Phase: phase, LastPhaseTransitionTime: &releasedAt}}
 			objects := []runtime.Object{pv}
 			if tc.restricted {
 				ns := "other"
@@ -149,6 +156,12 @@ func TestStorageRecentPVEventCoverage(t *testing.T) {
 			count := r.CheckCounts["releasedPV"]
 			if count.Evaluated != tc.evaluated || count.Passed != tc.passed || len(r.Findings) != tc.findings || slices.Contains(r.MissingInputs, "pv-deletion-events") != tc.missing {
 				t.Fatalf("evaluated=%d passed=%d findings=%+v missing=%v", count.Evaluated, count.Passed, r.Findings, r.MissingInputs)
+			}
+			if phase == corev1.VolumeFailed {
+				message := r.Findings[0].Message
+				if strings.Contains(message, "Latest reclaim warning") != tc.visible || !strings.Contains(message, "Deletion warning events not fully visible") {
+					t.Fatalf("Failed PV evidence or caveat wrong: %s", message)
+				}
 			}
 		})
 	}
@@ -186,7 +199,7 @@ func TestStoragePVInventoryUnavailableVersusOutOfScope(t *testing.T) {
 	}
 }
 
-func TestStorageOnlyCollectsDeletionEventsForReleasedDeletePV(t *testing.T) {
+func TestStorageOnlyCollectsReclaimEventsWhenNeeded(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		phase  corev1.PersistentVolumePhase
@@ -194,8 +207,11 @@ func TestStorageOnlyCollectsDeletionEventsForReleasedDeletePV(t *testing.T) {
 		want   bool
 	}{
 		{"Bound Delete", corev1.VolumeBound, corev1.PersistentVolumeReclaimDelete, false},
+		{"Available Delete", corev1.VolumeAvailable, corev1.PersistentVolumeReclaimDelete, false},
 		{"Released Retain", corev1.VolumeReleased, corev1.PersistentVolumeReclaimRetain, false},
 		{"Released Delete", corev1.VolumeReleased, corev1.PersistentVolumeReclaimDelete, true},
+		{"Failed Delete", corev1.VolumeFailed, corev1.PersistentVolumeReclaimDelete, true},
+		{"Failed Retain", corev1.VolumeFailed, corev1.PersistentVolumeReclaimRetain, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pv := &corev1.PersistentVolume{ObjectMeta: metav1.ObjectMeta{Name: "disk"}, Spec: corev1.PersistentVolumeSpec{PersistentVolumeReclaimPolicy: tc.policy}, Status: corev1.PersistentVolumeStatus{Phase: tc.phase}}
