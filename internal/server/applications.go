@@ -894,6 +894,20 @@ func collectAppWorkloads(ctx context.Context, cache *k8s.ResourceCache, namespac
 		if resource, ok := obj.(*unstructured.Unstructured); ok {
 			group = resourceid.GroupFromAPIVersion(resource.GetAPIVersion())
 		}
+		if overlay != nil {
+			signals := append([]subject.Signal{overlay.Winner}, overlay.Conflicts...)
+			valid := signals[:0]
+			for _, signal := range signals {
+				if g.idx.AcceptsManagerHint(topology.ResourceRef{Kind: signal.Ref.Kind, Group: signal.Ref.Group, Namespace: signal.Ref.Namespace, Name: signal.Ref.Name}, topology.ResourceRef{Kind: kind, Group: group, Namespace: ns, Name: name}) {
+					valid = append(valid, signal)
+				}
+			}
+			if len(valid) == 0 || valid[0].Tier > subject.TierAppName {
+				overlay = nil
+			} else {
+				overlay = &subject.AppOverlay{Winner: valid[0], Conflicts: valid[1:]}
+			}
+		}
 		rootKey, rootKind, rootGroup, rootIdentity := g.rootOf(group, kind, ns, name)
 		rels := g.relationshipsFor(kind, ns, name, obj)
 		addon, why := packages.ClassifyAddon(lbls["helm.sh/chart"], lbls["app.kubernetes.io/name"], lbls["app.kubernetes.io/part-of"], name, lbls["addonmanager.kubernetes.io/mode"], image)

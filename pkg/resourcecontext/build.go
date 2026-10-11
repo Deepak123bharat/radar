@@ -196,7 +196,7 @@ func Build(ctx context.Context, obj runtime.Object, opts Options) *ResourceConte
 		managedBy = rel.ManagedBy
 	} else if rel == nil {
 		if m, ok := obj.(metav1.Object); ok {
-			managedBy = topology.SynthesizeManagedBy(m, ident.Kind, ident.Namespace, ident.Name, nil, nil, nil)
+			managedBy = topology.SynthesizeManagedBy(m, ident.Kind, ident.Namespace, ident.Name, opts.Topology, opts.DynamicProv, opts.RelIndex)
 		}
 	}
 	if len(managedBy) > 0 {
@@ -243,6 +243,14 @@ func Build(ctx context.Context, obj runtime.Object, opts Options) *ResourceConte
 		exposes := append(exposedBy, backends...)
 		rc.Exposes = filterRefs(ctx, opts.AccessChecker, toContextRefs(exposes), "exposes", omitted)
 
+		for _, ref := range rel.PolicySelectionUnknownSources {
+			candidate := &ContextRef{Kind: ref.Kind, Group: ref.Group, Namespace: ref.Namespace, Name: ref.Name}
+			if checkRef(ctx, opts.AccessChecker, candidate) {
+				rc.PolicySelectionUnknown = true
+			} else {
+				omitted.add("selectedBy", OmittedRBACDenied)
+			}
+		}
 		selected := make([]topology.ResourceRef, 0, len(rel.PDBs)+len(rel.NetworkPolicies))
 		selected = append(selected, rel.PDBs...)
 		selected = append(selected, rel.NetworkPolicies...)

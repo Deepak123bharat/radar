@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"github.com/skyhook-io/radar/pkg/netpol"
 	"net/http"
 	"net/url"
 	"strings"
@@ -139,7 +140,7 @@ func TestCiliumSelectorPreservesConflictingSourceRequirements(t *testing.T) {
 			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Labels: map[string]string{"app": app}}}
 			// A map overwrite's winner varies with iteration order.
 			for range 32 {
-				matches, decided, why := ciliumSelectorMatches(selector, ciliumIdentityFor(pod, nil))
+				matches, decided, why := netpol.CompileCiliumSelector(selector).Matches(netpol.CiliumIdentityFor(pod, nil))
 				if matches || !decided || why != "" {
 					t.Fatalf("conflicting selector on %s: matches=%v decided=%v why=%q", app, matches, decided, why)
 				}

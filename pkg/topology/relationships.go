@@ -19,9 +19,11 @@ import (
 // Build once via IndexByResource(topo). Pass to GetRelationshipsWithIndex on
 // each call. Lookups are read-only and goroutine-safe; mutation is not.
 type RelationshipsIndex struct {
-	byNodeID           map[string]*nodeEdgeSlots
-	nodesByID          map[string]*Node
-	nodesByResourceKey map[string]*Node
+	byNodeID                  map[string]*nodeEdgeSlots
+	nodesByID                 map[string]*Node
+	nodesByResourceKey        map[string]*Node
+	allPodPoliciesByNamespace map[string][]*Node
+	coveragePoliciesByNodeID  map[string][]*Node
 }
 
 type nodeEdgeSlots struct {
@@ -34,19 +36,36 @@ type nodeEdgeSlots struct {
 func IndexByResource(topo *Topology) *RelationshipsIndex {
 	if topo == nil {
 		return &RelationshipsIndex{
-			byNodeID:           map[string]*nodeEdgeSlots{},
-			nodesByID:          map[string]*Node{},
-			nodesByResourceKey: map[string]*Node{},
+			byNodeID:                  map[string]*nodeEdgeSlots{},
+			nodesByID:                 map[string]*Node{},
+			nodesByResourceKey:        map[string]*Node{},
+			allPodPoliciesByNamespace: map[string][]*Node{},
+			coveragePoliciesByNodeID:  map[string][]*Node{},
 		}
 	}
 	idx := &RelationshipsIndex{
-		byNodeID:           make(map[string]*nodeEdgeSlots, len(topo.Nodes)),
-		nodesByID:          make(map[string]*Node, len(topo.Nodes)),
-		nodesByResourceKey: make(map[string]*Node, len(topo.Nodes)),
+		byNodeID:                  make(map[string]*nodeEdgeSlots, len(topo.Nodes)),
+		nodesByID:                 make(map[string]*Node, len(topo.Nodes)),
+		nodesByResourceKey:        make(map[string]*Node, len(topo.Nodes)),
+		allPodPoliciesByNamespace: map[string][]*Node{},
+		coveragePoliciesByNodeID:  map[string][]*Node{},
 	}
 	for i := range topo.Nodes {
 		node := &topo.Nodes[i]
 		idx.nodesByID[node.ID] = node
+		switch node.Kind {
+		case KindNetworkPolicy, KindCiliumNetworkPolicy, KindCiliumClusterwideNetworkPolicy:
+			if node.Data["matchesAllPods"] == true {
+				ns, _ := node.Data["namespace"].(string)
+				idx.allPodPoliciesByNamespace[ns] = append(idx.allPodPoliciesByNamespace[ns], node)
+			}
+		case KindCalicoNetworkPolicy, KindCalicoGlobalNetworkPolicy, KindCalicoStagedNetworkPolicy, KindCalicoStagedGlobalNetworkPolicy, KindCalicoStagedKubernetesNetworkPolicy:
+			if ids, ok := node.Data["policyCoverageWorkloads"].([]string); ok {
+				for _, id := range ids {
+					idx.coveragePoliciesByNodeID[id] = append(idx.coveragePoliciesByNodeID[id], node)
+				}
+			}
+		}
 		for _, key := range nodeResourceKeys(node) {
 			idx.nodesByResourceKey[key] = node
 		}
@@ -106,8 +125,9 @@ func edgesForNode(topo *Topology, idx *RelationshipsIndex, nodeID string) (incom
 	return incoming, outgoing
 }
 
-// GetCascadeDeletePreview walks topology management edges to approximate the
-// resources Kubernetes may garbage-collect with root.
+// GetCascadeDeletePreview walks topology management edges to identify related
+// resources deletion may affect. Edges include GitOps attribution and sources;
+// this is not a prediction of Kubernetes garbage collection or controller pruning.
 func GetCascadeDeletePreview(root ResourceRef, topo *Topology, dp DynamicProvider) *CascadeDeletePreview {
 	preview := &CascadeDeletePreview{
 		Root:       root,
@@ -351,6 +371,15 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 	}
 
 	rel := &Relationships{}
+	if node := nodeByID[nodeID]; node != nil {
+		rel.IstioServiceDomain, _ = node.Data["istioServiceDomain"].(string)
+		rel.PolicySelectionUnknown, _ = node.Data["policySelectionUnknown"].(bool)
+		for _, id := range node.policySelectionUnknownSources {
+			if ref := refForNodeID(id); ref != nil {
+				rel.PolicySelectionUnknownSources = append(rel.PolicySelectionUnknownSources, *ref)
+			}
+		}
+	}
 	kindLower := strings.ToLower(kind)
 
 	for _, edge := range outgoingEdges {
@@ -500,6 +529,29 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 				}
 			default:
 				rel.ConfigRefs = append(rel.ConfigRefs, *ref)
+			}
+		}
+	}
+
+	// Empty selectors omit graph edges for readability but are still selecting policies.
+	if node := nodeByID[nodeID]; node != nil && (node.Kind == KindDeployment || node.Kind == KindStatefulSet || node.Kind == KindDaemonSet) {
+		for _, ns := range []string{namespace, ""} {
+			for _, policy := range lookupIndex.allPodPoliciesByNamespace[ns] {
+				if ref := resourceRefForNode(policy, dp); ref != nil {
+					rel.NetworkPolicies = appendResourceRef(rel.NetworkPolicies, *ref)
+				}
+			}
+		}
+		for _, policy := range lookupIndex.coveragePoliciesByNodeID[nodeID] {
+			if ref := resourceRefForNode(policy, dp); ref != nil {
+				selected := &rel.NetworkPolicies
+				for _, definition := range calicoPolicyDefinitions {
+					if definition.nodeKind == policy.Kind && definition.staged {
+						selected = &rel.StagedPolicies
+						break
+					}
+				}
+				*selected = appendResourceRef(*selected, *ref)
 			}
 		}
 	}
@@ -706,7 +758,11 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 	if m, ok := queriedObj.(metav1.Object); ok {
 		managedByMeta = m
 	}
-	if mb := synthesizeManagedByFromNode(managedByMeta, nodeID, topo, dp, idx); len(mb) > 0 {
+	targetKind := resourceKind
+	if objectKind != "" {
+		targetKind = objectKind
+	}
+	if mb := synthesizeManagedByFromNode(managedByMeta, nodeID, ResourceRef{Kind: targetKind, Group: resourceGroup, Namespace: namespace, Name: name}, topo, dp, lookupIndex); len(mb) > 0 {
 		rel.ManagedBy = mb
 	}
 
@@ -721,7 +777,7 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 		len(rel.Ingresses) == 0 && len(rel.Gateways) == 0 && len(rel.Routes) == 0 &&
 		len(rel.ConfigRefs) == 0 && len(rel.Consumers) == 0 && len(rel.Scalers) == 0 &&
 		len(rel.StorageRefs) == 0 && len(rel.Dependencies) == 0 && len(rel.Dependents) == 0 &&
-		len(rel.PDBs) == 0 && len(rel.NetworkPolicies) == 0 &&
+		len(rel.PDBs) == 0 && len(rel.NetworkPolicies) == 0 && !rel.PolicySelectionUnknown && rel.IstioServiceDomain == "" &&
 		len(rel.Monitors) == 0 && len(rel.MonitorTargets) == 0 && len(rel.Backends) == 0 && len(rel.RoutedFrom) == 0 && len(rel.Protects) == 0 && len(rel.HealthChecks) == 0 && len(rel.StagedPolicies) == 0 && rel.ScaleTarget == nil && len(rel.Pods) == 0 &&
 		rel.ServiceAccount == nil && rel.Node == nil && len(rel.ResourceClaims) == 0 && len(rel.ManagedBy) == 0 {
 		return nil
@@ -789,7 +845,12 @@ func resourceRefForNode(node *Node, dp DynamicProvider) *ResourceRef {
 	}
 	ref := parseNodeID(node.ID, dp)
 	if ref == nil {
-		return nil
+		// Cluster-scoped graph nodes can use kind/name IDs. Their observed
+		// metadata still carries the complete Kubernetes identity.
+		if node.Kind == KindPodGroup || node.Name == "" {
+			return nil
+		}
+		ref = &ResourceRef{Name: node.Name, Namespace: nodeNamespaceFromData(node)}
 	}
 	ref.Kind = KubernetesKindForNode(node)
 	ref.Group = nodeGroup(node)

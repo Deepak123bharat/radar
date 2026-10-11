@@ -23,7 +23,7 @@ func TestFluxLabelsOverrideHelmInstanceAndCrossNamespaces(t *testing.T) {
 		{"missingnamespace", "flux", map[string]string{fluxHelmNameLabel: "app", "app.kubernetes.io/instance": "app"}, false},
 		{"missingname", "flux", map[string]string{fluxHelmNSLabel: "flux", "app.kubernetes.io/instance": "app"}, false},
 		{"kustomize", "flux", map[string]string{fluxKustomizeNameLabel: "other", fluxKustomizeNSLabel: "flux", "app.kubernetes.io/instance": "app"}, false},
-		{"fallbacksame", "flux", map[string]string{"app.kubernetes.io/instance": "app"}, true},
+		{"fallbacksame", "flux", map[string]string{"app.kubernetes.io/instance": "app"}, false},
 		{"fallbackcross", "prod", map[string]string{"app.kubernetes.io/instance": "app"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
