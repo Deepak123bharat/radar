@@ -6783,21 +6783,17 @@ export function debugNamespaceLog(
 }
 
 /**
- * After a namespace switch lands, refetch what may have read the old pick.
- * "All namespaces" is sent as no namespaces param, which the server reads as
- * the stored pick, so a request sent while the switch was in flight used the
- * old one. It is cancelled first: invalidating would otherwise reuse a first
- * fetch still in flight instead of sending a new one.
+ * A cache-scoped switch rebuilds the watched inventory. View-filter switches
+ * use namespace-specific query keys and do not invalidate the whole client.
  */
 export async function refreshAfterNamespaceSwitch(
   queryClient: QueryClient,
   scope: Pick<NamespaceScope, "cacheScoped" | "actives">,
 ): Promise<void> {
-  if (!scope.cacheScoped && scope.actives.length > 0) return;
+  if (!scope.cacheScoped) return;
   const notScope = (query: { queryKey: readonly unknown[] }) =>
     query.queryKey[0] !== "namespace-scope";
-  await queryClient.cancelQueries({ predicate: notScope });
-  await queryClient.invalidateQueries({ predicate: notScope });
+  await queryClient.invalidateQueries({ predicate: notScope }, { cancelRefetch: false });
 }
 
 export function useSetActiveNamespace() {

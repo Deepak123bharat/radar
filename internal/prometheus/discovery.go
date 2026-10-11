@@ -20,15 +20,7 @@ import (
 
 var ErrPrometheusNotFound = errors.New("no Prometheus service found in cluster")
 
-// errPrometheusUnreachable is ErrPrometheusNotFound for the case where
-// discovery enumerated a candidate and could not reach it, so every errors.Is
-// caller keeps its answer while Availability can tell an unreachable
-// installation from a cluster that has none. Its message must not claim
-// nothing was found.
-var errPrometheusUnreachable error = &prometheusUnreachableError{
-	msg:   "No working Prometheus endpoint found.\nCandidate services could not be reached",
-	cause: ErrPrometheusNotFound,
-}
+var errPrometheusUnreachable = errors.New("No working Prometheus endpoint found.\nCandidate services could not be reached")
 
 // prometheusUnreachableError carries a complete sentence for an unreachable
 // installation. Unlike fmt's %w it does not append the wrapped sentinel's

@@ -1038,7 +1038,7 @@ func handlePVCUsage(w http.ResponseWriter, r *http.Request) {
 
 	// A claim of the same name in another cluster sharing this Prometheus
 	// would otherwise be merged in by the max() below.
-	matchers, _, err := resolveScope(r.Context(), namespace, pvcScopeProbe(namespace, []string{name}, 0), nil, k8s.GetResourceCache())
+	matchers, _, err := client.resolveScope(r.Context(), namespace, pvcScopeProbe(namespace, []string{name}, 0), nil, k8s.GetResourceCache())
 	if failed, bad := pvcScopeFailure(err); bad {
 		if failed.Status == PVCUsageQueryFailed {
 			errorlog.Record("prometheus", "warning", "pvc usage scope check failed for %s/%s: %v", namespace, name, err)

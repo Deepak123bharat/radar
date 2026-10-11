@@ -337,3 +337,79 @@ func TestHistoricalPartitionSurvivesLeaderCancellation(t *testing.T) {
 		t.Fatalf("leader cancellation poisoned shared proof: %+v %v", got, err)
 	}
 }
+
+func TestHistoricalPartitionCachesEmptyProofBriefly(t *testing.T) {
+	var probes atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if r.Form.Get("query") == "up" {
+			_, _ = w.Write([]byte(authProbeBody))
+			return
+		}
+		if strings.Contains(r.Form.Get("query"), "kube_pod_info") {
+			probes.Add(1)
+		}
+		_, _ = w.Write(attributionEvidence(nil, ""))
+	}))
+	defer upstream.Close()
+	c := &Client{baseURL: upstream.URL, httpClient: upstream.Client()}
+	scope := PodScope{Namespace: "shop", Identities: []prom.WorkloadPodIdentity{{Name: "api-0", UID: "uid"}}}
+	for range 2 {
+		config, err := c.historicalClusterScope(context.Background(), scope, nil)
+		if err != nil || len(config.ClusterLabels) != 0 {
+			t.Fatalf("empty proof=%+v err=%v", config, err)
+		}
+	}
+	if probes.Load() != 1 || c.workloadPartition == nil || time.Until(c.workloadPartition.expires) > 30*time.Second {
+		t.Fatalf("negative proof not cached briefly: probes=%d memo=%+v", probes.Load(), c.workloadPartition)
+	}
+	c.workloadPartition.expires = time.Now().Add(-time.Second)
+	if _, err := c.historicalClusterScope(context.Background(), scope, nil); err != nil {
+		t.Fatal(err)
+	}
+	if probes.Load() != 2 {
+		t.Fatalf("expired proof not retried: %d probes", probes.Load())
+	}
+	c.cancelWorkloadAttributionsLocked()
+	if c.workloadPartition != nil {
+		t.Fatal("connection reset retained negative proof")
+	}
+}
+
+func TestHistoricalPartitionNegativeMemoStaysInNamespace(t *testing.T) {
+	var probes atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		query := r.Form.Get("query")
+		if query == "up" {
+			_, _ = w.Write([]byte(authProbeBody))
+			return
+		}
+		probes.Add(1)
+		var rows []prom.Series
+		if strings.Contains(query, `namespace="other"`) {
+			rows = []prom.Series{{Labels: map[string]string{"namespace": "other", "pod": "api-0", "uid": "uid", "cluster": "west"}}}
+		}
+		_, _ = w.Write(attributionEvidence(rows, ""))
+	}))
+	defer upstream.Close()
+	c := &Client{baseURL: upstream.URL, httpClient: upstream.Client()}
+	for _, namespace := range []string{"empty", "other", "empty"} {
+		got, err := c.historicalClusterScope(context.Background(), PodScope{Namespace: namespace, Identities: []prom.WorkloadPodIdentity{{Name: "api-0", UID: "uid"}}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if probes.Load() == 1 && len(got.ClusterLabels) != 0 {
+			t.Fatalf("empty namespace gained a proof: %+v", got)
+		}
+		if namespace == "other" && got.ClusterLabels["cluster"] != "west" {
+			t.Fatalf("negative memo suppressed another namespace's proof: %+v", got)
+		}
+		if namespace == "empty" && probes.Load() == 2 && got.ClusterLabels["cluster"] != "west" {
+			t.Fatalf("positive proof not reused across namespaces: %+v", got)
+		}
+	}
+	if probes.Load() != 2 {
+		t.Fatalf("want two namespace probes with connection-wide positive reuse, got %d", probes.Load())
+	}
+}

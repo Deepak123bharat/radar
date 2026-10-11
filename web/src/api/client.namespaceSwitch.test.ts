@@ -53,10 +53,8 @@ describe("reconcileNamespaceSwitch", () => {
   });
 });
 
-// A first fetch for "All namespaces" can leave before the switch lands and
-// read the old pick on the server; the refresh must send a new request.
 describe('refreshAfterNamespaceSwitch', () => {
-  it('replaces a first fetch still in flight when switching to All', async () => {
+  it('preserves in-flight requests and cached data when switching to All', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     let calls = 0
     const resolvers: ((v: string) => void)[] = []
@@ -71,13 +69,18 @@ describe('refreshAfterNamespaceSwitch', () => {
     await Promise.resolve()
     expect(calls).toBe(1)
 
+    const cancel = vi.spyOn(client, 'cancelQueries')
+    const invalidate = vi.spyOn(client, 'invalidateQueries')
+    client.setQueryData(['capabilities'], 'unchanged')
     const done = refreshAfterNamespaceSwitch(client, { cacheScoped: false, actives: [] })
     await new Promise((r) => setTimeout(r, 0))
-    expect(calls).toBe(2)
-    resolvers[0]('old pick')
-    resolvers[1]('all namespaces')
+    expect(calls).toBe(1)
+    expect(cancel).not.toHaveBeenCalled()
+    expect(invalidate).not.toHaveBeenCalled()
+    expect(client.getQueryState(['capabilities'])?.isInvalidated).toBe(false)
+    resolvers[0]('original request')
     await done
-    expect(client.getQueryData(['fleet', ''])).toBe('all namespaces')
+    await vi.waitFor(() => expect(client.getQueryData(['fleet', ''])).toBe('original request'))
     unsubscribe()
   })
 
@@ -87,4 +90,18 @@ describe('refreshAfterNamespaceSwitch', () => {
     await refreshAfterNamespaceSwitch(client, { cacheScoped: false, actives: ['db'] })
     expect(client.getQueryState(['fleet', 'db'])?.isInvalidated).toBe(false)
   })
+})
+
+
+it('invalidates inventory after a cache-scoped switch without cancelling requests or the scope query', async () => {
+  const client = new QueryClient()
+  client.setQueryData(['resource', 'pods', 'db', 'app'], 'pod')
+  client.setQueryData(['namespace-scope'], 'scope')
+  const cancel = vi.spyOn(client, 'cancelQueries')
+  const invalidate = vi.spyOn(client, 'invalidateQueries')
+  await refreshAfterNamespaceSwitch(client, { cacheScoped: true, actives: ['db'] })
+  expect(cancel).not.toHaveBeenCalled()
+  expect(invalidate.mock.calls[0][1]).toEqual({ cancelRefetch: false })
+  expect(client.getQueryState(['resource', 'pods', 'db', 'app'])?.isInvalidated).toBe(true)
+  expect(client.getQueryState(['namespace-scope'])?.isInvalidated).toBe(false)
 })

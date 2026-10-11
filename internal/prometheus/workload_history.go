@@ -22,6 +22,7 @@ type workloadPartitionMemo struct {
 	generation uint64
 	expires    time.Time
 	scope      prom.WorkloadMetricsScope
+	namespace  string
 }
 
 type workloadHistoryPlan struct {
@@ -41,7 +42,7 @@ func (c *Client) historicalClusterScope(ctx context.Context, scope PodScope, cac
 	c.mu.RLock()
 	generation := c.discoveryGen
 	epoch := c.connectionEpoch
-	if memo := c.workloadPartition; memo != nil && memo.generation == generation && time.Now().Before(memo.expires) && !c.retired {
+	if memo := c.workloadPartition; memo != nil && memo.generation == generation && time.Now().Before(memo.expires) && !c.retired && (len(memo.scope.ClusterLabels) > 0 || memo.namespace == scope.Namespace) {
 		config := memo.scope
 		c.mu.RUnlock()
 		return config, nil
@@ -90,9 +91,11 @@ func (c *Client) historicalClusterScope(ctx context.Context, scope PodScope, cac
 		if c.discoveryGen != generation || c.connectionEpoch != epoch || c.retired {
 			return nil, fmt.Errorf("metrics connection changed")
 		}
-		if len(config.ClusterLabels) > 0 {
-			c.workloadPartition = &workloadPartitionMemo{generation: generation, expires: time.Now().Add(5 * time.Minute), scope: config}
+		ttl := 5 * time.Minute
+		if len(config.ClusterLabels) == 0 {
+			ttl = 30 * time.Second
 		}
+		c.workloadPartition = &workloadPartitionMemo{generation: generation, expires: time.Now().Add(ttl), scope: config, namespace: scope.Namespace}
 		return config, nil
 	})
 	select {

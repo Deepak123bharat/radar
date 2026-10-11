@@ -110,10 +110,6 @@ func ClaimSelectors(namespace string, claims []string) []string {
 // matchers: labels merely seen on the series are not identity (the CNPG
 // exporter's own `cluster` label is the database cluster's name).
 // With no anchors, a cache lets the proof use the namespace's current Pods.
-func resolveScope(ctx context.Context, namespace string, probe scopeProbe, anchors []prom.WorkloadPodIdentity, cache *k8s.ResourceCache) (string, SeriesIsolation, error) {
-	return GetClient().resolveScope(ctx, namespace, probe, anchors, cache)
-}
-
 func (client *Client) resolveScope(ctx context.Context, namespace string, probe scopeProbe, anchors []prom.WorkloadPodIdentity, cache *k8s.ResourceCache) (string, SeriesIsolation, error) {
 	if client == nil {
 		return "", SeriesIsolation{}, errors.New("Prometheus client not initialized")
@@ -168,7 +164,12 @@ func decideScope(ctx context.Context, q seriesQuerier, probe scopeProbe, verifie
 	// more than one set of partition labels over the range may be two
 	// clusters' objects of the same name, so that is refused.
 	for _, sel := range probe.selectors {
-		res, err := q.Query(ctx, "max(count by ("+probe.key+") (count by ("+probe.key+","+strings.Join(partitionLabels, ",")+") ("+probe.over(sel)+")))")
+		identities := "count by (" + probe.key + "," + strings.Join(partitionLabels, ",") + ") (" + probe.over(sel) + ")"
+		if probe.key == "persistentvolumeclaim" {
+			// A second scrape without cluster labels is not a second identity.
+			identities += " unless on (" + strings.Join(partitionLabels, ",") + ") vector(1)"
+		}
+		res, err := q.Query(ctx, "max(count by ("+probe.key+") ("+identities+"))")
 		if err != nil {
 			return "", SeriesIsolation{}, err
 		}

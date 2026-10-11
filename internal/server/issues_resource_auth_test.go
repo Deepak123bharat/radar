@@ -243,3 +243,57 @@ func TestResourceIssuesCountWithheldWithAndWithoutTheGroupParam(t *testing.T) {
 		t.Fatalf("bare path: %v, %d issues", err, len(bare))
 	}
 }
+
+func TestResourceIssuesAcceptExactNamespaceListGrant(t *testing.T) {
+	fakeSARServer(t, func(a authv1.ResourceAttributes) bool {
+		return a.Group == "apps" && a.Resource == "deployments" && a.Namespace == "broken" && a.Verb == "list"
+	})
+	s := newAuthServer(auth.Config{Mode: "proxy"})
+	s.permCache.Set("pg-user", nil, &auth.UserPermissions{AllowedNamespaces: nil})
+	w := resourceIssuesRequest(t, s, "/api/issues/resource/Deployment/broken/stuck-app?group=apps&coverage=1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("list grant: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var response ResourceIssuesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Issues) == 0 {
+		t.Fatal("list-authorized caller lost Deployment issues")
+	}
+	r := requestWithUser(http.MethodGet, "/", &auth.User{Username: "pg-user"})
+	for _, ref := range []issues.Ref{
+		{Kind: "Deployment", Group: "apps", Namespace: "other", Name: "app"},
+		{Kind: "StatefulSet", Group: "apps", Namespace: "broken", Name: "db"},
+		{Kind: "Pod", Namespace: "broken", Name: "app"},
+	} {
+		if s.canGetIssueRef(r, ref) {
+			t.Fatalf("list grant leaked to %+v", ref)
+		}
+	}
+	in := []issues.Issue{{Kind: "Deployment", Group: "apps", Namespace: "broken", Name: "stuck-app", Members: []issues.Ref{{Kind: "Pod", Namespace: "broken", Name: "p"}}}}
+	out, withheld := s.withholdUnreadableIssueRefs(r, in)
+	if len(out) != 1 || withheld.Members != 1 || !out[0].MembersTruncated {
+		t.Fatalf("list-only rows must still hide denied members: %+v %+v", out, withheld)
+	}
+}
+
+func TestResourceIssuesUnresolvedKindUsesPreflight(t *testing.T) {
+	s := newAuthServer(auth.Config{Mode: "proxy"})
+	s.permCache.Set("pg-user", nil, &auth.UserPermissions{AllowedNamespaces: []string{"broken"}})
+	w := resourceIssuesRequest(t, s, "/api/issues/resource/NewWidget/broken/new?group=widgets.example.io&coverage=1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("unresolved kind: status=%d body=%s", w.Code, w.Body.String())
+	}
+	if w := resourceIssuesRequest(t, s, "/api/issues/resource/NewWidget/denied/new?group=widgets.example.io"); w.Code != http.StatusForbidden {
+		t.Fatalf("preflight deny: status=%d body=%s", w.Code, w.Body.String())
+	}
+	r := requestWithUser(http.MethodGet, "/", &auth.User{Username: "pg-user"})
+	out, withheld := s.withholdUnreadableIssueRefs(r, []issues.Issue{
+		{Kind: "NewWidget", Group: "widgets.example.io", Namespace: "broken", Name: "new"},
+		{Kind: "NewWidget", Group: "widgets.example.io", Namespace: "denied", Name: "new"},
+	})
+	if len(out) != 1 || withheld.Issues != 1 {
+		t.Fatalf("fallback bypassed preflight: %+v %+v", out, withheld)
+	}
+}

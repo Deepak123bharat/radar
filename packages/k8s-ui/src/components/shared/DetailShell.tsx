@@ -92,7 +92,7 @@ export function DetailShell<TId extends string = string>({
 
         {/* Tabs (left) + scope controls / actions (right) */}
         <div className={clsx('flex items-center', compactHeader ? 'px-0' : 'border-t border-theme-border px-6')}>
-          <div ref={stripRef} className={clsx('flex min-w-0 flex-1 overflow-x-auto', compact ? 'gap-0' : 'gap-1')} role="tablist">
+          <div ref={stripRef} className={clsx('flex min-w-0 flex-auto overflow-x-auto', compact ? 'gap-0' : 'gap-1')} role="tablist">
             {visibleTabs.map((t) => (
               <DetailShellTabButton key={t.id} active={activeTab === t.id} compact={compact} onClick={() => onTabChange(t.id)}>
                 {!compact && t.icon}
@@ -102,7 +102,7 @@ export function DetailShell<TId extends string = string>({
             ))}
           </div>
           {(scopeControls || tabStripEnd) && (
-            <div className="ml-auto flex shrink-0 items-center gap-2 pl-2">
+            <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 pl-2">
               {scopeControls}
               {tabStripEnd}
             </div>
@@ -176,7 +176,7 @@ function DetailShellTabButton({ active, compact, onClick, children }: { active: 
       aria-selected={active}
       onClick={onClick}
       className={clsx(
-        'flex shrink-0 items-center gap-1.5 whitespace-nowrap py-2 text-sm font-medium border-b-2 transition-colors',
+        'flex shrink-0 items-center gap-1.5 whitespace-nowrap py-2 text-sm font-medium border-b-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent',
         compact ? 'px-2' : 'px-3',
         active
           ? 'text-theme-text-primary border-skyhook-500'

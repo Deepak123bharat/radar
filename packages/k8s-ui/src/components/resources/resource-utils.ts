@@ -97,20 +97,24 @@ export function summarizeSchedulerMessage(message?: string, options: { plain?: b
   m = m.replace(/\.\s*$/, '').trim()
   if (!options.plain) return m
   const total = /0\/(\d+) nodes (?:are )?available/.exec(message)?.[1]
-  const clauses: string[] = []
   const causes: [RegExp, string][] = [
-    [/(\d+) (?:Too many pods|(?:node\(s\) )?insufficient pods)/i, 'have reached their Pod limit'],
-    [/(\d+) (?:node\(s\) )?Insufficient cpu/i, 'do not have enough CPU'],
-    [/(\d+) (?:node\(s\) )?Insufficient memory/i, 'do not have enough memory'],
-    [/(\d+) node\(s\) didn.t match Pod.s node affinity\/selector/i, 'do not match the Pod’s node affinity or selector'],
-    [/(\d+) node\(s\) had untolerated taint/i, 'have taints the Pod does not tolerate'],
+    [/^(\d+) (?:Too many pods|(?:node\(s\) )?insufficient pods)(?: \(0\/\d+ nodes available\))?$/i, 'have reached their Pod limit'],
+    [/^(\d+) (?:node\(s\) )?Insufficient cpu(?: \(0\/\d+ nodes available\))?$/i, 'do not have enough CPU'],
+    [/^(\d+) (?:node\(s\) )?Insufficient memory(?: \(0\/\d+ nodes available\))?$/i, 'do not have enough memory'],
+    [/^(\d+) node\(s\) (?:didn.t match Pod.s node affinity\/selector|node affinity\/selector mismatch)(?: \(0\/\d+ nodes available\))?$/i, 'do not match the Pod’s node affinity or selector'],
+    [/^(\d+) node\(s\) (?:had )?untolerated taint(?: \{[^}]*\}| [^\s]+)?(?: \(0\/\d+ nodes available\))?$/i, 'have taints the Pod does not tolerate'],
+    [/^(\d+) node\(s\) (?:had )?volume node[- ]affinity conflict(?: \(0\/\d+ nodes available\))?$/i, 'do not match the volume’s node affinity'],
   ]
-  for (const [pattern, cause] of causes) {
-    const count = pattern.exec(m)?.[1]
-    if (count) clauses.push(`${count === '1' ? '1 node' : count === total && count === '2' ? 'both nodes' : count === total ? 'all nodes' : `${count} nodes`} ${count === '1' ? cause.replace(/^have /, 'has ').replace(/^do /, 'does ') : cause}`)
-  }
-  if (/unbound immediate PersistentVolumeClaims/i.test(m)) clauses.push('a required volume claim is not bound')
-  return clauses.length ? clauses.join('; ') : m
+  // Scheduler taints and resolved node labels can contain comma-separated values.
+  return m.split(/[,;](?![^\[\]{}]*[\]}])/).map((part) => {
+    const clause = part.trim()
+    for (const [pattern, cause] of causes) {
+      const count = pattern.exec(clause)?.[1]
+      if (count) return `${count === '1' ? '1 node' : count === total && count === '2' ? 'both nodes' : count === total ? 'all nodes' : `${count} nodes`} ${count === '1' ? cause.replace(/^have /, 'has ').replace(/^do /, 'does ') : cause}`
+    }
+    if (/^(?:pod has )?unbound (?:immediate )?PersistentVolumeClaims?(?:\s*\(0\/\d+ nodes available\))?$/i.test(clause)) return 'a required volume claim is not bound'
+    return clause
+  }).join('; ')
 }
 
 /** Tailwind classes for severity dot indicators (used in tooltips and alert banners) */

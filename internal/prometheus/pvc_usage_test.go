@@ -160,3 +160,98 @@ func TestPVCUsageHandlerRefusesMergedClusters(t *testing.T) {
 		t.Fatalf("response = %+v, want ambiguous_scope without a value", response)
 	}
 }
+
+func TestPVCUsageSingleClusterScrapes(t *testing.T) {
+	for _, tc := range []struct {
+		name                           string
+		labelledIdentities, unlabelled int
+		status                         string
+	}{
+		{"unlabelled only", 0, 1, PVCUsageAvailable},
+		{"one identity", 1, 0, PVCUsageAvailable},
+		{"one identity and unlabelled scrape", 1, 1, PVCUsageAvailable},
+		{"two identities", 2, 0, PVCUsageAmbiguous},
+		{"two identities and unlabelled scrape", 2, 1, PVCUsageAmbiguous},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				query := r.URL.Query().Get("query")
+				if query == "up" {
+					_, _ = w.Write([]byte(authProbeBody))
+					return
+				}
+				value := 1024
+				if strings.HasPrefix(query, "max(count by (") {
+					value = tc.labelledIdentities + tc.unlabelled
+					if strings.Contains(query, "unless on (cluster,cluster_name,k8s_cluster_name,kubernetes_cluster,cluster_id) vector(1)") {
+						value = tc.labelledIdentities
+					}
+				} else if strings.Contains(query, "used_bytes") {
+					value = 256
+				}
+				_, _ = fmt.Fprintf(w, `{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1700000000,"%d"]}]}}`, value)
+			}))
+			defer upstream.Close()
+			Initialize(nil, nil, "pvc-test")
+			SetManualURL(upstream.URL)
+			SetAuthGate(func(*http.Request, string, string, string, string) bool { return true })
+			defer func() { SetAuthGate(nil); Reset(); Initialize(nil, nil, "") }()
+			w := httptest.NewRecorder()
+			metricsRouter().ServeHTTP(w, httptest.NewRequest("GET", "/prometheus/pvc/demo/disk", nil))
+			var response PVCUsageResponse
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Status != tc.status {
+				t.Fatalf("response=%+v, want %s", response, tc.status)
+			}
+			if tc.status == PVCUsageAvailable && (!response.HasData || response.Used != 256 || response.Capacity != 1024 || response.Ratio != .25) {
+				t.Fatalf("single-cluster value lost: %+v", response)
+			}
+			if tc.status == PVCUsageAmbiguous && (response.HasData || response.Used != 0 || response.Capacity != 0) {
+				t.Fatalf("ambiguous value exposed: %+v", response)
+			}
+		})
+	}
+}
+
+func TestPVCUsageHandlerKeepsCapturedClient(t *testing.T) {
+	replacementCalls := 0
+	replacement := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		replacementCalls++
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1700000000,"2"]}]}}`))
+	}))
+	defer replacement.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query().Get("query")
+		if query == "up" {
+			_, _ = w.Write([]byte(authProbeBody))
+			return
+		}
+		value := 1024
+		if strings.HasPrefix(query, "max(count by (") {
+			value = 1
+		} else if strings.Contains(query, "used_bytes") {
+			value = 256
+		}
+		_, _ = fmt.Fprintf(w, `{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1700000000,"%d"]}]}}`, value)
+	}))
+	defer upstream.Close()
+	Initialize(nil, nil, "original")
+	SetManualURL(upstream.URL)
+	SetAuthGate(func(*http.Request, string, string, string, string) bool {
+		Initialize(nil, nil, "replacement")
+		SetManualURL(replacement.URL)
+		return true
+	})
+	defer func() { SetAuthGate(nil); Reset(); Initialize(nil, nil, "") }()
+	w := httptest.NewRecorder()
+	metricsRouter().ServeHTTP(w, httptest.NewRequest("GET", "/prometheus/pvc/demo/disk", nil))
+	var response PVCUsageResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Status != PVCUsageAvailable || response.Used != 256 || response.Capacity != 1024 || replacementCalls != 0 {
+		t.Fatalf("handler changed clients: response=%+v replacement queries=%d", response, replacementCalls)
+	}
+}

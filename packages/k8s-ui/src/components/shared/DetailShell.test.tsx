@@ -57,3 +57,24 @@ it('switches to compact spacing when badge content grows after the initial fit',
   expect(host.textContent).not.toContain('icon')
   act(() => root.unmount())
 })
+
+
+it('lets the actions shrink and wrap while tab focus stays inside the scroll strip', () => {
+  const host = document.createElement('div'); const root = createRoot(host)
+  act(() => root.render(<DetailShell identity="Deployment" tabs={[{ id: 'overview', label: 'Overview' }, { id: 'yaml', label: 'YAML' }]} activeTab="overview" onTabChange={() => {}} tabStripEnd={<div data-actions>Set image Restart Rollback Port-forward Compare Delete</div>}>content</DetailShell>))
+  const actions = host.querySelector('[data-actions]')!.parentElement!
+  expect(actions.classList.contains('shrink-0')).toBe(false)
+  expect(actions.classList.contains('min-w-0')).toBe(true)
+  expect(actions.classList.contains('flex-wrap')).toBe(true)
+  const strip = host.querySelector('[role="tablist"]')!
+  expect(strip.classList.contains('min-w-0')).toBe(true)
+  expect(strip.classList.contains('flex-auto')).toBe(true)
+  expect(strip.classList.contains('flex-1')).toBe(false)
+  for (const tab of strip.querySelectorAll('[role="tab"]')) {
+    expect(tab.classList.contains('focus-visible:outline-none')).toBe(true)
+    expect(tab.classList.contains('focus-visible:ring-2')).toBe(true)
+    expect(tab.classList.contains('focus-visible:ring-inset')).toBe(true)
+    expect(tab.classList.contains('focus-visible:ring-accent')).toBe(true)
+  }
+  act(() => root.unmount())
+})

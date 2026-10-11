@@ -356,9 +356,8 @@ const (
 	resourceIssuesCoverageNotWatched = "notWatched"
 )
 
-// canGetIssueRef reports whether the caller may get ref: its kind where it
-// lives, or failing that the named object, which a resourceNames-restricted
-// grant allows. Unresolvable kinds fail closed.
+// canGetIssueRef accepts kind-wide get/list or named get. An unresolved kind
+// uses the drawer's preflight gates until discovery can identify its resource.
 func (s *Server) canGetIssueRef(r *http.Request, ref issues.Ref) bool {
 	user := auth.UserFromContext(r.Context())
 	if user == nil {
@@ -366,13 +365,17 @@ func (s *Server) canGetIssueRef(r *http.Request, ref issues.Ref) bool {
 	}
 	group, resource, clusterScoped, ok := k8s.ResolveChangeGVR(ref.Kind, ref.Group)
 	if !ok {
-		return false
+		_, _, allowed := s.preflightResourceGet(r, normalizeKind(ref.Kind), ref.Namespace, ref.Name, ref.Group)
+		return allowed
 	}
 	namespace := ref.Namespace
 	if clusterScoped {
 		namespace = ""
 	}
 	if s.canRead(r, group, resource, namespace, "get") {
+		return true
+	}
+	if s.canRead(r, group, resource, namespace, "list") {
 		return true
 	}
 	if ref.Name == "" || s.permCache == nil {
