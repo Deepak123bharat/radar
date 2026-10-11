@@ -511,7 +511,6 @@ func ciliumSelectorMatches(selMap map[string]any, id ciliumIdentity) (matches, d
 	var sel metav1.LabelSelector
 	openWhy := ""
 	if ml, ok, _ := unstructured.NestedMap(selMap, "matchLabels"); ok {
-		sel.MatchLabels = map[string]string{}
 		for k, v := range ml {
 			s, ok := v.(string)
 			if !ok {
@@ -524,7 +523,11 @@ func ciliumSelectorMatches(selMap map[string]any, id ciliumIdentity) (matches, d
 				}
 				continue
 			}
-			sel.MatchLabels[key] = s
+			// Source-prefixed keys can normalize to the same Kubernetes key;
+			// retain every requirement instead of overwriting a map entry.
+			sel.MatchExpressions = append(sel.MatchExpressions, metav1.LabelSelectorRequirement{
+				Key: key, Operator: metav1.LabelSelectorOpIn, Values: []string{s},
+			})
 		}
 	}
 	if exprs, ok, _ := unstructured.NestedSlice(selMap, "matchExpressions"); ok {

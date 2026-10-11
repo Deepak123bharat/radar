@@ -4246,7 +4246,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(selectorMap, &labelSelector); err != nil {
 				continue
 			}
-			selector, err := metav1.LabelSelectorAsSelector(ciliumKubernetesSelector(labelSelector))
+			normalized, known := ciliumKubernetesSelector(labelSelector)
+			if !known {
+				continue
+			}
+			selector, err := metav1.LabelSelectorAsSelector(normalized)
 			if err != nil {
 				continue
 			}
@@ -4254,17 +4258,23 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				nodeData["matchesAllPods"] = true
 				continue
 			}
-			// Cilium gives every endpoint its namespace as a label.
-			podLabels := func(template map[string]string) labels.Set {
-				set := labels.Set{ciliumNamespaceLabel: ns}
-				for k, v := range template {
+			podLabels := func(template corev1.PodTemplateSpec) labels.Set {
+				set := labels.Set{}
+				for k, v := range template.Labels {
 					set[k] = v
 				}
+				// Cilium overwrites user-supplied identity labels.
+				set[ciliumNamespaceLabel] = ns
+				serviceAccount := template.Spec.ServiceAccountName
+				if serviceAccount == "" {
+					serviceAccount = "default"
+				}
+				set["io.cilium.k8s.policy.serviceaccount"] = serviceAccount
 				return set
 			}
 
 			for _, d := range deploymentsByNS[ns] {
-				if selector.Matches(podLabels(d.Spec.Template.Labels)) {
+				if selector.Matches(podLabels(d.Spec.Template)) {
 					if targetID := deploymentIDs[d.Namespace+"/"+d.Name]; targetID != "" {
 						edges = append(edges, Edge{
 							ID: fmt.Sprintf("%s-to-%s", cnpID, targetID), Source: cnpID, Target: targetID, Type: EdgeProtects,
@@ -4273,7 +4283,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				}
 			}
 			for _, s := range statefulsetsByNS[ns] {
-				if selector.Matches(podLabels(s.Spec.Template.Labels)) {
+				if selector.Matches(podLabels(s.Spec.Template)) {
 					if targetID := statefulSetIDs[s.Namespace+"/"+s.Name]; targetID != "" {
 						edges = append(edges, Edge{
 							ID: fmt.Sprintf("%s-to-%s", cnpID, targetID), Source: cnpID, Target: targetID, Type: EdgeProtects,
@@ -4282,7 +4292,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				}
 			}
 			for _, d := range daemonsetsByNS[ns] {
-				if selector.Matches(podLabels(d.Spec.Template.Labels)) {
+				if selector.Matches(podLabels(d.Spec.Template)) {
 					dsID := fmt.Sprintf("daemonset/%s/%s", d.Namespace, d.Name)
 					edges = append(edges, Edge{
 						ID: fmt.Sprintf("%s-to-%s", cnpID, dsID), Source: cnpID, Target: dsID, Type: EdgeProtects,
@@ -9055,26 +9065,40 @@ const ciliumNamespaceLabel = "io.kubernetes.pod.namespace"
 // Kubernetes labels. Cilium keys may name their label source: "k8s:app" and
 // "any:app" select the Kubernetes label "app"; other sources (reserved:,
 // container:, ...) never come from a Pod template, so they keep their prefix
-// and match nothing here.
-func ciliumKubernetesSelector(selector metav1.LabelSelector) *metav1.LabelSelector {
-	key := func(k string) string {
+// and match nothing here. Cluster and namespace-label identity is unavailable
+// here: treating it as absent would falsely satisfy NotIn/DoesNotExist.
+func ciliumKubernetesSelector(selector metav1.LabelSelector) (*metav1.LabelSelector, bool) {
+	key := func(k string) (string, bool) {
 		for _, source := range []string{"k8s:", "any:"} {
 			if strings.HasPrefix(k, source) {
-				return strings.TrimPrefix(k, source)
+				k = strings.TrimPrefix(k, source)
+				break
 			}
 		}
-		return k
+		if k == "io.cilium.k8s.policy.cluster" || strings.HasPrefix(k, "io.cilium.k8s.namespace.labels.") {
+			return "", false
+		}
+		return k, true
 	}
 	out := &metav1.LabelSelector{}
-	if selector.MatchLabels != nil {
-		out.MatchLabels = make(map[string]string, len(selector.MatchLabels))
-		for k, v := range selector.MatchLabels {
-			out.MatchLabels[key(k)] = v
+	// Distinct source keys can normalize to the same key. Keep them as ANDed
+	// requirements so a map overwrite cannot discard a conflicting value.
+	for k, v := range selector.MatchLabels {
+		normalized, known := key(k)
+		if !known {
+			return nil, false
 		}
+		out.MatchExpressions = append(out.MatchExpressions, metav1.LabelSelectorRequirement{
+			Key: normalized, Operator: metav1.LabelSelectorOpIn, Values: []string{v},
+		})
 	}
 	for _, expr := range selector.MatchExpressions {
-		expr.Key = key(expr.Key)
+		normalized, known := key(expr.Key)
+		if !known {
+			return nil, false
+		}
+		expr.Key = normalized
 		out.MatchExpressions = append(out.MatchExpressions, expr)
 	}
-	return out
+	return out, true
 }

@@ -31,9 +31,14 @@ func TestCiliumEndpointSelectorExpressionsAndCoverage(t *testing.T) {
 		// Cilium keys may name their label source.
 		{"k8s source label", map[string]any{"matchLabels": map[string]any{"k8s:app": "web"}}, true, false},
 		{"any source expression", map[string]any{"matchExpressions": []any{expr("any:app", "In", "web")}}, true, false},
+		{"conflicting source labels", map[string]any{"matchLabels": map[string]any{"k8s:app": "web", "any:app": "db"}}, false, false},
 		{"reserved source", map[string]any{"matchLabels": map[string]any{"reserved:host": ""}}, false, false},
 		// Every endpoint carries its namespace as a label.
 		{"namespace label", map[string]any{"matchLabels": map[string]any{"k8s:io.kubernetes.pod.namespace": "app", "app": "web"}}, true, false},
+		{"service account label", map[string]any{"matchLabels": map[string]any{"k8s:io.cilium.k8s.policy.serviceaccount": "default", "app": "web"}}, true, false},
+		{"service account exclusion", map[string]any{"matchLabels": map[string]any{"app": "web"}, "matchExpressions": []any{expr("k8s:io.cilium.k8s.policy.serviceaccount", "NotIn", "default")}}, false, false},
+		{"unknown cluster exclusion", map[string]any{"matchLabels": map[string]any{"app": "web"}, "matchExpressions": []any{expr("k8s:io.cilium.k8s.policy.cluster", "DoesNotExist")}}, false, false},
+		{"unknown namespace label exclusion", map[string]any{"matchLabels": map[string]any{"app": "web"}, "matchExpressions": []any{expr("k8s:io.cilium.k8s.namespace.labels.team", "NotIn", "platform")}}, false, false},
 		{"invalid", map[string]any{"matchExpressions": []any{expr("app", "Invalid", "web")}}, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -85,6 +90,54 @@ func TestCiliumEndpointSelectorExpressionsAndCoverage(t *testing.T) {
 							t.Errorf("%s coverage=%v want protected=%v", id, n.Data["policyStatus"], want)
 						}
 					}
+				}
+			}
+		})
+	}
+}
+
+func TestCiliumDerivedIdentityOverridesTemplateLabels(t *testing.T) {
+	for _, serviceAccount := range []string{"", "app-sa"} {
+		t.Run(serviceAccount, func(t *testing.T) {
+			wantAccount := serviceAccount
+			if wantAccount == "" {
+				wantAccount = "default"
+			}
+			gvr := schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}
+			policy := genericIdentityObject(gvr, "CiliumNetworkPolicy", "app", "identity")
+			policy.Object["spec"] = map[string]any{"endpointSelector": map[string]any{"matchLabels": map[string]any{
+				"k8s:io.kubernetes.pod.namespace":         "app",
+				"k8s:io.cilium.k8s.policy.serviceaccount": wantAccount,
+			}}}
+			d := &genericIdentityDynamic{watched: []schema.GroupVersionResource{gvr}, kinds: map[schema.GroupVersionResource]string{gvr: "CiliumNetworkPolicy"}, resources: map[schema.GroupVersionResource][]*unstructured.Unstructured{gvr: {policy}}, listCalls: map[schema.GroupVersionResource]int{}}
+			meta := metav1.ObjectMeta{Namespace: "app", Name: "web"}
+			template := corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{
+					"io.kubernetes.pod.namespace":         "spoofed",
+					"io.cilium.k8s.policy.serviceaccount": "spoofed",
+				}},
+				Spec: corev1.PodSpec{ServiceAccountName: serviceAccount},
+			}
+			provider := &mockProvider{
+				deployments:  []*appsv1.Deployment{{ObjectMeta: meta, Spec: appsv1.DeploymentSpec{Template: template}}},
+				statefulSets: []*appsv1.StatefulSet{{ObjectMeta: meta, Spec: appsv1.StatefulSetSpec{Template: template}}},
+				daemonSets:   []*appsv1.DaemonSet{{ObjectMeta: meta, Spec: appsv1.DaemonSetSpec{Template: template}}},
+			}
+			opts := DefaultBuildOptions()
+			opts.ShowPolicyEffect = true
+			topo, err := NewBuilder(provider).WithDynamic(d).Build(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, kind := range []string{"deployment", "statefulset", "daemonset"} {
+				id := kind + "/app/web"
+				found := false
+				for _, e := range topo.Edges {
+					found = found || e.Source == "ciliumnetworkpolicy/app/identity" && e.Target == id && e.Type == EdgeProtects
+				}
+				n := nodeByID(topo.Nodes, id)
+				if !found || n == nil || n.Data["policyStatus"] != "protected" {
+					t.Errorf("%s lost coverage from derived identity: edge=%v node=%+v", id, found, n)
 				}
 			}
 		})
