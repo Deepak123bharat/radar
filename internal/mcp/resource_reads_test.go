@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -46,7 +47,7 @@ func TestResourceReadsReportCallerDenial(t *testing.T) {
 				} else {
 					_, _, err = handleGetResource(ctx, nil, getResourceInput{Kind: kind, Name: "hidden"})
 				}
-				for _, want := range []string{"forbidden", "your role", verb, resource, `group "` + group + `"`} {
+				for _, want := range []string{"rbac_denied: your role", verb, resource, `group "` + group + `"`} {
 					if err == nil || !strings.Contains(err.Error(), want) {
 						t.Errorf("want %q in caller error, got %v", want, err)
 					}
@@ -202,7 +203,7 @@ func TestResourceReadsPermissionAndScopeFailures(t *testing.T) {
 			}
 			want := "no_namespace_access:"
 			if kind == "secrets" {
-				want = "forbidden:"
+				want = "rbac_denied:"
 			}
 			if err == nil || !strings.HasPrefix(err.Error(), want) || !strings.Contains(err.Error(), ns) || (kind == "secrets" && !strings.Contains(err.Error(), verb)) {
 				t.Fatalf("%s/%s: expected namespace caller denial, got %v", kind, verb, err)
@@ -243,7 +244,7 @@ func TestResourceReadsPermissionAndScopeFailures(t *testing.T) {
 		} else {
 			_, _, err = handleGetResource(context.Background(), nil, getResourceInput{Kind: "pods", Namespace: "beta", Name: "hidden"})
 		}
-		if err == nil || !strings.Contains(err.Error(), ReasonOutsideNamespaceScope) || strings.Contains(err.Error(), "forbidden") {
+		if err == nil || !strings.HasPrefix(err.Error(), "outside_namespace_scope: ") || strings.Contains(err.Error(), "rbac_denied") {
 			t.Fatalf("scope exclusion must not claim denial, got %v", err)
 		}
 	}
@@ -274,10 +275,16 @@ func TestResourceReadsReportFailedAndDisabledTypedKinds(t *testing.T) {
 	if err := k8s.InitScopedTestResourceCache(fake.NewClientset(), map[string]k8score.ResourceScope{"services": {Enabled: true, Namespace: "alpha"}}); err != nil {
 		t.Fatal(err)
 	}
-	for _, input := range []listResourcesInput{{Kind: "nodes"}, {Kind: "services", Namespace: "beta"}} {
-		_, _, err := handleListResources(context.Background(), nil, input)
-		if err == nil || !strings.Contains(err.Error(), "kind_not_watched") {
-			t.Fatalf("expected unwatched kind/scope, got %v", err)
+	for _, tc := range []struct {
+		input listResourcesInput
+		want  string
+	}{
+		{listResourcesInput{Kind: "nodes"}, "kind_not_watched: "},
+		{listResourcesInput{Kind: "services", Namespace: "beta"}, "collector_scope_limited: "},
+	} {
+		_, _, err := handleListResources(context.Background(), nil, tc.input)
+		if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
+			t.Fatalf("%+v: want %q, got %v", tc.input, tc.want, err)
 		}
 	}
 	result, _, err := handleListResources(context.Background(), nil, listResourcesInput{Kind: "services", Context: "none"})
@@ -346,7 +353,7 @@ func TestResourceReadsDynamicPendingAndCollectorDenial(t *testing.T) {
 						}
 						want := "kind_sync_pending"
 						if denied {
-							want = "collector_forbidden"
+							want = "collector_access_denied"
 						} else if b.Kind == "CustomResourceDefinition" && verb == "get" {
 							want = "resource not found"
 						}
@@ -386,25 +393,56 @@ func TestResourceReadToolErrorTransport(t *testing.T) {
 		}
 	})
 	session := connectTo(t, server)
-	for _, name := range []string{"list_resources", "get_resource"} {
-		arguments := map[string]any{"kind": "nodes"}
-		if name == "get_resource" {
-			arguments["name"] = "hidden"
-		}
-		result, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: name, Arguments: arguments})
+	// wire decodes a result the way any MCP client receives it.
+	wire := func(result *mcpsdk.CallToolResult) map[string]any {
+		t.Helper()
+		raw, err := json.Marshal(result)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !result.IsError || !strings.Contains(extractText(t, result), "forbidden: your role") {
-			t.Fatalf("caller denial must be an MCP tool error, got %+v", result)
+		var out map[string]any
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name      string
+		arguments map[string]any
+		reason    string
+		detail    string
+	}{
+		{"list_resources", map[string]any{"kind": "nodes"}, "rbac_denied", `your role cannot list resource "nodes"`},
+		{"get_resource", map[string]any{"kind": "nodes", "name": "hidden"}, "rbac_denied", `your role cannot get resource "nodes"`},
+		{"get_resource", map[string]any{"kind": "pods", "name": "hidden"}, "namespace_required", "specify a namespace for pods"},
+	} {
+		result, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: tc.name, Arguments: tc.arguments})
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := wire(result)
+		structured, _ := body["structuredContent"].(map[string]any)
+		explanation, _ := structured["error"].(string)
+		if body["isError"] != true || structured["reason"] != tc.reason || !strings.Contains(explanation, tc.detail) || strings.HasPrefix(explanation, tc.reason) {
+			t.Fatalf("%s %v: want isError with structuredContent reason %q, got %v", tc.name, tc.arguments, tc.reason, body)
+		}
+		if text := extractText(t, result); text != tc.reason+": "+explanation {
+			t.Fatalf("%s: text must stay %q, got %q", tc.name, tc.reason+": "+explanation, text)
 		}
 	}
-	result, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "list_resources", Arguments: map[string]any{"kind": "services", "context": "none"}})
+	result, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_resource", Arguments: map[string]any{"kind": "pods", "namespace": "alpha", "name": "absent"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.IsError || extractText(t, result) != "[]" {
-		t.Fatalf("genuine empty success must stay [], got %+v", result)
+	if body := wire(result); body["isError"] != true || body["structuredContent"] != nil || !strings.Contains(extractText(t, result), "not found") {
+		t.Fatalf("an absent object stays a text-only tool error, got %v", body)
+	}
+	result, err = session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "list_resources", Arguments: map[string]any{"kind": "services", "context": "none"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := wire(result); body["isError"] != nil || body["structuredContent"] != nil || extractText(t, result) != "[]" {
+		t.Fatalf("genuine empty success must stay [], got %v", body)
 	}
 }
 
@@ -435,7 +473,7 @@ func TestResourceReadsFailedSARCanRecover(t *testing.T) {
 			if err := call(); err == nil || !strings.Contains(err.Error(), "permission_check_failed") {
 				t.Fatalf("%s/%s first check: %v", kind, verb, err)
 			}
-			if err := call(); err == nil || !strings.Contains(err.Error(), "forbidden: your role") {
+			if err := call(); err == nil || !strings.Contains(err.Error(), "rbac_denied: your role") {
 				t.Fatalf("%s/%s retry must establish denial: %v", kind, verb, err)
 			}
 			if calls != 2 {
@@ -558,14 +596,14 @@ func setupCoverageRuleFixture(t *testing.T, class coverageClass) (kind string, p
 }
 
 // Typed kinds never read outside the coverage the startup probe fixed, so an
-// uncovered namespace is kind_not_watched. Custom resources and direct kinds
-// read every requested namespace, so the same namespace is collector_forbidden:
-// Radar tried and was refused.
+// uncovered namespace is collector_scope_limited. Custom resources and direct
+// kinds read every requested namespace, so the same namespace is
+// collector_access_denied: Radar tried and was refused.
 func coverageReason(class coverageClass) string {
 	if class == coverageTyped {
-		return "kind_not_watched:"
+		return "collector_scope_limited:"
 	}
-	return "collector_forbidden:"
+	return "collector_access_denied:"
 }
 
 func TestResourceReadsCollectorCoverageRule(t *testing.T) {
@@ -665,7 +703,7 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 			kind, _ := setupCoverageRuleFixture(t, class)
 			ctx := withRestrictedUser(t, "cold-coverage-reader", []string{"beta"})
 			_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: kind, Context: "none"})
-			if err == nil || !strings.HasPrefix(err.Error(), "collector_forbidden:") || !strings.Contains(err.Error(), `namespace "beta"`) {
+			if err == nil || !strings.HasPrefix(err.Error(), "collector_access_denied:") || !strings.Contains(err.Error(), `namespace "beta"`) {
 				t.Fatalf("uncovered cold scope must name the collector denial, got %v", err)
 			}
 			assertNoCollectorLeak(t, err, "alpha", "gamma")
@@ -743,7 +781,7 @@ func TestResourceReadsCollectorReasons(t *testing.T) {
 	t.Cleanup(k8s.ResetTestState)
 	for _, unauthorized := range []bool{false, true} {
 		probeErrors := map[string]error{}
-		want := "collector_forbidden:"
+		want := "collector_access_denied:"
 		if unauthorized {
 			probeErrors["nodes"] = apierrors.NewUnauthorized("expired token")
 			want = "collector_unauthorized:"
@@ -770,7 +808,7 @@ func TestResourceReadsCollectorReasons(t *testing.T) {
 		t.Fatalf("connecting dynamic: %v", err)
 	}
 	_, err = checkDynamicResourceRead(context.Background(), "widgets", "example.test", "alpha", "list", apierrors.NewUnauthorized("expired token"))
-	if err == nil || !strings.HasPrefix(err.Error(), "collector_unauthorized:") || strings.Contains(err.Error(), "forbidden") {
+	if err == nil || !strings.HasPrefix(err.Error(), "collector_unauthorized:") || strings.Contains(err.Error(), "forbidden") || strings.Contains(err.Error(), "access_denied") {
 		t.Fatalf("collector credentials: %v", err)
 	}
 	for _, kind := range []string{"pods", "widgets"} {
@@ -838,7 +876,7 @@ func TestResourceReadsDynamicCollectorIntersection(t *testing.T) {
 	}
 	ctx := withRestrictedUser(t, "uncovered-reader", []string{"beta"})
 	_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "widgets", Context: "none"})
-	if err == nil || !strings.HasPrefix(err.Error(), "collector_forbidden:") {
+	if err == nil || !strings.HasPrefix(err.Error(), "collector_access_denied:") {
 		t.Fatalf("caller namespace denied by collector must not return empty success: %v", err)
 	}
 	assertNoCollectorLeak(t, err, "alpha")
@@ -849,7 +887,7 @@ func TestResourceReadsDynamicCollectorIntersection(t *testing.T) {
 		} else {
 			_, _, err = handleGetResource(context.Background(), nil, getResourceInput{Kind: "widgets", Namespace: "beta", Name: "x"})
 		}
-		if err == nil || !strings.HasPrefix(err.Error(), "collector_forbidden:") || !strings.Contains(err.Error(), `covered namespaces you can read: "alpha"`) {
+		if err == nil || !strings.HasPrefix(err.Error(), "collector_access_denied:") || !strings.Contains(err.Error(), `covered namespaces you can read: "alpha"`) {
 			t.Fatalf("%s explicit uncovered scope: %v", verb, err)
 		}
 		assertNoCollectorLeak(t, err)
@@ -1026,7 +1064,7 @@ func TestResourceReadsUnrestrictedDirectListsFallBackToCandidates(t *testing.T) 
 					}
 					result, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: b.Resource, Context: "none"})
 					if tc.wantErr != nil {
-						if err == nil || !strings.HasPrefix(err.Error(), "collector_forbidden:") {
+						if err == nil || !strings.HasPrefix(err.Error(), "collector_access_denied:") {
 							t.Fatalf("a read that covered nothing must fail, got %v", err)
 						}
 						for _, text := range tc.wantErr {
@@ -1105,7 +1143,7 @@ func TestCollectorRefusalsNeverEchoTheAPIServerResponse(t *testing.T) {
 		t.Cleanup(k8s.ResetTestDynamicState)
 		for _, kind := range []string{"rollout", "application"} {
 			_, _, err := handleDiagnose(context.Background(), nil, diagnoseInput{diagnoseCommonInput: diagnoseCommonInput{Kind: kind, Namespace: "alpha", Name: "web"}})
-			if err == nil || !strings.HasPrefix(err.Error(), "collector_forbidden:") || strings.Contains(err.Error(), "resource not found") {
+			if err == nil || !strings.HasPrefix(err.Error(), "collector_access_denied:") || strings.Contains(err.Error(), "resource not found") {
 				t.Fatalf("%s: a collector refusal is not an absent object: %v", kind, err)
 			}
 			assertNoCollectorLeak(t, err)
@@ -1114,13 +1152,16 @@ func TestCollectorRefusalsNeverEchoTheAPIServerResponse(t *testing.T) {
 	t.Run("collector auth errors", func(t *testing.T) {
 		setupFakeCacheForFilterTests(t)
 		target := collectorTarget{resource: "pods", group: "metrics.k8s.io", action: "get"}
-		for _, cause := range []error{
-			fmt.Errorf("failed to get pod metrics: %w", collectorRefusal(schema.GroupResource{Group: "metrics.k8s.io", Resource: "pods"}, "get", "alpha")),
-			apierrors.NewUnauthorized(collectorIdentity + " token expired"),
+		for _, tc := range []struct {
+			cause error
+			want  string
+		}{
+			{fmt.Errorf("failed to get pod metrics: %w", collectorRefusal(schema.GroupResource{Group: "metrics.k8s.io", Resource: "pods"}, "get", "alpha")), "collector_access_denied: "},
+			{apierrors.NewUnauthorized(collectorIdentity + " token expired"), "collector_unauthorized: "},
 		} {
-			err := collectorAuthError(context.Background(), cause, target, "alpha")
-			if err == nil || !strings.HasPrefix(err.Error(), "collector_") {
-				t.Fatalf("auth refusal not recognised: %v", err)
+			err := collectorAuthError(context.Background(), tc.cause, target, "alpha")
+			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
+				t.Fatalf("auth refusal not recognised as %q: %v", tc.want, err)
 			}
 			assertNoCollectorLeak(t, err)
 		}
@@ -1249,12 +1290,12 @@ func TestResourceReadErrorDetails(t *testing.T) {
 	}
 	for _, verb := range []string{"list", "get"} {
 		_, err := checkDynamicResourceRead(context.Background(), "widgets", "example.test", "alpha", verb, fmt.Errorf("transport unavailable"))
-		if err == nil || !strings.HasPrefix(err.Error(), verb+"_error:") || !strings.Contains(err.Error(), "widgets") {
+		if err == nil || !strings.HasPrefix(err.Error(), "read_error: failed to "+verb+" widgets") {
 			t.Fatalf("%s: %v", verb, err)
 		}
 	}
 	err := resourceGetError(context.Background(), fmt.Errorf("store unavailable"), "pods", "alpha", "present")
-	if !strings.HasPrefix(err.Error(), "get_error:") || !strings.Contains(err.Error(), "pods") {
+	if !strings.HasPrefix(err.Error(), "read_error: failed to get pods alpha/present") {
 		t.Fatal(err)
 	}
 	namespaces := make([]string, 15)
@@ -1292,5 +1333,28 @@ func TestResourceReadsNoNamespaceKindResolution(t *testing.T) {
 	_, _, err := handleGetResource(context.Background(), nil, getResourceInput{Kind: "widgets", Name: "present"})
 	if err == nil || !strings.HasPrefix(err.Error(), "kind_sync_pending:") {
 		t.Fatalf("uninitialized discovery: %v", err)
+	}
+}
+
+func TestResourceReadsNonWatchableKindIsNotSupported(t *testing.T) {
+	if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(k8s.ResetTestState)
+	gvr := schema.GroupVersionResource{Group: "example.test", Version: "v1", Resource: "reports"}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "ReportList"})
+	if err := k8s.InitTestDynamicResourceCache(dyn, []k8s.APIResource{{Group: gvr.Group, Version: gvr.Version, Kind: "Report", Name: gvr.Resource, Namespaced: true, Verbs: []string{"list", "get"}}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(k8s.ResetTestDynamicState)
+	for _, ns := range []string{"alpha", ""} {
+		_, _, err := handleListResources(context.Background(), nil, listResourcesInput{Kind: "reports", Group: "example.test", Namespace: ns})
+		if err == nil || !strings.HasPrefix(err.Error(), "collection_not_supported: reports does not support list/watch") {
+			t.Fatalf("list ns=%q: %v", ns, err)
+		}
+	}
+	_, _, err := handleGetResource(context.Background(), nil, getResourceInput{Kind: "reports", Group: "example.test", Namespace: "alpha", Name: "x"})
+	if err == nil || !strings.HasPrefix(err.Error(), "collection_not_supported: ") {
+		t.Fatalf("get: %v", err)
 	}
 }

@@ -8,13 +8,52 @@ import (
 	"strings"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/skyhook-io/radar/internal/k8s"
 	pkgauth "github.com/skyhook-io/radar/pkg/auth"
 	"github.com/skyhook-io/radar/pkg/k8score"
+	"github.com/skyhook-io/radar/pkg/readreason"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
+
+// readError is a resource-read failure with the reason an agent branches on.
+// Its text is "<reason>: <explanation>"; readErrorResult also sends the pair
+// as the tool result's structuredContent.
+type readError struct {
+	reason readreason.Code
+	err    error
+}
+
+func (e *readError) Error() string { return string(e.reason) + ": " + e.err.Error() }
+func (e *readError) Unwrap() error { return e.err }
+
+func readErrorf(reason readreason.Code, format string, args ...any) error {
+	return &readError{reason: reason, err: fmt.Errorf(format, args...)}
+}
+
+// readErrorContent is the structuredContent of a resource-read tool error.
+type readErrorContent struct {
+	Reason readreason.Code `json:"reason"`
+	Error  string          `json:"error"`
+}
+
+// readErrorResult renders a readError as an MCP tool error whose
+// structuredContent carries the reason, so clients need not parse the text.
+// It reports false for any other error, which keeps the SDK's text-only form.
+func readErrorResult(err error) (*mcp.CallToolResult, bool) {
+	var re *readError
+	if !errors.As(err, &re) {
+		return nil, false
+	}
+	result := &mcp.CallToolResult{
+		Content:           []mcp.Content{&mcp.TextContent{Text: err.Error()}},
+		StructuredContent: readErrorContent{Reason: re.reason, Error: re.err.Error()},
+	}
+	result.SetError(err)
+	return result, true
+}
 
 func resourcePermissionError(checked bool, verb, group, resource, namespace string) error {
 	scope := "at cluster scope"
@@ -24,19 +63,19 @@ func resourcePermissionError(checked bool, verb, group, resource, namespace stri
 		scope = fmt.Sprintf("in namespace %q", namespace)
 	}
 	if !checked {
-		return fmt.Errorf("permission_check_failed: could not verify whether your role can %s resource %q in API group %q %s; access was not granted, retry when the permission check is available", verb, resource, group, scope)
+		return readErrorf(readreason.PermissionCheckFailed, "could not verify whether your role can %s resource %q in API group %q %s; access was not granted, retry when the permission check is available", verb, resource, group, scope)
 	}
-	return fmt.Errorf("forbidden: your role cannot %s resource %q in API group %q %s; ask a cluster administrator to grant access", verb, resource, group, scope)
+	return readErrorf(readreason.RBACDenied, "your role cannot %s resource %q in API group %q %s; ask a cluster administrator to grant access", verb, resource, group, scope)
 }
 
 func resourceReadNamespaces(ctx context.Context, requested []string) ([]string, error) {
 	clamped, ok := clampToNamespacePin(requested)
 	if !ok {
-		return nil, fmt.Errorf("%s: requested namespace %q is excluded by Radar's --namespace-scope selection", ReasonOutsideNamespaceScope, namespaceForError(requested))
+		return nil, readErrorf(readreason.OutsideNamespaceScope, "requested namespace %q is excluded by Radar's --namespace-scope selection", namespaceForError(requested))
 	}
 	user, perms, checked := resolveUserPermsDecision(ctx)
 	if !checked {
-		return nil, fmt.Errorf("permission_check_failed: could not discover your Radar namespace access; retry when the permission check is available")
+		return nil, readErrorf(readreason.PermissionCheckFailed, "could not discover your Radar namespace access; retry when the permission check is available")
 	}
 	allowed := pkgauth.FilterNamespacesForUser(clamped, user, perms)
 	if allowed != nil && len(allowed) == 0 {
@@ -48,7 +87,7 @@ func resourceReadNamespaces(ctx context.Context, requested []string) ([]string, 
 		} else if len(requested) > 1 {
 			scope = fmt.Sprintf("namespaces %q", clamped)
 		}
-		return nil, fmt.Errorf("no_namespace_access: no Radar access to %s (Radar grants namespace access when your role can list pods or deployments there; re-checked every ~2 minutes)", scope)
+		return nil, readErrorf(readreason.NoNamespaceAccess, "no Radar access to %s (Radar grants namespace access when your role can list pods or deployments there; re-checked every ~2 minutes)", scope)
 	}
 	return allowed, nil
 }
@@ -93,19 +132,19 @@ func resourceReadCache(ctx context.Context, kind, group string, namespaces []str
 	}
 	switch readiness {
 	case k8s.KindPending:
-		return nil, nil, fmt.Errorf("kind_sync_pending: %s are still loading, please retry shortly", gvr.Resource)
+		return nil, nil, readErrorf(readreason.KindSyncPending, "%s are still loading, please retry shortly", gvr.Resource)
 	case k8s.KindFailed:
-		return nil, nil, fmt.Errorf("kind_sync_failed: %s failed to load within the sync deadline; check Radar's collector connection and list/watch permissions", gvr.Resource)
+		return nil, nil, readErrorf(readreason.KindSyncFailed, "%s failed to load within the sync deadline; check Radar's collector connection and list/watch permissions", gvr.Resource)
 	case k8s.KindUnavailable:
 		if result != nil {
 			if scope, probed := result.Scopes[gvr.Resource]; probed && !scope.Enabled {
 				if apierrors.IsUnauthorized(result.ProbeErrors[gvr.Resource]) {
 					return nil, nil, collectorUnauthorizedError(gvr.Resource, result.ProbeErrors[gvr.Resource])
 				}
-				return nil, nil, fmt.Errorf("collector_forbidden: %s can't list/watch %s in API group %q", collectorName(), gvr.Resource, gvr.Group)
+				return nil, nil, readErrorf(readreason.CollectorAccessDenied, "%s can't list/watch %s in API group %q", collectorName(), gvr.Resource, gvr.Group)
 			}
 		}
-		return nil, nil, fmt.Errorf("kind_not_watched: Radar is not watching resource %q in API group %q; check Radar's collector list/watch permissions and collection configuration", gvr.Resource, gvr.Group)
+		return nil, nil, readErrorf(readreason.KindNotWatched, "Radar is not watching resource %q in API group %q; check Radar's collector list/watch permissions and collection configuration", gvr.Resource, gvr.Group)
 	}
 	covered := cache.KindNamespaces(gvr.Resource)
 	if covered == nil {
@@ -172,11 +211,11 @@ func directRead(gvr schema.GroupVersionResource, verb string) bool {
 
 // coverageError reports requested namespaces Radar's collector could not
 // serve. With a refusal — Radar read them for this request and the API server
-// denied its identity — the reason is collector_forbidden; without one they
-// lie outside the coverage the collector established, Radar did not read them,
-// and the reason is kind_not_watched. No uncovered namespaces means the
-// cluster scope. Only namespaces the caller may read are named, so the
-// collector's coverage never discloses other tenants' namespaces.
+// denied its identity — the reason is collector_access_denied; without one
+// they lie outside the coverage the collector established, Radar did not read
+// them, and the reason is collector_scope_limited. No uncovered namespaces
+// means the cluster scope. Only namespaces the caller may read are named, so
+// the collector's coverage never discloses other tenants' namespaces.
 func coverageError(ctx context.Context, target collectorTarget, uncovered, covered []string, refusal error) error {
 	knownCoverage := refusal == nil || len(covered) > 0
 	covered = slices.DeleteFunc(slices.Clone(covered), func(ns string) bool { return slices.Contains(uncovered, ns) })
@@ -201,16 +240,16 @@ func coverageError(ctx context.Context, target collectorTarget, uncovered, cover
 		coverage = "; the collector's coverage does not include any namespace you can read"
 	}
 	if refusal != nil {
-		return &collectorError{
-			msg:   fmt.Sprintf("collector_forbidden: %s can't %s %s in API group %q %s; granting your role access does not change this%s", collectorName(), target.action, target.resource, target.group, where, coverage),
+		return &readError{reason: readreason.CollectorAccessDenied, err: &collectorError{
+			msg:   fmt.Sprintf("%s can't %s %s in API group %q %s; granting your role access does not change this%s", collectorName(), target.action, target.resource, target.group, where, coverage),
 			cause: refusal,
-		}
+		}}
 	}
 	verb := "is"
 	if len(uncovered) != 1 {
 		verb = "are"
 	}
-	return fmt.Errorf("kind_not_watched: Radar does not watch %s %s, which %s outside the collector's scope%s", target.resource, where, verb, coverage)
+	return readErrorf(readreason.CollectorScopeLimited, "Radar does not watch %s %s, which %s outside the collector's scope%s", target.resource, where, verb, coverage)
 }
 
 // collectorError is a caller-facing error about a read Radar made with its own
@@ -288,13 +327,13 @@ func callerVisibleNamespaces(ctx context.Context, namespaces []string) []string 
 // one.
 func checkDynamicResourceRead(ctx context.Context, kind, group, namespace, verb string, readErr error) (bool, error) {
 	if errors.Is(readErr, k8s.ErrUnknownDynamicKind) {
-		return false, fmt.Errorf("unknown_kind: %w", readErr)
+		return false, readErrorf(readreason.UnknownKind, "%w", readErr)
 	}
 	if errors.Is(readErr, k8s.ErrDynamicNotReady) {
 		if k8s.GetConnectionStatus().State == k8s.StateConnecting {
-			return false, fmt.Errorf("kind_sync_pending: %s: %w; cluster connection is still loading, please retry shortly", kind, readErr)
+			return false, readErrorf(readreason.KindSyncPending, "%s: %w; cluster connection is still loading, please retry shortly", kind, readErr)
 		}
-		return false, fmt.Errorf("kind_not_watched: %s: %w", kind, readErr)
+		return false, readErrorf(readreason.KindNotWatched, "%s: %w", kind, readErr)
 	}
 	dynamicCache := k8s.GetDynamicResourceCache()
 	gvr, ok := dynamicReadGVR(kind, group)
@@ -310,7 +349,12 @@ func checkDynamicResourceRead(ctx context.Context, kind, group, namespace, verb 
 		return false, err
 	}
 	if readErr != nil && !isObjectNotFound(readErr) {
-		return false, fmt.Errorf("%s_error: failed to %s %s: %w", verb, verb, kind, readErr)
+		// A kind discovery lists without watch fails the read before any
+		// informer exists; the observation says so without parsing the error.
+		if ok && dynamicCache != nil && !direct && dynamicCache.Observation(gvr).State == k8score.DynamicObservationUnsupported {
+			return false, readErrorf(readreason.CollectionNotSupported, "%s does not support list/watch, so Radar cannot collect it", kind)
+		}
+		return false, readErrorf(readreason.ReadError, "failed to %s %s: %w", verb, kind, readErr)
 	}
 	if !ok || dynamicCache == nil || direct {
 		return false, readErr
@@ -328,16 +372,16 @@ func checkDynamicResourceRead(ctx context.Context, kind, group, namespace, verb 
 	case k8score.DynamicObservationSyncing:
 		if !dynamicCache.IsNamespaceSynced(gvr, namespace) {
 			if observation.ReasonCode == "sync_stalled" {
-				return false, fmt.Errorf("kind_sync_failed: %s initial cache sync has stalled; check Radar's collector connection and list/watch permissions", kind)
+				return false, readErrorf(readreason.KindSyncFailed, "%s initial cache sync has stalled; check Radar's collector connection and list/watch permissions", kind)
 			}
-			return false, fmt.Errorf("kind_sync_pending: %s are still loading, please retry shortly", kind)
+			return false, readErrorf(readreason.KindSyncPending, "%s are still loading, please retry shortly", kind)
 		}
 	case k8score.DynamicObservationSynced:
 		if namespace != "" && !dynamicCache.IsNamespaceSynced(gvr, namespace) {
-			return false, fmt.Errorf("kind_not_watched: Radar does not watch %s in namespace %q", kind, namespace)
+			return false, readErrorf(readreason.CollectorScopeLimited, "Radar does not watch %s in namespace %q, which is outside the collector's scope", kind, namespace)
 		}
 	case k8score.DynamicObservationUnsupported:
-		return false, fmt.Errorf("kind_not_watched: %s does not support list/watch", kind)
+		return false, readErrorf(readreason.CollectionNotSupported, "%s does not support list/watch, so Radar cannot collect it", kind)
 	}
 	return dynamicCache.IsNamespaceSynced(gvr, namespace), readErr
 }
@@ -421,7 +465,7 @@ func resourceGetError(ctx context.Context, err error, kind, namespace, name stri
 	if isObjectNotFound(err) {
 		return notFoundError(ctx, err, kind, namespace, name)
 	}
-	return fmt.Errorf("get_error: failed to get %s %s/%s: %w", kind, namespace, name, err)
+	return readErrorf(readreason.ReadError, "failed to get %s %s/%s: %w", kind, namespace, name, err)
 }
 
 func fetchMCPDynamicResource(ctx context.Context, cache *k8s.ResourceCache, kind, group, namespace, name string) (*unstructured.Unstructured, error) {
@@ -439,8 +483,8 @@ func collectorUnauthorizedError(kind string, err error) error {
 	if k8s.IsInCluster() {
 		credentials = "service-account credentials"
 	}
-	return &collectorError{
-		msg:   fmt.Sprintf("collector_unauthorized: Radar's %s were rejected while reading %s; refresh them and retry", credentials, kind),
+	return &readError{reason: readreason.CollectorUnauthorized, err: &collectorError{
+		msg:   fmt.Sprintf("Radar's %s were rejected while reading %s; refresh them and retry", credentials, kind),
 		cause: err,
-	}
+	}}
 }

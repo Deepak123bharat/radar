@@ -455,44 +455,48 @@ remains `[]`; it means no objects were found within the readable requested scope
 not that every namespace in the cluster was inspected. Successful resource and
 context shapes are unchanged.
 
-Errors distinguish the calling user's permissions from Radar's collection access:
+Each error carries a reason code twice: as the prefix of its text
+(`<reason>: <explanation>`), and in `structuredContent`:
 
-- `forbidden`: exact permission checks (Secrets and cluster-scoped kinds) name
-  the verb, API group/resource and scope.
-- `no_namespace_access`: namespace-membership denials say "no Radar access" and
-  explain that Radar grants namespace access when your
-  role can list Pods or Deployments there, re-checked every approximately two
-  minutes; this is not an exact check of the requested namespaced kind.
-- `permission_check_failed`: Radar could not verify access; this is not proof
-  that your role is forbidden. Retry after the permission check is available.
-- `outside_namespace_scope`: the requested namespace is excluded by Radar's
-  `--namespace-scope` selection. Changing caller permissions does not remove this
-  scope limit. The browser's namespace picker does not scope MCP requests;
-  specify `namespace` to narrow a tool call.
-- `collector_forbidden`: Radar tried to read the resource with its own identity
-  (its service account, or the local kubeconfig identity) and Kubernetes refused
-  it: for this request, or, for a kind Radar caches at startup, in every scope
-  the startup probe tried. Granting the caller access does not repair this.
-- `collector_unauthorized`: Kubernetes rejected Radar's credentials; refresh its
-  service-account credentials or local kubeconfig token. This is distinct from
-  RBAC denial.
+```json
+{
+  "isError": true,
+  "content": [{"type": "text", "text": "rbac_denied: your role cannot list resource \"secrets\" in API group \"\" in namespace \"prod\"; ask a cluster administrator to grant access"}],
+  "structuredContent": {
+    "reason": "rbac_denied",
+    "error": "your role cannot list resource \"secrets\" in API group \"\" in namespace \"prod\"; ask a cluster administrator to grant access"
+  }
+}
+```
+
+Branch on `structuredContent.reason`; the text is for people and for clients that
+read only text. Errors without a reason (an absent object's `resource not found`,
+a disconnected cluster, a serialization failure) stay text-only. `diagnose`
+reports Radar's collector refusals with the same codes and shape. The codes are
+defined in `pkg/readreason`.
+
+Reasons separate the calling user's permissions from Radar's collection access:
+
+| Reason | Meaning | Next step |
+|---|---|---|
+| `rbac_denied` | An exact permission check (Secrets and cluster-scoped kinds) denied your role. The error names the verb, API group/resource and scope. | Ask for access, or read a scope you are allowed. |
+| `no_namespace_access` | No requested namespace passes Radar's namespace membership check, which grants a namespace when your role can list Pods or Deployments there, re-checked about every two minutes. This is not an exact check of the requested kind. | Check your Pod or Deployment list access in that namespace. |
+| `permission_check_failed` | Radar could not verify your access. This is not proof that your role is denied. | Retry once the permission check is available. |
+| `outside_namespace_scope` | The requested namespace is excluded by Radar's `--namespace-scope` pin. Caller permissions do not change this, and the browser's namespace picker does not scope MCP requests. | Use the pinned namespace, or change Radar's configuration. |
+| `collector_access_denied` | Kubernetes refused Radar's own identity (its service account, or the local kubeconfig identity): for this request, or, for a kind Radar caches at startup, in every scope the startup probe tried. | Fix Radar's access; granting the caller access does not repair this. |
+| `collector_unauthorized` | Kubernetes rejected Radar's credentials. This is distinct from an RBAC denial. | Refresh Radar's service-account credentials or local kubeconfig token. |
+| `collector_scope_limited` | A requested namespace is outside the coverage Radar's collector established, so Radar did not read it (see the coverage rule below). The error names the uncovered namespaces and the covered namespaces you can read. | Retry with a covered namespace, or widen Radar's collection. |
+| `kind_sync_pending` | Initial cache synchronization is still in progress. Unavailable discovery also reports this rather than claiming a kind is unknown. | Retry shortly. |
+| `kind_sync_failed` | The typed sync deadline elapsed, or a dynamic sync stalled. | Inspect Radar's connection and collector list/watch permissions. |
+| `kind_not_watched` | Radar has no watch for the kind, and nothing more precise is known. | Inspect collector permissions and collection configuration. |
+| `collection_not_supported` | The API does not support list/watch, so Radar cannot collect it. | Do not retry; a watch cannot be started. |
+| `unknown_kind` | Neither the built-in catalog nor discovery recognizes the kind. | Check the spelling, the `group`, and that the API is installed. |
+| `namespace_required` | `get_resource` named a known namespaced kind without a namespace. | Pass `namespace`. |
+| `read_error` | An unexpected read failure. The explanation keeps the requested kind and the underlying cause. | Read the explanation; retry or investigate. |
 
 Neither collector reason repeats the API server's response, which names Radar's
 identity (for a service account, the namespace Radar runs in); Radar logs it
 instead.
-- `namespace_required`: a known namespaced kind needs an explicit namespace for
-  `get_resource`.
-- `kind_sync_pending`: initial cache synchronization is still in progress; retry
-  shortly. `kind_sync_failed` means the typed sync deadline elapsed or a dynamic
-  sync stalled; inspect Radar's connection and collector list/watch permissions.
-- `kind_not_watched`: collection is unavailable, or a requested namespace is
-  outside the coverage the collector established at startup, so Radar did not
-  read it (see the coverage rule below); the error names the uncovered
-  namespaces and the covered namespaces you can read. `unknown_kind`
-  means neither the built-in catalog nor discovery recognizes the kind.
-  Unavailable discovery reports `kind_sync_pending` rather than claiming a kind is unknown.
-- `list_error` / `get_error`: an unexpected resource-read failure; the error
-  retains the requested kind and the underlying cause.
 
 Dynamic resources are watched on demand. An initial-sync wait of approximately
 three seconds per informer gives cold lists time to load before reporting loading.
@@ -527,7 +531,7 @@ on the kind's name:
 
 - Kinds Radar caches at startup (Pods, ConfigMaps, Services, Deployments, …)
   know their coverage from the startup probe and never read outside it, so an
-  uncovered namespace is `kind_not_watched`. The namespace may simply not have
+  uncovered namespace is `collector_scope_limited`. The namespace may simply not have
   been among the probe's candidates; Radar cannot tell whether its identity is
   refused there.
 - Custom resources read each requested namespace on demand, starting an
@@ -535,14 +539,14 @@ on the kind's name:
   collector's initial fallback candidates. Endpoints, EndpointSlices and Leases
   are read straight from the API server with no informer. Radar tries each
   requested namespace for these kinds, so an uncovered namespace is one where
-  Kubernetes refused it: `collector_forbidden`. A custom resource offers the
+  Kubernetes refused it: `collector_access_denied`. A custom resource offers the
   namespaces its informers already cover. A direct kind knows only the
   namespaces read for this request, so it offers covered namespaces only on an
   unscoped read.
 
 For example, on a collector that covers `alpha` and `gamma`, a caller allowed in
 `alpha` and `beta` gets an error naming `beta` and offering `alpha`
-(`kind_not_watched` for ConfigMaps, `collector_forbidden` for a custom resource
+(`collector_scope_limited` for ConfigMaps, `collector_access_denied` for a custom resource
 or Leases); a caller allowed only in `gamma`, covered but empty, gets `[]`; a
 cluster-wide caller gets `alpha`'s objects.
 

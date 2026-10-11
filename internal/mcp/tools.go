@@ -37,6 +37,7 @@ import (
 	"github.com/skyhook-io/radar/pkg/health"
 	"github.com/skyhook-io/radar/pkg/issuesapi"
 	"github.com/skyhook-io/radar/pkg/k8score"
+	"github.com/skyhook-io/radar/pkg/readreason"
 	"github.com/skyhook-io/radar/pkg/resourcecontext"
 	"github.com/skyhook-io/radar/pkg/schedulinginsight"
 	"github.com/skyhook-io/radar/pkg/servinginsight"
@@ -902,7 +903,7 @@ func handleListResources(ctx context.Context, req *mcp.CallToolRequest, input li
 		return listDynamicResources(ctx, cache, kind, group, listScope, clusterScoped, input.Context)
 	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("list_error: failed to list %s: %w", kind, err)
+		return nil, nil, readErrorf(readreason.ReadError, "failed to list %s: %w", kind, err)
 	}
 
 	if allowed != nil && !clusterScoped {
@@ -1064,11 +1065,11 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 			}
 			if !known {
 				if discovery == nil {
-					return nil, nil, fmt.Errorf("kind_sync_pending: %s: resource discovery is still loading, please retry shortly", kind)
+					return nil, nil, readErrorf(readreason.KindSyncPending, "%s: resource discovery is still loading, please retry shortly", kind)
 				}
-				return nil, nil, fmt.Errorf("unknown_kind: %s", kind)
+				return nil, nil, readErrorf(readreason.UnknownKind, "%s", kind)
 			}
-			return nil, nil, fmt.Errorf("namespace_required: specify a namespace for %s", kind)
+			return nil, nil, readErrorf(readreason.NamespaceRequired, "specify a namespace for %s", kind)
 		}
 		if _, err := resourceReadNamespaces(ctx, []string{namespace}); err != nil {
 			return nil, nil, err

@@ -226,7 +226,7 @@ func TestHandleListResources_CommonAliases(t *testing.T) {
 
 	denyClusterRead(t, "alice", "/nodes")
 	_, _, err = handleListResources(ctx, nil, listResourcesInput{Kind: "no"})
-	if err == nil || !strings.Contains(err.Error(), "forbidden") {
+	if err == nil || !strings.HasPrefix(err.Error(), "rbac_denied: ") {
 		t.Fatalf("node alias must report caller denial, got %v", err)
 	}
 }
@@ -250,7 +250,7 @@ func TestHandleListResources_ClusterOnlyKindBlockedForRestricted(t *testing.T) {
 	denyClusterRead(t, "alice", "/nodes")
 
 	_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "nodes"})
-	if err == nil || !strings.Contains(err.Error(), "forbidden") {
+	if err == nil || !strings.HasPrefix(err.Error(), "rbac_denied: ") {
 		t.Fatalf("expected explicit caller denial, got %v", err)
 	}
 }
@@ -264,7 +264,7 @@ func TestHandleListResources_ClusterWidePodsButNoNodes(t *testing.T) {
 	denyClusterRead(t, "broad-pod-reader", "/nodes")
 
 	_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "nodes"})
-	if err == nil || !strings.Contains(err.Error(), "forbidden") {
+	if err == nil || !strings.HasPrefix(err.Error(), "rbac_denied: ") {
 		t.Fatalf("expected explicit caller denial, got %v", err)
 	}
 }
@@ -363,7 +363,7 @@ func TestHandleGetResource_ClusterOnlyForbiddenForRestricted(t *testing.T) {
 	// read RBAC; this user has neither namespace access nor seeded SAR allow.
 	_, _, err := handleGetResource(ctx, nil, getResourceInput{Kind: "nodes", Namespace: "", Name: "node-1"})
 	if err == nil {
-		t.Fatal("expected forbidden error for cluster-scoped read, got nil")
+		t.Fatal("expected rbac_denied error for cluster-scoped read, got nil")
 	}
 }
 
@@ -377,7 +377,7 @@ func TestHandleListResources_NamespacesRequiresListNamespacesSAR(t *testing.T) {
 	denyClusterRead(t, "alice", "/namespaces")
 
 	_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "namespaces"})
-	if err == nil || !strings.Contains(err.Error(), "forbidden") {
+	if err == nil || !strings.HasPrefix(err.Error(), "rbac_denied: ") {
 		t.Fatalf("expected explicit caller denial, got %v", err)
 	}
 }
@@ -392,10 +392,10 @@ func TestHandleGetResource_NamespacesRequiresGetNamespacesSAR(t *testing.T) {
 
 	_, _, err := handleGetResource(ctx, nil, getResourceInput{Kind: "namespaces", Name: "alpha"})
 	if err == nil {
-		t.Fatal("expected forbidden error without get-namespaces SAR, got nil")
+		t.Fatal("expected rbac_denied error without get-namespaces SAR, got nil")
 	}
-	if !strings.Contains(err.Error(), "forbidden") {
-		t.Errorf("expected 'forbidden' in error, got: %v", err)
+	if !strings.HasPrefix(err.Error(), "rbac_denied: ") {
+		t.Errorf("expected rbac_denied, got: %v", err)
 	}
 }
 
@@ -550,7 +550,7 @@ func TestHandleListResources_Secrets_DeniedInAllNamespaces(t *testing.T) {
 	seedSecretListCanI(t, "alice", nil, []string{"alpha"})
 
 	_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "secrets"})
-	if err == nil || !strings.Contains(err.Error(), "forbidden") {
+	if err == nil || !strings.HasPrefix(err.Error(), "rbac_denied: ") {
 		t.Fatalf("expected explicit caller denial, got %v", err)
 	}
 }
@@ -591,7 +591,7 @@ func TestHandleListResources_Secrets_ClusterWideShape_NoSecretRBAC(t *testing.T)
 	perms.SetCanI("list", "", "secrets", "", false)
 
 	_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "secrets"})
-	if err == nil || !strings.Contains(err.Error(), "forbidden") {
+	if err == nil || !strings.HasPrefix(err.Error(), "rbac_denied: ") {
 		t.Fatalf("expected explicit caller denial, got %v", err)
 	}
 }
@@ -647,10 +647,10 @@ func TestHandleGetResource_Secret_DeniedInNamespace(t *testing.T) {
 
 	_, _, err := handleGetResource(ctx, nil, getResourceInput{Kind: "secrets", Namespace: "alpha", Name: "alpha-secret"})
 	if err == nil {
-		t.Fatal("expected forbidden error for secret in denied-secret namespace, got nil")
+		t.Fatal("expected rbac_denied error for secret in denied-secret namespace, got nil")
 	}
-	if !strings.Contains(err.Error(), "forbidden") {
-		t.Errorf("expected 'forbidden' in error, got: %v", err)
+	if !strings.HasPrefix(err.Error(), "rbac_denied: ") {
+		t.Errorf("expected rbac_denied, got: %v", err)
 	}
 }
 
