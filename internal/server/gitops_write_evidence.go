@@ -71,7 +71,7 @@ type gitOpsPathEvidence struct {
 	// OwnedByGitOps: a manager of the resolved owner's tool owns the path.
 	OwnedByGitOps bool `json:"ownedByGitOps"`
 	Approximate   bool `json:"approximate,omitempty"`
-	// Ignored: "" | "effective" (the owner won't revert it) |
+	// Ignored: "" | "effective" (an applicable reconciliation exemption) |
 	// "comparison-only" (Argo ignoreDifferences without
 	// RespectIgnoreDifferences: no self-heal trigger, but a sync overwrites) |
 	// "unevaluated" (a matching Argo rule uses jqPathExpressions, which Radar
@@ -449,6 +449,7 @@ func ignoreRuleFor(
 	case "argocd":
 		entries, _, _ := unstructured.NestedSlice(ownerObj.Object, "spec", "ignoreDifferences")
 		jqRule := false
+		approximateManagerRule := false
 		for _, raw := range entries {
 			entry, ok := raw.(map[string]any)
 			if !ok || !argoIgnoreEntryMatches(entry, ref) {
@@ -463,7 +464,15 @@ func ignoreRuleFor(
 			for _, m := range stringSlice(entry["managedFieldsManagers"]) {
 				for _, o := range ownedBy {
 					if o.Manager == m {
-						covered = true
+						approximate := o.Approximate || len(tokens) < len(segs)
+						for _, seg := range segs {
+							approximate = approximate || seg.typ == segAny
+						}
+						if approximate {
+							approximateManagerRule = true
+						} else {
+							covered = true
+						}
 					}
 				}
 			}
@@ -476,6 +485,9 @@ func ignoreRuleFor(
 			if len(stringSlice(entry["jqPathExpressions"])) > 0 {
 				jqRule = true
 			}
+		}
+		if approximateManagerRule {
+			return "unevaluated", "spec.ignoreDifferences managedFieldsManagers"
 		}
 		if jqRule {
 			return "unevaluated", "spec.ignoreDifferences jqPathExpressions"

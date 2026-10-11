@@ -959,6 +959,7 @@ export function InvestigationView({
     useGitOpsWriteGuard({
       target: { kind, group: run.group, namespace, name },
       writes: APPLY_WRITES,
+      managedBy: run.managedBy,
       enabled: confirmApply,
     });
   const navigateRouter = useNavigate();

@@ -856,10 +856,57 @@ export function WorkloadView({
     },
     [navigateRouter, searchParams],
   )
+  const imageOwnershipSource = activeImageTargetOwnership ? imageTargetOwnershipResolution : workloadOwnership
+  const imageGuardTarget = activeImageTargetOwnership
+    ? {
+        kind: activeImageTargetOwnership.target.kind,
+        group: activeImageTargetOwnership.target.group,
+        namespace: activeImageTargetOwnership.target.namespace,
+        name: activeImageTargetOwnership.target.name,
+      }
+    : { kind: resource?.kind ?? pluralToKind(apiKind), group: effectiveGroup ?? '', namespace, name }
+  const { guard: imageGuard, refresh: refreshImageGuard } = useGitOpsWriteGuard({
+    target: imageGuardTarget,
+    writes: SET_IMAGE_WRITES,
+    ownership: imageOwnershipSource,
+    ownershipError: (activeImageTargetOwnership ? activeImageTargetOwnership.response.relationships : relationships)
+      ? null
+      : "Radar couldn't read the resource's management ownership",
+    enabled: imageGuardRequested,
+  })
+  const {
+    owner: imageOwner,
+    helmOwner: imageHelmOwner,
+    ownerVerified: imageOwnerVerified,
+  } = imageOwnershipSource
+  const imageOwnership = useMemo<SetImageOwnership | undefined>(() => {
+    if (!imageGuard) return undefined
+    const owner = imageOwner
+    const helmOwner = imageHelmOwner
+    return {
+      guard: imageGuard,
+      onOpenOwner: owner
+        ? imageOwnerVerified
+          ? () => handleOpenGitOpsResource(owner)
+          : undefined
+        : helmOwner
+          ? () => handleOpenHelmRelease(helmOwner)
+          : undefined,
+    }
+  }, [
+    handleOpenGitOpsResource,
+    handleOpenHelmRelease,
+    imageGuard,
+    imageOwner,
+    imageHelmOwner,
+    imageOwnerVerified,
+  ])
   const loadImagesWithTargetOwnership = useCallback(
     async (params: { kind: string; namespace: string; name: string }) => {
       const request = ++imageOwnershipRequestRef.current
       setImageGuardRequested(true)
+      await refetchResource()
+      await refreshImageGuard()
       const inventory = await baseActionsBarProps.onLoadImages!(params)
       const targetDiffers =
         inventory.target.resource.toLowerCase() !== params.kind.toLowerCase() ||
@@ -928,54 +975,8 @@ export function WorkloadView({
       }
       return inventory
     },
-    [baseActionsBarProps.onLoadImages, queryClient, setImageTargetOwnership],
+    [baseActionsBarProps.onLoadImages, queryClient, refetchResource, refreshImageGuard],
   )
-  const imageOwnershipSource = activeImageTargetOwnership ? imageTargetOwnershipResolution : workloadOwnership
-  const imageGuardTarget = activeImageTargetOwnership
-    ? {
-        kind: activeImageTargetOwnership.target.kind,
-        group: activeImageTargetOwnership.target.group,
-        namespace: activeImageTargetOwnership.target.namespace,
-        name: activeImageTargetOwnership.target.name,
-      }
-    : { kind: resource?.kind ?? pluralToKind(apiKind), group: effectiveGroup ?? '', namespace, name }
-  const { guard: imageGuard } = useGitOpsWriteGuard({
-    target: imageGuardTarget,
-    writes: SET_IMAGE_WRITES,
-    ownership: imageOwnershipSource,
-    enabled: imageGuardRequested && Boolean(relationships),
-  })
-  const {
-    owner: imageOwner,
-    helmOwner: imageHelmOwner,
-    ownerVerified: imageOwnerVerified,
-    lookupError: imageOwnerLookupError,
-  } = imageOwnershipSource
-  const imageOwnership = useMemo<SetImageOwnership | undefined>(() => {
-    // An unreadable parent workload leaves ownership unverified; the dialog
-    // blocks rather than guess.
-    if (!imageGuard || imageOwnerLookupError) return undefined
-    const owner = imageOwner
-    const helmOwner = imageHelmOwner
-    return {
-      guard: imageGuard,
-      onOpenOwner: owner
-        ? imageOwnerVerified
-          ? () => handleOpenGitOpsResource(owner)
-          : undefined
-        : helmOwner
-          ? () => handleOpenHelmRelease(helmOwner)
-          : undefined,
-    }
-  }, [
-    handleOpenGitOpsResource,
-    handleOpenHelmRelease,
-    imageGuard,
-    imageOwner,
-    imageHelmOwner,
-    imageOwnerVerified,
-    imageOwnerLookupError,
-  ])
   const actionsBarProps = useMemo(
     () => ({
       ...baseActionsBarProps,

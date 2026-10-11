@@ -174,6 +174,7 @@ export function SetImageDialog({
     const previousInventory = inventory
     const previousDrafts = drafts
     setLoading(true)
+    setAcknowledged(false)
     setLoadError(null)
     try {
       const next = await onLoadRef.current()
@@ -240,7 +241,7 @@ export function SetImageDialog({
     updateCount: updates.length,
     hasEmptyImage,
     ownershipConfirmable: canConfirmGitOpsWrite(guard, acknowledged),
-    busy,
+    busy: busy || loading,
     loadFailed: Boolean(loadError),
   })
 
@@ -309,15 +310,26 @@ export function SetImageDialog({
             {workloadLabel}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          disabled={busy}
-          aria-label="Close"
-          className="rounded p-1 text-theme-text-tertiary hover:bg-theme-hover hover:text-theme-text-primary disabled:opacity-50"
-        >
-          <X className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void loadInventory(true)}
+            disabled={busy || loading || !inventory}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs btn-brand-muted disabled:opacity-50"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            Refresh
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            aria-label="Close"
+            className="rounded p-1 text-theme-text-tertiary hover:bg-theme-hover hover:text-theme-text-primary disabled:opacity-50"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
@@ -388,7 +400,7 @@ export function SetImageDialog({
                 acknowledged={acknowledged}
                 onAcknowledgedChange={setAcknowledged}
                 onOpenOwner={ownership?.onOpenOwner}
-                disabled={busy}
+                disabled={busy || loading}
               />
             )}
 
@@ -397,7 +409,7 @@ export function SetImageDialog({
               containers={regular}
               drafts={drafts}
               changedCurrentKeys={changedCurrentKeys}
-              disabled={busy}
+              disabled={busy || loading}
               onChange={(container, image) =>
                 setDrafts((current) => ({
                   ...current,
@@ -411,7 +423,7 @@ export function SetImageDialog({
                 containers={init}
                 drafts={drafts}
                 changedCurrentKeys={changedCurrentKeys}
-                disabled={busy}
+                disabled={busy || loading}
                 onChange={(container, image) =>
                   setDrafts((current) => ({
                     ...current,
@@ -452,10 +464,12 @@ export function SetImageDialog({
             disabled={!canSubmit}
             className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs btn-brand disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-            {busy
+            {(busy || loading) && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {pending || submitting
               ? 'Updating…'
-              : `Update ${updates.length || ''} image${updates.length === 1 ? '' : 's'}`.replace(
+              : loading
+                ? 'Refreshing…'
+                : `Update ${updates.length || ''} image${updates.length === 1 ? '' : 's'}`.replace(
                   '  ',
                   ' ',
                 )}

@@ -302,3 +302,38 @@ describe('gitOpsWriteEvidencePaths', () => {
     ).toEqual([HIBERNATE, 'spec.suspend'])
   })
 })
+
+
+it('keeps wildcard manager exemptions conservative for image writes', () => {
+  const path = 'spec.template.spec.containers[*].image'
+  const g = evaluateGitOpsWriteGuard({
+    target: { kind: 'Deployment', group: 'apps', namespace: 'prod', name: 'api' },
+    owner: argo,
+    writes: [{ scope: 'spec', paths: [path] }],
+    evidence: evidence(selfHeal, [{ path, lastApplied: 'present', ownedBy: [{ manager: 'image-updater', operation: 'Apply', approximate: true }], ownedByGitOps: false, approximate: true, ignored: 'unevaluated', ignoredBy: 'spec.ignoreDifferences managedFieldsManagers' }]),
+  })
+  expect(g.level).toBe('may-revert')
+  expect(g.requiresAck).toBe(true)
+  expect(canConfirmGitOpsWrite(g, false)).toBe(false)
+  expect(g.perWrite[0].reason).toContain('managedFieldsManagers')
+  expect(g.perWrite[0].reason).not.toContain('written in jq')
+})
+
+it.each([
+  [argo, { ...selfHeal }, 'spec', 'effective'],
+  [kustomization, { tool: 'fluxcd', auto: true, selfHeal: true, prune: true, suspended: false, objectReconcile: 'ignore' }, 'spec', undefined],
+  [kustomization, { tool: 'fluxcd', auto: true, selfHeal: true, prune: true, suspended: false, objectReconcile: 'if-not-present' }, 'spec', undefined],
+  [kustomization, { tool: 'fluxcd', auto: true, selfHeal: true, prune: true, suspended: false, objectReconcile: 'ignore' }, 'delete', undefined],
+  [argo, { ...selfHeal }, 'create-child', undefined],
+] as const)('hedges info-level assurances for %s %s %s', (owner, policy, scope, ignored) => {
+  const g = guard({ owner, writes: [{ scope, paths: [HIBERNATE] }], evidence: evidence(policy, [pathEvidence({ ignored })]) })
+  expect(g.level).toBe('info')
+  expect(g.perWrite[0].reason).toContain('not expected')
+  expect(g.perWrite[0].reason).not.toMatch(/won['’]t (?:overwrite|revert|be recreated)/)
+})
+
+it('hedges an independent Helm child assurance', () => {
+  const g = guard({ owner: null, helmRelease: { name: 'app', namespace: 'prod' }, writes: [{ scope: 'create-child' }] })
+  expect(g.level).toBe('info')
+  expect(g.perWrite[0].reason).toContain('an upgrade is not expected to revert it')
+})

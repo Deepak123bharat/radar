@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   evaluateGitOpsWriteGuard,
@@ -18,6 +18,7 @@ export interface GitOpsWriteGuardState {
   guard: GitOpsWriteGuard | undefined
   ownership: ResolvedGitOpsOwner
   evidence: GitOpsWriteEvidence | undefined
+  refresh: () => Promise<void>
 }
 
 // Evaluates the GitOps write guard for a write to `target`: resolves the
@@ -31,6 +32,8 @@ export function useGitOpsWriteGuard({
   relationships,
   resource,
   ownership: resolved,
+  ownershipError: hostOwnershipError,
+  managedBy,
   enabled = true,
 }: {
   target: GitOpsWriteTarget
@@ -39,6 +42,8 @@ export function useGitOpsWriteGuard({
   resource?: unknown
   /** Pass when the host already resolved ownership for this target. */
   ownership?: ResolvedGitOpsOwner
+  ownershipError?: string | null
+  managedBy?: string
   enabled?: boolean
 }): GitOpsWriteGuardState {
   const needsTarget = enabled && !resolved && relationships === undefined
@@ -99,11 +104,15 @@ export function useGitOpsWriteGuard({
     retry: false,
   })
 
-  const ownershipError = targetLookupFailed
+  const ownershipError = hostOwnershipError || (targetLookupFailed
     ? "Radar couldn't read the resource"
     : ownership.lookupError
       ? "Radar couldn't resolve the resource's GitOps ownership"
-      : null
+      : !managed && managedBy
+        ? `Radar previously identified ${managedBy} management but couldn't resolve its owner`
+        : needsTarget && !targetLookupPending && targetQuery.data && !ownRelationships
+          ? "Radar couldn't read the resource's management ownership"
+          : null)
 
   const guard = useMemo(
     () =>
@@ -112,9 +121,9 @@ export function useGitOpsWriteGuard({
             target,
             owner: ownership.owner,
             helmRelease: ownership.helmOwner,
-            ownerPending: lookupPending || (canFetchEvidence && evidenceQuery.isPending),
+            ownerPending: lookupPending || (canFetchEvidence && (evidenceQuery.isPending || evidenceQuery.isFetching)),
             ownershipError,
-            evidence: evidenceQuery.data,
+            evidence: evidenceQuery.isError ? undefined : evidenceQuery.data,
             evidenceError: evidenceQuery.error instanceof Error ? evidenceQuery.error.message : null,
             writes: JSON.parse(writesKey),
           })
@@ -133,6 +142,8 @@ export function useGitOpsWriteGuard({
       lookupPending,
       canFetchEvidence,
       evidenceQuery.isPending,
+      evidenceQuery.isFetching,
+      evidenceQuery.isError,
       evidenceQuery.data,
       evidenceQuery.error,
       ownershipError,
@@ -140,5 +151,8 @@ export function useGitOpsWriteGuard({
     ],
   )
 
-  return { guard, ownership, evidence: evidenceQuery.data }
+  const refresh = useCallback(async () => {
+    if (canFetchEvidence) await evidenceQuery.refetch()
+  }, [canFetchEvidence, evidenceQuery.refetch])
+  return { guard, ownership, evidence: evidenceQuery.data, refresh }
 }

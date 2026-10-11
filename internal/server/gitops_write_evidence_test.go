@@ -368,3 +368,29 @@ func TestWriteEvidenceControllerOwnerAndMetadataOwner(t *testing.T) {
 		t.Errorf("controller owner: %+v", resp.ControllerOwner)
 	}
 }
+
+func TestWriteEvidenceManagerIgnoreRequiresExactOwnership(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, ignored string
+		fields              map[string]any
+	}{
+		{"wildcard", "spec.template.spec.containers[*].image", "unevaluated", map[string]any{"f:spec": map[string]any{"f:template": map[string]any{"f:spec": map[string]any{"f:containers": map[string]any{`k:{"name":"app"}`: map[string]any{"f:image": map[string]any{}}}}}}}},
+		{"exact container", "spec.template.spec.containers[name=app].image", "effective", map[string]any{"f:spec": map[string]any{"f:template": map[string]any{"f:spec": map[string]any{"f:containers": map[string]any{`k:{"name":"app"}`: map[string]any{"f:image": map[string]any{}}}}}}}},
+		{"atomic ancestor", "spec.template.spec.containers[name=sidecar].image", "unevaluated", map[string]any{"f:spec": map[string]any{"f:template": map[string]any{}}}},
+		{"unresolved selector", "spec.template.spec.containers[name=missing].image", "unevaluated", map[string]any{"f:spec": map[string]any{"f:template": map[string]any{}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			managed := []metav1.ManagedFieldsEntry{fieldsEntry(t, "image-updater", metav1.ManagedFieldsOperationApply, tc.fields)}
+			ignore := []any{map[string]any{"group": "apps", "kind": "Deployment", "managedFieldsManagers": []any{"image-updater"}}}
+			app := evidenceArgoApp(map[string]any{"automated": map[string]any{"selfHeal": true}, "syncOptions": []any{"RespectIgnoreDifferences=true"}}, ignore)
+			response := buildGitOpsWriteEvidence(evidenceTarget(t, nil, managed), deploymentRef, []string{tc.path}, argoOwner, app, nil)
+			got := pathEvidence(t, response, tc.path)
+			if got.Ignored != tc.ignored {
+				t.Fatalf("evidence=%+v, want %s", got, tc.ignored)
+			}
+			if tc.ignored == "unevaluated" && got.IgnoredBy != "spec.ignoreDifferences managedFieldsManagers" {
+				t.Fatalf("missing manager uncertainty: %+v", got)
+			}
+		})
+	}
+}
