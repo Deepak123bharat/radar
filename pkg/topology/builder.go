@@ -3813,8 +3813,21 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	// 9. Add Secret nodes (if enabled and RBAC permits)
 	visibleSecretIDs := make(map[workloadRefKey]string)
 	observedSecrets := make(map[string]*corev1.Secret)
+	var secrets []*corev1.Secret
+	var secretsErr error
+	secretsLoaded := false
+	loadObservedSecrets := func() {
+		if secretsLoaded {
+			return
+		}
+		secretsLoaded = true
+		secrets, secretsErr = b.provider.Secrets()
+		for _, secret := range secrets {
+			observedSecrets["secret/"+secret.Namespace+"/"+secret.Name] = secret
+		}
+	}
 	if opts.IncludeSecrets {
-		secrets, secretsErr := b.provider.Secrets()
+		loadObservedSecrets()
 		if secretsErr != nil {
 			log.Printf("WARNING [topology] Failed to list Secrets: %v", secretsErr)
 			warnings = append(warnings, fmt.Sprintf("Failed to list Secrets: %v", secretsErr))
@@ -3827,7 +3840,6 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 			// Only include Secrets that are referenced by workloads in the same namespace
 			secretID := fmt.Sprintf("secret/%s/%s", secret.Namespace, secret.Name)
-			observedSecrets[secretID] = secret
 			consumers := secretConsumers[workloadRefKey{namespace: secret.Namespace, name: secret.Name}]
 
 			for _, workloadID := range consumers {
@@ -5162,6 +5174,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		id := "secret/" + namespace + "/" + name
 		if !existingSecretNodes[id] {
 			existingSecretNodes[id] = true
+			loadObservedSecrets()
 			if secret := observedSecrets[id]; secret != nil {
 				nodes = append(nodes, secretNode(secret))
 			} else {
