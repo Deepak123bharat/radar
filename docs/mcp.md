@@ -449,16 +449,14 @@ Both tools return `guidance` as an array of interpretation notes; read notes abo
 
 ## Resource read errors
 
-`list_resources` and `get_resource` return MCP tool errors (`isError: true`) when
-Radar cannot establish a readable, synchronized view. A successful empty list
-remains `[]`; it means no objects were found within the readable requested scope,
-not that every namespace in the cluster was inspected. A list Radar's collector
-could serve only in some namespaces returns its rows with the namespaces read
-([partial lists](#partial-lists)); every other successful resource and context
-shape is unchanged.
+`list_resources` and `get_resource` return MCP tool errors (`isError: true`)
+when Radar cannot establish a readable, synchronized view. Complete lists keep
+their array shape; `[]` means no objects were found within the readable requested
+scope. Unrestricted partial lists return [rows with coverage](#partial-lists).
+Workload and GitOps `diagnose` root reads apply the same readiness checks.
 
-Each error carries a reason code twice: as the prefix of its text
-(`<reason>: <explanation>`), and in `structuredContent`:
+Classified errors carry `<reason>: <explanation>` in text and the same reason
+and explanation in `structuredContent`:
 
 ```json
 {
@@ -471,41 +469,35 @@ Each error carries a reason code twice: as the prefix of its text
 }
 ```
 
-Branch on `structuredContent.reason`; the text is for people and for clients that
-read only text. Errors without a reason (an absent object's `resource not found`,
-a disconnected cluster, a serialization failure) stay text-only. Workload and
-GitOps `diagnose` root reads use the same readiness and synchronization checks;
-an unobserved target is not reported as absent. Collector refusals carry the
-same codes and shape. The codes are defined in `pkg/readreason`.
-
-Reasons separate the calling user's permissions from Radar's collection access:
+Branch on `structuredContent.reason`. Confirmed missing objects, disconnected
+clusters and serialization failures retain text-only errors. Reason codes are
+defined in `pkg/readreason`.
 
 | Reason | Meaning | Next step |
 |---|---|---|
-| `rbac_denied` | An exact permission check (Secrets and cluster-scoped kinds) denied your role. The error names the verb, API group/resource and scope. | Ask for access, or read a scope you are allowed. |
-| `no_namespace_access` | No requested namespace passes Radar's namespace membership check, which grants a namespace when your role can list Pods or Deployments there, re-checked about every two minutes. This is not an exact check of the requested kind. | Check your Pod or Deployment list access in that namespace. |
-| `permission_check_failed` | Radar could not verify your access. This is not proof that your role is denied. | Retry once the permission check is available. |
-| `outside_namespace_scope` | The requested namespace is excluded by Radar's `--namespace-scope` pin. Caller permissions do not change this, and the browser's namespace picker does not scope MCP requests. | Use the pinned namespace, or change Radar's configuration. |
-| `collector_access_denied` | Kubernetes refused Radar's own identity (its service account, or the local kubeconfig identity): for this request, or, for a kind Radar caches at startup, in every scope the startup probe tried. | Fix Radar's access; granting the caller access does not repair this. |
-| `collector_unauthorized` | Kubernetes rejected Radar's credentials. This is distinct from an RBAC denial. | Refresh Radar's service-account credentials or local kubeconfig token. |
-| `collector_scope_limited` | A requested namespace is outside the coverage Radar's collector established, so Radar did not read it (see the coverage rule below). The error names the uncovered namespaces and the covered namespaces you can read. | Retry with a covered namespace, or widen Radar's collection. |
-| `kind_sync_pending` | Initial cache synchronization is still in progress. Unavailable discovery also reports this rather than claiming a kind is unknown. | Retry shortly. |
-| `kind_sync_failed` | The typed sync deadline elapsed, or the requested namespace's dynamic sync stalled. Another namespace's stalled informer does not fail a read of this one. | Inspect Radar's connection and collector list/watch permissions. |
-| `kind_not_watched` | Radar has no watch for the kind, and nothing more precise is known. | Inspect collector permissions and collection configuration. |
-| `collection_not_supported` | The API does not support list/watch, so Radar cannot collect it. | Do not retry; a watch cannot be started. |
-| `unknown_kind` | Neither the built-in catalog nor discovery recognizes the kind. | Check the spelling, the `group`, and that the API is installed. |
-| `namespace_required` | `get_resource` named a known namespaced kind without a namespace. | Pass `namespace`. |
-| `read_error` | An unexpected read failure. The explanation keeps the requested kind and the underlying cause. | Read the explanation; retry or investigate. |
+| `rbac_denied` | Your exact Secret or cluster-kind permission check denied the operation. | Ask for access, or use an allowed scope. |
+| `no_namespace_access` | No requested namespace passes the Pods or Deployments list membership check; this is not an exact check of the requested kind. | Check your Pod or Deployment list access. |
+| `permission_check_failed` | Radar could not verify your access. | Retry when the permission check is available. |
+| `outside_namespace_scope` | The namespace is excluded by `--namespace-scope`. | Use the pinned namespace, or change Radar's configuration. |
+| `collector_access_denied` | Kubernetes refused Radar's service account or local kubeconfig identity. | Fix Radar's access; granting the caller access does not repair this. |
+| `collector_unauthorized` | Kubernetes rejected Radar's credentials. | Refresh Radar's credentials or kubeconfig token. |
+| `collector_scope_limited` | The namespace is outside established collector coverage; Radar did not read it. | Retry with a covered namespace, or widen collection. |
+| `kind_sync_pending` | Initial synchronization or discovery is not ready. | Retry shortly. |
+| `kind_sync_failed` | Initial synchronization timed out or stalled. | Check Radar's connection and list/watch permissions. |
+| `kind_not_watched` | Radar has no watch for the kind. | Check collection configuration and permissions. |
+| `collection_not_supported` | The API does not support list/watch. | Do not retry; collection is unsupported. |
+| `unknown_kind` | The kind is absent from the built-in catalog and discovery. | Check spelling, `group`, and API installation. |
+| `namespace_required` | A namespaced `get_resource` needs a namespace. | Pass `namespace`. |
+| `read_error` | An unexpected read failure. | Read the explanation; retry or investigate. |
 
-Neither collector reason repeats the API server's response, which names Radar's
-identity (for a service account, the namespace Radar runs in); Radar logs it
-instead.
+Collector errors omit the API server's response, which may name Radar's identity;
+the raw cause is logged server-side. Errors name only namespaces the caller may
+read or explicitly requested.
 
 ### Partial lists
 
-An unrestricted, unscoped `list_resources` read (see the coverage rule below)
-that Radar's collector could serve only in some namespaces succeeds, but returns
-its rows inside an object naming what was read, instead of a bare array:
+An unrestricted, unscoped `list_resources` call succeeds with this object when
+Radar can read the kind only in some namespaces:
 
 ```json
 {
@@ -519,103 +511,43 @@ its rows inside an object naming what was read, instead of a bare array:
 }
 ```
 
-- `items` holds the rows exactly as a complete read returns them. When the
-  namespaces read hold nothing it is `[]`: a partial read never returns a bare
-  `[]`, which would read as an empty cluster.
-- `coverage.namespaces` lists the namespaces actually read, sorted. Only
-  unrestricted callers get this object, and they may read every namespace.
-- `coverage.reason` is `collector_scope_limited` when the kind's informers
-  cover only those namespaces (kinds cached at startup, and custom resources),
-  and `collector_access_denied` when Kubernetes refused Radar's identity the
-  cluster-wide list for this request and Radar read its fallback namespaces
-  instead (Endpoints, EndpointSlices and Leases).
-- `coverage.note` says the same for a reader: the namespaces read, and that the
-  rows cannot establish an object's absence anywhere else.
-- The object is the result's only text block; there is no
-  `structuredContent`. `coverage` comes first, so a reader that keeps only the
-  head of a long result still has it.
+`items` contains the usual rows, or `[]` when the namespaces read hold nothing.
+`coverage.namespaces` lists the namespaces actually read, sorted;
+`coverage.note` explains that missing rows cannot establish absence elsewhere.
+The result is one text block without `structuredContent`. Coverage comes first
+so it survives truncation that retains only the head of a long result.
 
-Every other successful read is a bare array: cluster-wide coverage,
-cluster-scoped kinds, a named `namespace`, a restricted caller, and a
-`--namespace-scope` pin. Investigation Findings shows a partial list's rows
-with a caveat naming the namespaces read, including when it is empty. When the
-agent cites a partial list for an object it does not hold, the citation says
-whether that object's namespace was read: a namespace outside the coverage is
-reported as not read, never as the object's absence.
+For partial lists, `coverage.reason` is `collector_scope_limited` for informer
+coverage, or `collector_access_denied` when a direct read of Endpoints,
+EndpointSlices or Leases was refused cluster-wide and fell back to namespace
+reads. Complete lists remain bare arrays. Clients must handle both shapes.
 
-Dynamic resources are watched on demand. An initial-sync wait of approximately
-three seconds per informer gives cold lists time to load before reporting loading.
-GETs of absent objects can also use the cache's existing approximately two-second
-missing-object wait before the three-second sync check. Namespace lists use the full
-collector list after the caller passes the list-namespaces permission check;
-namespace membership and `--namespace-scope` do not narrow them.
-Ordinary namespaced resources retain namespace-level authorization; Secrets and
-cluster-scoped kinds retain their additional per-kind permission checks.
+Findings shows a coverage caveat, including for empty partial results. A placed
+story card distinguishes an unread subject namespace from a missing object in
+a namespace that was read.
 
-When Radar's collector covers only some namespaces, every kind follows one rule,
-which depends on whether the request is restricted. A request is **restricted**
-when it resolves to a finite namespace list: the caller's Radar namespace access
-is a list (auth is enabled and the namespace-membership check found no
-cluster-wide Pods or Deployments list access), the call names a `namespace`, or
-`--namespace-scope` pins Radar to one namespace. It is **unrestricted** when auth
-is disabled or the caller has cluster-wide namespace access, and no namespace is
-named or pinned.
+### Namespace scope
 
-- A restricted request needs every namespace in its list covered. If any is
-  not, the read fails, even when other namespaces have objects; a partial answer
-  would read as the caller's whole scope. The error names the uncovered
-  namespaces and, where Radar knows them, the covered namespaces the caller can
-  read, and suggests retrying with one of the covered namespaces as `namespace`.
-- An unrestricted request reads the namespaces the collector covers and omits
-  the rest, so unscoped lists keep working on a namespace-scoped collector. The
-  result is a [partial list](#partial-lists) naming the namespaces read; only a
-  read that covered nothing fails.
-- A restricted request whose namespaces are covered but hold no objects returns
-  `[]`; an unrestricted one returns a partial list with empty `items`.
+For namespaced resources, a request is **restricted** when it names a
+`namespace`, Radar is pinned with `--namespace-scope`, or the caller has only a
+finite set of authorized namespaces. Otherwise, an auth-off or cluster-wide
+caller's unscoped request is **unrestricted**. The browser namespace picker does
+not scope MCP requests.
 
-The reason for an uncovered namespace depends on how Radar learns coverage, not
-on the kind's name:
+- **Restricted:** every requested namespace must be covered, or the read
+  errors even if other namespaces have objects. Covered empty reads return `[]`.
+- **Unrestricted:** read the namespaces the collector covers, returning a
+  partial list when coverage is limited. If no namespace can be read, it errors.
 
-- Kinds Radar caches at startup (Pods, ConfigMaps, Services, Deployments, …)
-  know their coverage from the startup probe and never read outside it, so an
-  uncovered namespace is `collector_scope_limited`. The namespace may simply not have
-  been among the probe's candidates; Radar cannot tell whether its identity is
-  refused there.
-- Custom resources read each requested namespace on demand, starting an
-  informer there and verifying its sync, including grants outside the
-  collector's initial fallback candidates. Endpoints, EndpointSlices and Leases
-  are read straight from the API server with no informer. Radar tries each
-  requested namespace for these kinds, so an uncovered namespace is one where
-  Kubernetes refused it: `collector_access_denied`. A custom resource offers the
-  namespaces its informers already cover. A direct kind knows only the
-  namespaces read for this request, so it offers covered namespaces only on an
-  unscoped read.
+An uncovered namespace is `collector_scope_limited` when it was not collected,
+or `collector_access_denied` when Kubernetes refused Radar's read. Credential
+rejection is always `collector_unauthorized`, even if another namespace succeeds.
 
-For example, on a collector that covers `alpha` and `gamma`, a caller allowed in
-`alpha` and `beta` gets an error naming `beta` and offering `alpha`
-(`collector_scope_limited` for ConfigMaps, `collector_access_denied` for a custom resource
-or Leases); a caller allowed only in `gamma`, covered but empty, gets `[]`; a
-cluster-wide caller gets `alpha`'s objects in a partial list naming `alpha` and
-`gamma`.
-
-Tool errors name only namespaces the caller may read or named in the request.
-Covered namespaces outside the caller's access are left out and never change the
-wording. When none remain, a `collector_scope_limited` error says the collector's
-coverage does not include any namespace the caller can read; a
-`collector_access_denied` error offers no namespaces, because Radar being refused
-for this request says nothing about where else it can read.
-
-An unrestricted, unscoped read of Endpoints, EndpointSlices or Leases lists the
-cluster scope first. When Radar's identity is refused there, it reads each of
-the collector's fallback namespaces, the same candidates custom resource
-informers fall back to, and returns those that succeed as a partial list with
-reason `collector_access_denied`; a restricted read lists
-only the caller's namespaces, with no cluster-wide list. Rejected collector
-credentials are never treated as missing coverage: `collector_unauthorized` fails
-the read even when collection succeeds in a different namespace.
-Secret lists additionally omit
-namespaces where the caller's Secret list permission is denied. A failed Secret
-permission check returns an error rather than silently omitting that namespace.
+Namespace lists use the full collector list after the list-namespaces permission
+check; namespace membership and `--namespace-scope` do not narrow them. Secrets and cluster-scoped
+kinds retain exact per-kind permission checks. Secret lists omit namespaces with
+confirmed-denied Secret list access; an incomplete permission check fails the
+read.
 
 ## Available Tools
 
