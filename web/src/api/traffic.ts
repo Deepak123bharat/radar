@@ -202,16 +202,19 @@ export function useTrafficRecords(options: UseTrafficRecordsOptions) {
     if (match) params.set('match', match)
   }
   const tooLarge = options.match !== null && (match === null || params.toString().length > MAX_TRAFFIC_QUERY_CHARS)
+  // The view this answers, apart from the optional exclusions.
+  const view = JSON.stringify([...trafficScopeKey(options), match])
 
   const query = useQuery<TrafficRecordsResponse>({
     queryKey: ['traffic-flows', 'records', ...trafficScopeKey(scope), match, ...gatedKey],
     queryFn: () => guard(() => fetchApiJSON<TrafficRecordsResponse>(`/traffic/flows/records?${params.toString()}`)),
     staleTime: 5000,
     enabled: enabled && match !== null && !tooLarge && support !== 'unsupported',
-    // Kept while the same selection refetches with another scope (a namespace
-    // hidden), not when the selection changes: another selection's records
-    // would show under this one.
-    placeholderData: (prev, prevQuery) => (match !== null && prevQuery?.queryKey.includes(match) ? prev : undefined),
+    meta: { view },
+    // Kept while only the optional exclusions change (a namespace hidden in
+    // the sidebar, which the list filters out anyway). Not across another
+    // selection, window or scope: those records would show under this one.
+    placeholderData: (prev, prevQuery) => (prevQuery?.meta?.view === view ? prev : undefined),
     retry: shouldRetryRadarQuery,
   })
   return { ...query, tooLarge, supported: support !== 'unsupported' }

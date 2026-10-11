@@ -611,8 +611,8 @@ describe('selectedEdgeMatcher', () => {
     expect(on(record('api', 'web', 41234))).toBe(false)
   })
 
-  // A Radar before caller-oriented responses sends a response server to
-  // client on the client's ephemeral port; dropping it left requests looking
+  // A server that doesn't orient responses sends one server to
+  // client on the client's ephemeral port; dropping it would leave requests looking
   // unanswered.
   it('keeps a reversed response from a Radar that does not orient responses', () => {
     const on = selectedEdgeMatcher(pairs, false, asDrawn)

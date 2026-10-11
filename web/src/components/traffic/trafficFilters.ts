@@ -399,10 +399,9 @@ export function pairKey(source: { namespace?: string; name: string }, destinatio
 
 /**
  * Whether a record belongs to the selected edges, in the grouping the graph
- * draws (`drawn`). A Radar from before caller-oriented responses
- * (`responsesCallerOriented` unset) sends an HTTP response from server to
- * client, on the client's port, so there a response is also matched to an
- * edge running the other way. Its port says nothing about which of the
+ * draws (`drawn`). Without `responsesCallerOriented` the server sends an HTTP
+ * response as it was observed, server to client on the client's port, so a
+ * response is then also matched to an edge running the other way. Its port says nothing about which of the
  * caller's edges it answers, so it is matched to each of them; other traffic
  * between the same endpoints is not, being on edges of its own.
  */
