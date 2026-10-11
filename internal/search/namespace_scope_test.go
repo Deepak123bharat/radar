@@ -66,7 +66,7 @@ func hitNames(res Result) []string {
 func gapsWithReason(res Result, reason string) []UnsearchedKind {
 	var out []UnsearchedKind
 	for _, gap := range res.Unsearched {
-		if gap.Reason == reason {
+		if string(gap.Reason) == reason {
 			out = append(out, gap)
 		}
 	}
@@ -140,12 +140,14 @@ func TestNamespaceCoverageCollapsesOnBroadQueries(t *testing.T) {
 		t.Fatalf("explicit excluded coverage = %v %+v, want %+v", got, res.Unsearched, want)
 	}
 
-	p.typedReasons = map[string]string{"Pod": "namespace_scope", "ConfigMap": "namespace_scope", "Secret": "namespace_scope"}
+	p.typedReasons = map[string]string{"Pod": "collector_scope_limited", "ConfigMap": "collector_scope_limited", "Secret": "collector_scope_limited"}
 	q = Parse("robusta")
 	opts = Options{Include: IncludeNone}
 	opts.ScopeNamespaces(q, []string{"a"}, nil)
 	res, _ = Search(context.Background(), p, q, opts)
-	want = []UnsearchedKind{{Kind: "*", Reason: "namespace_scope", Namespaces: []string{"a"}}}
+	// Collector coverage and the namespace selection stay separate entries:
+	// only the selection names the namespaces that were searched.
+	want = []UnsearchedKind{{Kind: "*", Reason: "collector_scope_limited"}, {Kind: "*", Reason: "namespace_scope_limited", Namespaces: []string{"a"}}}
 	if !reflect.DeepEqual(res.Unsearched, want) {
 		t.Fatalf("broad scope coverage = %+v, want %+v", res.Unsearched, want)
 	}
@@ -156,7 +158,7 @@ func TestSelectionCoverageNamesOnlyNamespacedKinds(t *testing.T) {
 		query string
 		want  []UnsearchedKind
 	}{
-		{"kind:Pod robusta", []UnsearchedKind{{Kind: "Pod", Reason: "namespace_scope", Namespaces: []string{"a"}}}},
+		{"kind:Pod robusta", []UnsearchedKind{{Kind: "Pod", Reason: "namespace_scope_limited", Namespaces: []string{"a"}}}},
 		{"kind:ClusterRole robusta", []UnsearchedKind{}},
 	} {
 		q := Parse(tc.query)
@@ -171,7 +173,7 @@ func TestSelectionCoverageNamesOnlyNamespacedKinds(t *testing.T) {
 
 func TestUnknownKindKeepsRequestedSpelling(t *testing.T) {
 	res, _ := Search(context.Background(), &fakeProvider{}, Parse("kind:NoSuchKindXyz kind:nosuchkindxyz"), Options{})
-	want := []UnsearchedKind{{Kind: "NoSuchKindXyz", Reason: "not_indexed"}}
+	want := []UnsearchedKind{{Kind: "NoSuchKindXyz", Reason: "unknown_kind"}}
 	if !res.Partial || !reflect.DeepEqual(res.Unsearched, want) {
 		t.Fatalf("unknown kind = %+v, want %+v", res.Unsearched, want)
 	}
@@ -189,8 +191,8 @@ func TestDynamicNamespaceCoveragePrecedesReadiness(t *testing.T) {
 		want  []UnsearchedKind
 	}{
 		{"kind:Widget", []UnsearchedKind{
-			{Kind: "Widget", Group: "example.io", Reason: "namespace_scope", Namespaces: []string{"a"}},
-			{Kind: "Widget", Group: "example.io", Reason: "syncing"},
+			{Kind: "Widget", Group: "example.io", Reason: "kind_sync_pending"},
+			{Kind: "Widget", Group: "example.io", Reason: "namespace_scope_limited", Namespaces: []string{"a"}},
 		}},
 		{"kind:Widget ns:b", []UnsearchedKind{{Kind: "Widget", Group: "example.io", Reason: "namespace_excluded", Namespaces: []string{"b"}}}},
 	} {

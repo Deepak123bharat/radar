@@ -8,6 +8,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -113,11 +114,11 @@ func TestBroadCoverageCollapsesColdAndOmitsUnsupportedBeforeSAR(t *testing.T) {
 		}
 		return true, true
 	}})
-	if !res.Partial || len(res.Unsearched) != 1 || !reflect.DeepEqual(res.Unsearched[0], UnsearchedKind{Kind: "*", Group: "", Reason: "cold"}) || len(p.warmed) != 0 {
+	if !res.Partial || len(res.Unsearched) != 1 || !reflect.DeepEqual(res.Unsearched[0], UnsearchedKind{Kind: "*", Group: "", Reason: "kind_not_watched"}) || len(p.warmed) != 0 {
 		t.Fatalf("broad coverage: %+v", res)
 	}
 	res, _ = Search(context.Background(), p, Parse("kind:Thing2"), Options{CanReadClusterScoped: func(string, string, string) (bool, bool) { t.Fatal("unsupported kind issued SAR"); return false, true }})
-	if !res.Partial || len(res.Unsearched) != 1 || res.Unsearched[0].Kind != "Thing2" || res.Unsearched[0].Reason != "not_indexed" {
+	if !res.Partial || len(res.Unsearched) != 1 || res.Unsearched[0].Kind != "Thing2" || res.Unsearched[0].Reason != "collection_not_supported" {
 		t.Fatalf("explicit unsupported: %+v", res)
 	}
 }
@@ -132,7 +133,7 @@ func TestBroadOnlyUnsupportedIsComplete(t *testing.T) {
 }
 
 func TestTypedReadinessPrecedesCallerPermissionChecks(t *testing.T) {
-	p := &fakeProvider{typedReasons: map[string]string{"Secret": "syncing", "Node": "sa_forbidden"}}
+	p := &fakeProvider{typedReasons: map[string]string{"Secret": "kind_sync_pending", "Node": "collector_access_denied"}}
 	for _, kind := range []string{"Secret", "Node"} {
 		res, _ := Search(context.Background(), p, Parse("kind:"+kind), Options{
 			NamespacedRBAC: func([]string, string, string) (string, []string) {
@@ -144,7 +145,7 @@ func TestTypedReadinessPrecedesCallerPermissionChecks(t *testing.T) {
 				return false, true
 			},
 		})
-		if !res.Partial || len(res.Unsearched) != 1 || res.Unsearched[0].Reason != p.typedReasons[kind] {
+		if !res.Partial || len(res.Unsearched) != 1 || string(res.Unsearched[0].Reason) != p.typedReasons[kind] {
 			t.Fatalf("readiness coverage: %+v", res)
 		}
 	}
@@ -168,12 +169,12 @@ func TestDynamicObservationReasonsAndRequestedScope(t *testing.T) {
 		state        k8score.DynamicObservationState
 		code, reason string
 	}{
-		{k8score.DynamicObservationSyncing, "sync_stalled", "sync_failed"},
-		{k8score.DynamicObservationDeferred, "scope_probe_incomplete", "syncing"},
+		{k8score.DynamicObservationSyncing, "sync_stalled", "kind_sync_failed"},
+		{k8score.DynamicObservationDeferred, "scope_probe_incomplete", "kind_sync_pending"},
 	} {
 		p.observations[gvr] = k8score.DynamicResourceObservation{State: tc.state, ReasonCode: tc.code}
 		res, _ := Search(context.Background(), p, Parse("kind:Widget"), Options{})
-		if !res.Partial || len(res.Unsearched) != 1 || res.Unsearched[0].Reason != tc.reason || len(p.warmed) != 0 {
+		if !res.Partial || len(res.Unsearched) != 1 || string(res.Unsearched[0].Reason) != tc.reason || len(p.warmed) != 0 {
 			t.Fatalf("reason %s: %+v", tc.code, res)
 		}
 	}
@@ -190,13 +191,33 @@ func TestDynamicObservationReasonsAndRequestedScope(t *testing.T) {
 	}
 }
 
+// Warming an uncovered namespace talks to the API server as Radar; a rejected
+// credential there is the collector's access, not an unclassified failure.
+func TestWarmingRejectedCollectorCredentialsReportAccessDenied(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	p := &fakeProvider{
+		kinds:        map[schema.GroupVersionResource]string{gvr: "Widget"},
+		namespaced:   map[schema.GroupVersionResource]bool{gvr: true},
+		observations: map[schema.GroupVersionResource]k8score.DynamicResourceObservation{gvr: {State: k8score.DynamicObservationSynced, Scope: k8score.DynamicObservationScopeExplicitNamespaces, Namespaces: []string{"a"}}},
+		warmError:    apierrors.NewUnauthorized("token expired"),
+	}
+	res, _ := Search(context.Background(), p, Parse("kind:Widget"), Options{Namespaces: []string{"a", "b"}})
+	want := []UnsearchedKind{
+		{Kind: "Widget", Group: "example.io", Reason: "collector_access_denied"},
+		{Kind: "Widget", Group: "example.io", Reason: "collector_scope_limited"},
+	}
+	if !res.Partial || !reflect.DeepEqual(res.Unsearched, want) {
+		t.Fatalf("rejected collector credentials while warming = %+v, want %+v", res.Unsearched, want)
+	}
+}
+
 func TestPermissionCheckFailuresAreNotReportedAsDenial(t *testing.T) {
 	for _, kind := range []string{"Secret", "Node"} {
 		res, _ := Search(context.Background(), &fakeProvider{}, Parse("kind:"+kind), Options{
-			NamespacedRBAC:       func([]string, string, string) (string, []string) { return "list_error", nil },
+			NamespacedRBAC:       func([]string, string, string) (string, []string) { return "permission_check_failed", nil },
 			CanReadClusterScoped: func(string, string, string) (bool, bool) { return false, false },
 		})
-		if !res.Partial || len(res.Unsearched) != 1 || res.Unsearched[0].Reason != "list_error" {
+		if !res.Partial || len(res.Unsearched) != 1 || res.Unsearched[0].Reason != "permission_check_failed" {
 			t.Fatalf("failed SAR: %+v", res)
 		}
 	}

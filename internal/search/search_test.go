@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/skyhook-io/radar/pkg/k8score"
+	"github.com/skyhook-io/radar/pkg/readreason"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -55,8 +56,8 @@ func (f *fakeProvider) DynamicResources() ([]schema.GroupVersionResource, error)
 	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
 	return out, nil
 }
-func (f *fakeProvider) TypedCoverage(kind string, namespaces []string) string {
-	return f.typedReasons[kind]
+func (f *fakeProvider) TypedCoverage(kind string, namespaces []string) readreason.Code {
+	return readreason.Code(f.typedReasons[kind])
 }
 func (f *fakeProvider) DynamicObservation(gvr schema.GroupVersionResource) k8score.DynamicResourceObservation {
 	if o, ok := f.observations[gvr]; ok {

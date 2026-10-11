@@ -39,7 +39,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	//
 	// Without globalNs=1, the per-user namespace-switcher pick (or the
 	// --namespace-scope namespace) narrows the scan, and the response reports
-	// that as namespace_scope. globalNs=1 drops the cosmetic pick and scans the
+	// that as namespace_scope_limited. globalNs=1 drops the cosmetic pick and scans the
 	// user's full RBAC ceiling — a "global" search whose only scope is the
 	// query's own `ns:` tokens. The omnibar sets it so a deliberately broad ⌘K
 	// lookup isn't narrowed to whatever namespace the view filter is on.

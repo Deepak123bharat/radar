@@ -29,12 +29,12 @@ func TestCacheProviderTypedCoverageUsesReadinessAndScope(t *testing.T) {
 		reason     string
 	}{
 		{"Pod", []string{"team-a"}, ""},
-		{"Pod", nil, "namespace_scope"},
-		{"Pod", []string{"team-b"}, "namespace_scope"},
-		{"Pod", []string{"team-a", "team-b"}, "namespace_scope"},
-		{"Secret", []string{"team-a"}, "syncing"},
+		{"Pod", nil, "collector_scope_limited"},
+		{"Pod", []string{"team-b"}, "collector_scope_limited"},
+		{"Pod", []string{"team-a", "team-b"}, "collector_scope_limited"},
+		{"Secret", []string{"team-a"}, "kind_sync_pending"},
 	} {
-		if got := p.TypedCoverage(tc.kind, tc.namespaces); got != tc.reason {
+		if got := p.TypedCoverage(tc.kind, tc.namespaces); string(got) != tc.reason {
 			t.Errorf("%s %v: got %q want %q", tc.kind, tc.namespaces, got, tc.reason)
 		}
 	}
@@ -61,12 +61,12 @@ func TestCacheProviderUnavailableTypedUsesCollectorPermissions(t *testing.T) {
 	t.Cleanup(cache.Stop)
 	p := &CacheProvider{cache: &k8s.ResourceCache{ResourceCache: cache}, permissions: &k8s.ResourcePermissions{}}
 	for _, tk := range typedKinds {
-		if got := p.TypedCoverage(tk.Kind, nil); got != "sa_forbidden" {
+		if got := p.TypedCoverage(tk.Kind, nil); got != "collector_access_denied" {
 			t.Errorf("%s: %q", tk.Kind, got)
 		}
 	}
 	p.permissions.Secrets = true
-	if got := p.TypedCoverage("Secret", nil); got != "syncing" {
+	if got := p.TypedCoverage("Secret", nil); got != "kind_sync_pending" {
 		t.Fatalf("allowed but unavailable: %q", got)
 	}
 }
@@ -90,12 +90,12 @@ func TestCacheProviderNeverWarmsDirectReadBuiltins(t *testing.T) {
 		if got := p.DynamicObservation(gvr); got.State != k8score.DynamicObservationUnsupported {
 			t.Errorf("%s observation: %+v", gvr.Resource, got)
 		}
-		if err := p.WarmDynamic(context.Background(), gvr, ""); listErrorReason(err) != "not_indexed" {
+		if err := p.WarmDynamic(context.Background(), gvr, ""); listErrorReason(err) != "collection_not_supported" {
 			t.Errorf("%s warm: %v", gvr.Resource, err)
 		}
 	}
 	crd := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
-	if got := dynamicObservationReason(p.DynamicObservation(crd)); got != "cold" {
+	if got := dynamicObservationReason(p.DynamicObservation(crd)); got != "kind_not_watched" {
 		t.Fatalf("unwatched CRD: %q", got)
 	}
 }

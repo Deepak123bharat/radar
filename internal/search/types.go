@@ -2,6 +2,7 @@ package search
 
 import (
 	"github.com/skyhook-io/radar/internal/filter"
+	"github.com/skyhook-io/radar/pkg/readreason"
 	"github.com/skyhook-io/radar/pkg/resourcecontext"
 )
 
@@ -73,13 +74,14 @@ type MatchSnippet struct {
 }
 
 // UnsearchedKind is one coverage gap. Namespaces is set only for namespace
-// reasons: for namespace_excluded it lists requested namespaces that were not
-// searched; for namespace_scope it lists the only namespaces that were.
+// selection reasons: for namespace_excluded it lists requested namespaces that
+// were not searched; for namespace_scope_limited it lists the only namespaces
+// that were.
 type UnsearchedKind struct {
-	Kind       string   `json:"kind"`
-	Group      string   `json:"group"`
-	Reason     string   `json:"reason"`
-	Namespaces []string `json:"namespaces,omitempty"`
+	Kind       string          `json:"kind"`
+	Group      string          `json:"group"`
+	Reason     readreason.Code `json:"reason"`
+	Namespaces []string        `json:"namespaces,omitempty"`
 }
 
 type FailedObject struct {

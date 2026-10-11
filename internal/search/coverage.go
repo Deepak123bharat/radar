@@ -10,6 +10,7 @@ import (
 
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/k8score"
+	"github.com/skyhook-io/radar/pkg/readreason"
 )
 
 // NamespacedSearchKinds lists the sensitive typed kinds requiring exact caller RBAC.
@@ -19,7 +20,7 @@ var NamespacedSearchKinds = []struct{ Kind, Group, Resource string }{
 	{"RoleBinding", "rbac.authorization.k8s.io", "rolebindings"},
 }
 
-func (r *Result) addGap(kind, group, reason string, namespaces []string) {
+func (r *Result) addGap(kind, group string, reason readreason.Code, namespaces []string) {
 	r.Partial = true
 	for i := range r.Unsearched {
 		existing := &r.Unsearched[i]
@@ -77,38 +78,41 @@ func sameNamespaces(a, b []string) bool {
 	return slices.Equal(slices.Sorted(slices.Values(a)), slices.Sorted(slices.Values(b)))
 }
 
-func listErrorReason(err error) string {
-	if apierrors.IsForbidden(err) || strings.HasPrefix(err.Error(), "forbidden:") {
-		return "sa_forbidden"
+// listErrorReason classifies a failed collector list or warm-up. The typed
+// cache reports a probe-disabled kind as a "forbidden:" error, and
+// ErrUnknownKind marks a kind Radar reads directly instead of watching.
+func listErrorReason(err error) readreason.Code {
+	if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) || strings.HasPrefix(err.Error(), "forbidden:") {
+		return readreason.CollectorAccessDenied
 	}
 	if errors.Is(err, k8s.ErrUnknownKind) {
-		return "not_indexed"
+		return readreason.CollectionNotSupported
 	}
 	if errors.Is(err, k8s.ErrDynamicNotReady) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		return "syncing"
+		return readreason.KindSyncPending
 	}
-	return "list_error"
+	return readreason.ReadError
 }
 
-func dynamicObservationReason(observation k8score.DynamicResourceObservation) string {
+func dynamicObservationReason(observation k8score.DynamicResourceObservation) readreason.Code {
 	switch observation.State {
 	case k8score.DynamicObservationSynced:
 		return ""
 	case k8score.DynamicObservationDenied:
-		return "sa_forbidden"
+		return readreason.CollectorAccessDenied
 	case k8score.DynamicObservationSyncing:
 		if observation.ReasonCode == "sync_stalled" {
-			return "sync_failed"
+			return readreason.KindSyncFailed
 		}
-		return "syncing"
+		return readreason.KindSyncPending
 	case k8score.DynamicObservationDeferred:
 		if observation.ReasonCode == "scope_probe_incomplete" {
-			return "syncing"
+			return readreason.KindSyncPending
 		}
-		return "cold"
+		return readreason.KindNotWatched
 	case k8score.DynamicObservationUnsupported:
-		return "not_indexed"
+		return readreason.CollectionNotSupported
 	default:
-		return "cold"
+		return readreason.KindNotWatched
 	}
 }

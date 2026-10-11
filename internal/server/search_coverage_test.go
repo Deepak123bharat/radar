@@ -146,11 +146,11 @@ func TestSearchKindRBACClusterFirstAndFailureReason(t *testing.T) {
 		t.Fatalf("cluster-first: %s %v; checks %d", decision, scoped, checks.Load())
 	}
 	decision, scoped = s.computeSearchKindRBAC(r, []string{"a", "b"}, "", "secrets")
-	if decision != "list_error" || len(scoped) != 1 || scoped[0] != "a" || checks.Load() != 4 {
+	if decision != "permission_check_failed" || len(scoped) != 1 || scoped[0] != "a" || checks.Load() != 4 {
 		t.Fatalf("partial permission failure: %s %v; checks %d", decision, scoped, checks.Load())
 	}
 	decision, scoped = s.computeSearchKindRBAC(r, []string{"a"}, "", "broken")
-	if decision != "list_error" || len(scoped) != 0 || checks.Load() != 5 {
+	if decision != "permission_check_failed" || len(scoped) != 0 || checks.Load() != 5 {
 		t.Fatalf("cluster check failure: %s %v; checks %d", decision, scoped, checks.Load())
 	}
 }
@@ -220,7 +220,7 @@ func hitKeys(result search.Result) []string {
 func namespaceGaps(result search.Result) []search.UnsearchedKind {
 	var gaps []search.UnsearchedKind
 	for _, gap := range result.Unsearched {
-		if strings.HasPrefix(gap.Reason, "namespace_") {
+		if strings.HasPrefix(string(gap.Reason), "namespace_") {
 			gaps = append(gaps, gap)
 		}
 	}
@@ -300,7 +300,7 @@ func TestSearchReportsNamespaceSelectionAndCollapsesNamespaceGaps(t *testing.T) 
 	if got, want := hitKeys(result), []string{"ClusterRole//robusta-cr", "Pod/default/robusta-pod"}; !slices.Equal(got, want) {
 		t.Fatalf("picked search hits %v, want %v", got, want)
 	}
-	want := []search.UnsearchedKind{{Kind: "*", Reason: "namespace_scope", Namespaces: []string{"default"}}}
+	want := []search.UnsearchedKind{{Kind: "*", Reason: "namespace_scope_limited", Namespaces: []string{"default"}}}
 	if gaps := namespaceGaps(result); !reflect.DeepEqual(gaps, want) || !result.Partial {
 		t.Fatalf("pick coverage %+v, want %+v", gaps, want)
 	}
@@ -320,7 +320,7 @@ func TestSearchReportsNamespaceSelectionAndCollapsesNamespaceGaps(t *testing.T) 
 	}
 
 	result = searchAs(t, env, "search-erin", "q=kind:Pod+robusta")
-	want = []search.UnsearchedKind{{Kind: "Pod", Reason: "namespace_scope", Namespaces: []string{"default"}}}
+	want = []search.UnsearchedKind{{Kind: "Pod", Reason: "namespace_scope_limited", Namespaces: []string{"default"}}}
 	if gaps := namespaceGaps(result); !reflect.DeepEqual(gaps, want) {
 		t.Fatalf("explicit kind pick coverage %+v, want %+v", gaps, want)
 	}

@@ -20,14 +20,14 @@ func (s *Server) computeSearchKindRBAC(r *http.Request, scanNamespaces []string,
 		return "", nil
 	}
 	if !authoritative {
-		return "list_error", nil
+		return "permission_check_failed", nil
 	}
 	if len(scanNamespaces) == 0 {
 		return "skip", nil
 	}
 	scoped, authoritative := s.filterNamespacesByCanReadDecision(r, group, resource, "list", scanNamespaces)
 	if !authoritative {
-		return "list_error", scoped
+		return "permission_check_failed", scoped
 	}
 	if len(scoped) == 0 {
 		return "skip", nil

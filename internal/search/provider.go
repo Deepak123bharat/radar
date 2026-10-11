@@ -14,6 +14,7 @@ import (
 
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/k8score"
+	"github.com/skyhook-io/radar/pkg/readreason"
 )
 
 // CacheProvider adapts radar's in-process cache to the search Provider interface.
@@ -89,17 +90,17 @@ func (p *CacheProvider) DynamicResources() ([]schema.GroupVersionResource, error
 	return out, nil
 }
 
-func (p *CacheProvider) TypedCoverage(kind string, namespaces []string) string {
+func (p *CacheProvider) TypedCoverage(kind string, namespaces []string) readreason.Code {
 	switch p.cache.KindReadinessForKindName(kind) {
 	case k8s.KindPending:
-		return "syncing"
+		return readreason.KindSyncPending
 	case k8s.KindFailed:
-		return "sync_failed"
+		return readreason.KindSyncFailed
 	case k8s.KindUnavailable:
 		if p.permissions != nil && !p.permissions.CanList(kind) {
-			return "sa_forbidden"
+			return readreason.CollectorAccessDenied
 		}
-		return "syncing"
+		return readreason.KindSyncPending
 	}
 	if isClusterScopedKind(kind) {
 		return ""
@@ -107,12 +108,12 @@ func (p *CacheProvider) TypedCoverage(kind string, namespaces []string) string {
 	resource := k8s.CanonicalBuiltinKind(kind)
 	if len(namespaces) == 0 {
 		if !p.cache.IsKindClusterWide(resource) {
-			return "namespace_scope"
+			return readreason.CollectorScopeLimited
 		}
 	} else {
 		for _, ns := range namespaces {
 			if !p.cache.KindCoversNamespace(resource, ns) {
-				return "namespace_scope"
+				return readreason.CollectorScopeLimited
 			}
 		}
 	}

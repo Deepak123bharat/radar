@@ -25,6 +25,7 @@ import (
 	"github.com/skyhook-io/radar/internal/k8s"
 	aicontext "github.com/skyhook-io/radar/pkg/ai/context"
 	"github.com/skyhook-io/radar/pkg/k8score"
+	"github.com/skyhook-io/radar/pkg/readreason"
 	"github.com/skyhook-io/radar/pkg/resourcecontext"
 )
 
@@ -47,7 +48,7 @@ type Provider interface {
 	ListTyped(kind string, namespaces []string) ([]runtime.Object, error)
 	ListDynamic(ctx context.Context, gvr schema.GroupVersionResource, namespace string) ([]*unstructured.Unstructured, error)
 	DynamicResources() ([]schema.GroupVersionResource, error)
-	TypedCoverage(kind string, namespaces []string) string
+	TypedCoverage(kind string, namespaces []string) readreason.Code
 	DynamicObservation(gvr schema.GroupVersionResource) k8score.DynamicResourceObservation
 	WarmDynamic(ctx context.Context, gvr schema.GroupVersionResource, namespace string) error
 	KindForGVR(gvr schema.GroupVersionResource) string
@@ -125,12 +126,14 @@ type Options struct {
 	// namespace selection left out; reported as namespace_excluded.
 	ExcludedNamespaces []string
 	// ScopedNamespaces, when non-nil, means a namespace selection narrowed
-	// Namespaces below the caller's visibility; reported as namespace_scope.
+	// Namespaces below the caller's visibility; reported as
+	// namespace_scope_limited.
 	ScopedNamespaces []string
 	// NamespacedRBAC lazily gates sensitive typed kinds after readiness is known.
 	// Decisions are empty (allowed), override (scoped subset), skip (denied),
-	// or list_error (non-authoritative permission check). The scoped subset
-	// may accompany list_error to preserve successfully authorized namespaces.
+	// or permission_check_failed (non-authoritative permission check). The
+	// scoped subset may accompany permission_check_failed to preserve
+	// successfully authorized namespaces.
 	NamespacedRBAC func(namespaces []string, group, resource string) (decision string, scoped []string)
 	// CanReadClusterScoped authorizes cluster-scoped resources before the
 	// cache walker scans them. Handlers provide a per-user SAR-backed
@@ -183,9 +186,12 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 			}
 		}
 	}
-	addGap := func(kind, group, reason string, namespaces ...string) {
-		if len(q.KindFilter) == 0 && (reason == "cold" || reason == "namespace_excluded" || reason == "namespace_scope") {
-			kind, group = "*", ""
+	addGap := func(kind, group string, reason readreason.Code, namespaces ...string) {
+		switch reason {
+		case readreason.KindNotWatched, readreason.NamespaceExcluded, readreason.NamespaceScopeLimited, readreason.CollectorScopeLimited:
+			if len(q.KindFilter) == 0 {
+				kind, group = "*", ""
+			}
 		}
 		res.addGap(kind, group, reason, namespaces)
 	}
@@ -193,13 +199,13 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 	// returns false when no namespace is left to scan.
 	namespacedGaps := func(kind, group string) bool {
 		if opts.NamespaceExcluded || len(opts.ExcludedNamespaces) > 0 {
-			addGap(kind, group, "namespace_excluded", opts.ExcludedNamespaces...)
+			addGap(kind, group, readreason.NamespaceExcluded, opts.ExcludedNamespaces...)
 		}
 		if opts.NamespaceExcluded {
 			return false
 		}
 		if opts.ScopedNamespaces != nil {
-			addGap(kind, group, "namespace_scope", opts.ScopedNamespaces...)
+			addGap(kind, group, readreason.NamespaceScopeLimited, opts.ScopedNamespaces...)
 		}
 		return true
 	}
@@ -245,12 +251,12 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		if !clusterScoped && !namespacedGaps(tk.Kind, tk.Group) {
 			continue
 		}
-		if reason := p.TypedCoverage(tk.Kind, opts.Namespaces); reason != "" && reason != "namespace_scope" {
+		if reason := p.TypedCoverage(tk.Kind, opts.Namespaces); reason != "" && reason != readreason.CollectorScopeLimited {
 			addGap(tk.Kind, tk.Group, reason)
 			continue
 		}
 		if opts.SkipKinds[tk.Kind] {
-			addGap(tk.Kind, tk.Group, "rbac_denied")
+			addGap(tk.Kind, tk.Group, readreason.RBACDenied)
 			continue
 		}
 		// Cluster-scoped kinds ignore the namespace constraint — they're
@@ -262,9 +268,9 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 			if opts.CanReadClusterScoped != nil {
 				allowed, authoritative := opts.CanReadClusterScoped(tk.Kind, tk.Group, tk.Plural)
 				if !allowed {
-					reason := "rbac_denied"
+					reason := readreason.RBACDenied
 					if !authoritative {
-						reason = "list_error"
+						reason = readreason.PermissionCheckFailed
 					}
 					addGap(tk.Kind, tk.Group, reason)
 					continue
@@ -277,11 +283,11 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 			// cluster-wide list — silent bypass of the namespace constraint
 			// in security-sensitive code.
 			if len(override) < len(opts.Namespaces) {
-				addGap(tk.Kind, tk.Group, "rbac_denied")
+				addGap(tk.Kind, tk.Group, readreason.RBACDenied)
 			}
 			listNs = override
 			if len(listNs) == 0 {
-				addGap(tk.Kind, tk.Group, "rbac_denied")
+				addGap(tk.Kind, tk.Group, readreason.RBACDenied)
 				continue
 			}
 		}
@@ -289,12 +295,12 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 			decision, scoped := opts.NamespacedRBAC(listNs, tk.Group, tk.Plural)
 			switch decision {
 			case "skip":
-				addGap(tk.Kind, tk.Group, "rbac_denied")
+				addGap(tk.Kind, tk.Group, readreason.RBACDenied)
 				continue
-			case "override", "list_error":
-				reason := "rbac_denied"
-				if decision == "list_error" {
-					reason = "list_error"
+			case "override", "permission_check_failed":
+				reason := readreason.RBACDenied
+				if decision == "permission_check_failed" {
+					reason = readreason.PermissionCheckFailed
 				}
 				addGap(tk.Kind, tk.Group, reason)
 				listNs = scoped
@@ -305,7 +311,7 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		}
 		if reason := p.TypedCoverage(tk.Kind, listNs); reason != "" {
 			addGap(tk.Kind, tk.Group, reason)
-			if reason != "namespace_scope" {
+			if reason != readreason.CollectorScopeLimited {
 				continue
 			}
 		}
@@ -377,7 +383,7 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 			continue
 		}
 		reason := dynamicObservationReason(observation)
-		warm := len(q.KindFilter) > 0 && reason == "cold"
+		warm := len(q.KindFilter) > 0 && reason == readreason.KindNotWatched
 		if reason != "" && !warm {
 			addGap(kind, gvr.Group, reason)
 			continue
@@ -385,9 +391,9 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		if clusterScoped && opts.CanReadClusterScoped != nil {
 			allowed, authoritative := opts.CanReadClusterScoped(kind, gvrGroup, gvrResource)
 			if !allowed {
-				reason := "rbac_denied"
+				reason := readreason.RBACDenied
 				if !authoritative {
-					reason = "list_error"
+					reason = readreason.PermissionCheckFailed
 				}
 				addGap(kind, gvr.Group, reason)
 				continue
@@ -403,10 +409,10 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 			if len(q.KindFilter) > 0 && (warm || outsideScope) {
 				if err := p.WarmDynamic(warmCtx, gvr, ns); err != nil {
 					if outsideScope {
-						addGap(kind, gvr.Group, "namespace_scope")
+						addGap(kind, gvr.Group, readreason.CollectorScopeLimited)
 					}
 					reason := dynamicObservationReason(p.DynamicObservation(gvr))
-					if reason == "" || reason == "cold" {
+					if reason == "" || reason == readreason.KindNotWatched {
 						reason = listErrorReason(err)
 					}
 					addGap(kind, gvr.Group, reason)
@@ -422,7 +428,7 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 				continue
 			}
 			if observation.Scope == k8score.DynamicObservationScopeExplicitNamespaces && (ns == "" || !slices.Contains(observation.Namespaces, ns)) {
-				addGap(kind, gvr.Group, "namespace_scope")
+				addGap(kind, gvr.Group, readreason.CollectorScopeLimited)
 				if ns != "" {
 					continue
 				}
@@ -482,9 +488,9 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 
 	for _, requested := range q.KindFilter {
 		if !covered[requested] && !slices.ContainsFunc(res.Unsearched, func(gap UnsearchedKind) bool {
-			return gap.Reason == "not_indexed" && strings.EqualFold(gap.Kind, requested)
+			return gap.Reason == readreason.UnknownKind && strings.EqualFold(gap.Kind, requested)
 		}) {
-			addGap(requested, "", "not_indexed")
+			addGap(requested, "", readreason.UnknownKind)
 		}
 	}
 	sort.Slice(res.Unsearched, func(i, j int) bool {

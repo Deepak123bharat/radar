@@ -7,6 +7,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -41,7 +42,7 @@ func TestSearchCoverageColdWarmAndUnknown(t *testing.T) {
 	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
 	p := &fakeProvider{kinds: map[schema.GroupVersionResource]string{gvr: "Widget"}, observations: map[schema.GroupVersionResource]k8score.DynamicResourceObservation{gvr: {State: k8score.DynamicObservationUnwatched}}}
 	res, _ := Search(context.Background(), p, Parse(""), Options{})
-	if !res.Partial || len(res.Unsearched) != 1 || res.Unsearched[0].Reason != "cold" || len(p.warmed) != 0 {
+	if !res.Partial || len(res.Unsearched) != 1 || res.Unsearched[0].Reason != "kind_not_watched" || len(p.warmed) != 0 {
 		t.Fatalf("cold: %+v warmed=%v", res, p.warmed)
 	}
 	res, _ = Search(context.Background(), p, Parse("kind:Widget"), Options{})
@@ -49,7 +50,7 @@ func TestSearchCoverageColdWarmAndUnknown(t *testing.T) {
 		t.Fatalf("warm: %+v warmed=%v", res, p.warmed)
 	}
 	res, _ = Search(context.Background(), p, Parse("kind:DoesNotExist"), Options{})
-	if !res.Partial || len(res.Unsearched) != 1 || res.Unsearched[0].Reason != "not_indexed" {
+	if !res.Partial || len(res.Unsearched) != 1 || res.Unsearched[0].Reason != "unknown_kind" {
 		t.Fatalf("unknown: %+v", res)
 	}
 }
@@ -74,14 +75,14 @@ func TestSearchFilterFailuresAreBoundedAndSecretSafe(t *testing.T) {
 }
 
 func TestSearchCoverageReadFailuresAndPartialNamespaces(t *testing.T) {
-	for _, reason := range []string{"syncing", "sync_failed", "cold", "namespace_scope"} {
+	for _, reason := range []string{"kind_sync_pending", "kind_sync_failed", "kind_not_watched", "collector_scope_limited"} {
 		t.Run(reason, func(t *testing.T) {
 			p := &fakeProvider{typedReasons: map[string]string{"Pod": reason}, typed: map[string][]runtime.Object{"pods": {newPod("a", "visible", "x", nil)}}}
 			res, _ := Search(context.Background(), p, Parse("kind:Pod"), Options{})
-			if !res.Partial || len(res.Unsearched) != 1 || res.Unsearched[0].Reason != reason {
+			if !res.Partial || len(res.Unsearched) != 1 || string(res.Unsearched[0].Reason) != reason {
 				t.Fatalf("read coverage: %+v", res)
 			}
-			if reason != "namespace_scope" && len(res.Hits) != 0 {
+			if reason != "collector_scope_limited" && len(res.Hits) != 0 {
 				t.Fatalf("incomplete cache served rows: %+v", res)
 			}
 		})
@@ -89,10 +90,14 @@ func TestSearchCoverageReadFailuresAndPartialNamespaces(t *testing.T) {
 	for _, tc := range []struct {
 		err    error
 		reason string
-	}{{fmt.Errorf("forbidden: pods"), "sa_forbidden"}, {fmt.Errorf("broken list"), "list_error"}} {
+	}{
+		{fmt.Errorf("forbidden: pods"), "collector_access_denied"},
+		{apierrors.NewUnauthorized("token expired"), "collector_access_denied"},
+		{fmt.Errorf("broken list"), "read_error"},
+	} {
 		p := &fakeProvider{listErrors: map[string]error{"pods": tc.err}}
 		res, _ := Search(context.Background(), p, Parse("kind:Pod"), Options{})
-		if !res.Partial || len(res.Unsearched) != 1 || res.Unsearched[0].Reason != tc.reason {
+		if !res.Partial || len(res.Unsearched) != 1 || string(res.Unsearched[0].Reason) != tc.reason {
 			t.Fatalf("list failure: %+v", res)
 		}
 	}
@@ -117,14 +122,14 @@ func TestSearchDynamicCoverageDoesNotWarmDeniedAndRetainsGoodNamespaces(t *testi
 	for _, tc := range []struct {
 		state  k8score.DynamicObservationState
 		reason string
-	}{{k8score.DynamicObservationDenied, "sa_forbidden"}, {k8score.DynamicObservationSyncing, "syncing"}, {k8score.DynamicObservationUnsupported, "not_indexed"}, {k8score.DynamicObservationDeferred, "cold"}} {
+	}{{k8score.DynamicObservationDenied, "collector_access_denied"}, {k8score.DynamicObservationSyncing, "kind_sync_pending"}, {k8score.DynamicObservationUnsupported, "collection_not_supported"}, {k8score.DynamicObservationDeferred, "kind_not_watched"}} {
 		p.observations[gvr] = k8score.DynamicResourceObservation{State: tc.state}
 		query := ""
 		if tc.state == k8score.DynamicObservationUnsupported {
 			query = "kind:Widget"
 		}
 		res, _ = Search(context.Background(), p, Parse(query), Options{})
-		if !res.Partial || res.Unsearched[0].Reason != tc.reason {
+		if !res.Partial || string(res.Unsearched[0].Reason) != tc.reason {
 			t.Fatalf("dynamic state %s: %+v", tc.state, res)
 		}
 	}
@@ -132,7 +137,7 @@ func TestSearchDynamicCoverageDoesNotWarmDeniedAndRetainsGoodNamespaces(t *testi
 	p.namespaced[gvr] = true
 	p.dynamicErrors = map[string]error{"a": fmt.Errorf("broken list")}
 	res, _ = Search(context.Background(), p, Parse("kind:Widget"), Options{Namespaces: []string{"a", "b"}})
-	if !res.Partial || len(p.dynamicListNamespaces) != 2 || res.Unsearched[0].Reason != "list_error" {
+	if !res.Partial || len(p.dynamicListNamespaces) != 2 || res.Unsearched[0].Reason != "read_error" {
 		t.Fatalf("dynamic partial list: %+v lists=%v", res, p.dynamicListNamespaces)
 	}
 }

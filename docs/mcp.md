@@ -545,34 +545,47 @@ older VictoriaMetrics operators place such finalizers on managed objects.
 `search` scans typed resources (including RBAC, ServiceAccounts, NetworkPolicies,
 IngressClasses, LimitRanges and ResourceQuotas) and discovered dynamic kinds,
 including admission webhook configurations. Broad searches collapse all unwatched
-kinds into one `{kind: "*", group: "", reason: "cold"}` entry, which still sets
-`partial: true`. List-only/non-watchable APIs are omitted from broad coverage;
-an explicit `kind:` query starts the existing bounded on-demand watch
+kinds into one `{kind: "*", group: "", reason: "kind_not_watched"}` entry, which
+still sets `partial: true`. List-only/non-watchable APIs are omitted from broad
+coverage; an explicit `kind:` query starts the existing bounded on-demand watch
 and waits briefly for initial sync once CRD discovery is ready. While discovery is
-loading, it reports `syncing` without starting a watch. If initial sync remains
-incomplete, retry after `syncing`. Alternate built-in groups of typed kinds are
+loading, it reports `kind_sync_pending` without starting a watch. If initial sync
+remains incomplete, retry after `kind_sync_pending`. Alternate built-in groups of typed kinds are
 skipped, so `kind:Event` does not duplicate core Events through `events.k8s.io`.
 Search results never imply absence for an omitted kind.
 
 Every response includes `partial` and an `unsearched` array of
-`{kind, group, reason}`. Core resources use `group: ""`. Reasons distinguish
-caller `rbac_denied`, collector `sa_forbidden`,
-`cold`, `syncing`, `sync_failed`, `not_indexed`, `list_error`, `namespace_scope`
-and `namespace_excluded`. An entry
-can describe an incompletely searched kind: authorized namespaces still contribute
-hits. Unavailable discovery is represented by `kind: "*"`, `group: ""`.
+`{kind, group, reason}`. Core resources use `group: ""`. An entry can describe an
+incompletely searched kind: authorized namespaces still contribute hits.
+Unavailable discovery is represented by `kind: "*"`, `group: ""`. Reasons are
+defined in `pkg/readreason` and keep the caller's permissions apart from Radar's
+collection access:
 
-The two namespace reasons may carry `namespaces`:
+| Reason | Meaning | Next step |
+|---|---|---|
+| `rbac_denied` | Your role cannot list the kind, in some or all of the searched namespaces. | Ask for access; authorized namespaces still contribute hits. |
+| `permission_check_failed` | Radar could not complete your permission check and failed closed. This is not a denial. | Retry. |
+| `collector_access_denied` | Kubernetes refused Radar's own identity for the kind; the evidence may not separate a 401 from a 403. | Fix Radar's access; granting the caller access does not help. |
+| `kind_sync_pending` | The kind or discovery is still loading, or warming ran out of time. | Retry shortly. |
+| `kind_sync_failed` | The kind's initial sync failed, or a dynamic sync stalled. | Inspect Radar's connection and list/watch access. |
+| `kind_not_watched` | Radar has no watch for the kind. | Search with `kind:` to warm it; if it persists, check collection configuration. |
+| `collector_scope_limited` | Radar's cache does not cover every requested namespace. | Narrow to covered namespaces, or widen Radar's collection. |
+| `namespace_scope_limited` | REST only: the saved namespace pick or `--namespace-scope` narrowed a query with no `ns:` terms. | Broaden the pick, or pass `globalNs=1`. |
+| `namespace_excluded` | Requested `ns:` namespaces were left out by your visibility or the namespace selection. | Check the requested namespaces; do not infer that they don't exist. |
+| `unknown_kind` | A `kind:` term matched no known kind. | Check the spelling, and that the API is installed. |
+| `collection_not_supported` | The kind cannot be watched, or Radar reads it directly instead of watching. | Use `list_resources`; warming will not help. |
+| `read_error` | An unclassified list or discovery failure. | Retry or investigate. |
+
+Two reasons carry `namespaces`; the collector reasons never do:
 
 - `namespace_excluded`: requested `ns:` namespaces the caller can't see, or that the
   namespace selection leaves out, were not searched. `namespaces` lists those
   requested names; it echoes the query and says nothing about whether they exist.
-- `namespace_scope`: only some namespaces were searched. Either Radar's cache doesn't
-  watch the rest (collector coverage; no `namespaces`), or, on REST without
-  `globalNs=1`, the caller's saved namespace pick or `--namespace-scope` narrowed a
-  query that has no `ns:` terms. In that case `namespaces` lists the namespaces that
-  were searched. The caller's RBAC namespace ceiling is never a gap, matching
-  resource lists.
+- `namespace_scope_limited`: on REST without `globalNs=1`, the caller's saved
+  namespace pick or `--namespace-scope` narrowed a query that has no `ns:` terms.
+  `namespaces` lists the namespaces that were searched. Namespaces Radar's cache
+  doesn't watch are reported separately as `collector_scope_limited`. The caller's
+  RBAC namespace ceiling is never a gap, matching resource lists.
 
 `ns:` (and the MCP `namespace` argument) restricts namespaced kinds. A broad `ns:`
 query covers namespaced objects only. A cluster-scoped kind named with `kind:`
@@ -588,25 +601,28 @@ from covered namespaces. Third-party CRDs named Event are searched normally; onl
 built-in Events are excluded from broad searches.
 Leases, Endpoints and EndpointSlices, which Radar reads directly instead of
 watching, are never warmed: broad searches omit them and `kind:` reports
-`not_indexed`. Use `list_resources` for them.
+`collection_not_supported`. Use `list_resources` for them.
 
-Broad queries also collapse `namespace_excluded` and `namespace_scope` into one `*`
-entry each, merging their `namespaces`. Explicitly requested kinds keep per-kind
-cold, unsupported and namespace entries; denied,
-syncing, failed-sync and list-error kinds keep per-kind entries for all queries.
-Unknown `kind:` terms come back as `not_indexed` in the caller's spelling.
-Typed informers disabled by collector probes report `sa_forbidden`, never `cold`.
-A stalled dynamic sync reports `sync_failed`; incomplete namespace probing reports
-`syncing`. Truncated probing adds `namespace_scope` only if the requested scope
-includes an unwatched namespace (or requests all namespaces).
+Broad queries also collapse `namespace_excluded`, `namespace_scope_limited` and
+`collector_scope_limited` into one `*` entry each, merging their `namespaces`; the
+namespace selection and Radar's coverage never share an entry. Explicitly requested
+kinds keep per-kind `kind_not_watched`, `collection_not_supported` and namespace
+entries; denied, pending, failed-sync, failed-check and read-error kinds keep
+per-kind entries for all queries.
+Unknown `kind:` terms come back as `unknown_kind` in the caller's spelling.
+Typed informers disabled by collector probes report `collector_access_denied`, never
+`kind_not_watched`. A stalled dynamic sync reports `kind_sync_failed`; incomplete
+namespace probing reports `kind_sync_pending`. Truncated probing adds
+`collector_scope_limited` only if the requested scope includes an unwatched
+namespace (or requests all namespaces).
 
 Ordinary namespaced kinds, including dynamic CRDs, use the same namespace visibility
 policy as resource lists. Secrets and typed Roles/RoleBindings use exact caller list
 gates. These gates try one cluster-wide check, then bounded parallel namespace
 checks only after a denial. Cluster-scoped kinds use an exact cluster-scoped check.
-Cold/unsupported observation states are read before any caller permission checks.
-Permission-check failures fail closed and report `list_error`, not `rbac_denied`;
-successfully authorized namespaces still contribute hits.
+Unwatched and unsupported observation states are read before any caller permission
+checks. Permission-check failures fail closed and report `permission_check_failed`,
+not `rbac_denied`; successfully authorized namespaces still contribute hits.
 
 `features.searchCoverage` advertises the coverage response and `object` binding so
 embedding hosts can gate them when connected to an older Radar.

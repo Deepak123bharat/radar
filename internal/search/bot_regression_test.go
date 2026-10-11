@@ -77,7 +77,7 @@ func TestExplicitSearchSharesWarmDeadline(t *testing.T) {
 		t.Fatalf("result=%+v err=%v elapsed=%s warmed=%v", res, err, time.Since(start), p.warmed)
 	}
 	for _, gap := range res.Unsearched {
-		if gap.Reason != "syncing" {
+		if gap.Reason != "kind_sync_pending" {
 			t.Fatalf("deadline coverage: %+v", gap)
 		}
 	}

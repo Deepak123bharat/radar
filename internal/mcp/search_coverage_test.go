@@ -135,7 +135,7 @@ func TestSearchKindRBACNamespaceCheckFailureRetainsAllowedScope(t *testing.T) {
 		return namespace == "a", nil
 	})
 	decision, scoped := mcpSearchKindRBAC(ctx, []string{"a", "b"}, "", "secrets")
-	if decision != "list_error" || len(scoped) != 1 || scoped[0] != "a" {
+	if decision != "permission_check_failed" || len(scoped) != 1 || scoped[0] != "a" {
 		t.Fatalf("SAR failure: %s %v", decision, scoped)
 	}
 	decision, _ = mcpSearchKindRBAC(ctx, []string{"a"}, "", "unavailable")
@@ -240,7 +240,7 @@ func TestHandleSearchCollapsesExcludedNamespacesAndKeepsKindSpelling(t *testing.
 	}
 	body = mcpSearch(t, ctx, searchInput{Query: "kind:NoSuchKindXyz"})
 	if !slices.ContainsFunc(body.Unsearched, func(gap search.UnsearchedKind) bool {
-		return gap.Kind == "NoSuchKindXyz" && gap.Reason == "not_indexed"
+		return gap.Kind == "NoSuchKindXyz" && gap.Reason == "unknown_kind"
 	}) {
 		t.Fatalf("unknown kind coverage: %+v", body.Unsearched)
 	}
