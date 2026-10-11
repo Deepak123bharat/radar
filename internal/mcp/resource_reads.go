@@ -68,13 +68,15 @@ type listCoverage struct {
 	Note       string          `json:"note"`
 }
 
-// partialList is a partial read's result. Agent backends join a result's text
-// blocks without separators and Findings parses the joined text, so the rows
-// and their coverage travel as one JSON text; structuredContent is the same
-// object, so a client that reads either one gets both.
+// partialList is a partial read's result, sent as the result's only text
+// block. Findings parses the text agent backends hand it, and the evidence
+// ledger matches that text against the producer's exactly, so the rows and
+// their coverage must be one JSON value: a second block would be joined into
+// something neither accepts. Coverage leads so a reader that keeps only the
+// head of a long result still has the caveat.
 type partialList struct {
-	Items    []any        `json:"items"`
 	Coverage listCoverage `json:"coverage"`
+	Items    []any        `json:"items"`
 }
 
 func collectorLimitedCoverage(resource string, reason readreason.Code, read []string) *listCoverage {
@@ -97,16 +99,12 @@ func listResult(items []any, coverage *listCoverage) (*mcp.CallToolResult, any, 
 	if coverage == nil {
 		return toJSONResult(items)
 	}
-	list := partialList{Items: items, Coverage: *coverage}
-	body, err := json.Marshal(list)
+	body, err := json.Marshal(partialList{Coverage: *coverage, Items: items})
 	if err != nil {
 		log.Printf("[mcp] Failed to marshal result: %v", err)
 		return nil, nil, fmt.Errorf("failed to marshal result: %w", err)
 	}
-	return &mcp.CallToolResult{
-		Content:           []mcp.Content{&mcp.TextContent{Text: string(body)}},
-		StructuredContent: list,
-	}, nil, nil
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(body)}}}, nil, nil
 }
 
 func resourcePermissionError(checked bool, verb, group, resource, namespace string) error {

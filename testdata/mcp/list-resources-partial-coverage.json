@@ -15,27 +15,9 @@
         "content": [
           {
             "type": "text",
-            "text": "{\"items\":[{\"kind\":\"Service\",\"name\":\"alpha-object\",\"namespace\":\"alpha\"}],\"coverage\":{\"complete\":false,\"reason\":\"collector_scope_limited\",\"namespaces\":[\"alpha\",\"gamma\"],\"note\":\"Radar read services only in namespaces \\\"alpha,gamma\\\"; objects in other namespaces were not read, so this result cannot show they don't exist.\"}}"
+            "text": "{\"coverage\":{\"complete\":false,\"reason\":\"collector_scope_limited\",\"namespaces\":[\"alpha\",\"gamma\"],\"note\":\"Radar read services only in namespaces \\\"alpha,gamma\\\"; objects in other namespaces were not read, so this result cannot show they don't exist.\"},\"items\":[{\"kind\":\"Service\",\"name\":\"alpha-object\",\"namespace\":\"alpha\"}]}"
           }
-        ],
-        "structuredContent": {
-          "items": [
-            {
-              "kind": "Service",
-              "name": "alpha-object",
-              "namespace": "alpha"
-            }
-          ],
-          "coverage": {
-            "complete": false,
-            "reason": "collector_scope_limited",
-            "namespaces": [
-              "alpha",
-              "gamma"
-            ],
-            "note": "Radar read services only in namespaces \"alpha,gamma\"; objects in other namespaces were not read, so this result cannot show they don't exist."
-          }
-        }
+        ]
       }
     },
     {
@@ -51,21 +33,27 @@
         "content": [
           {
             "type": "text",
-            "text": "{\"items\":[],\"coverage\":{\"complete\":false,\"reason\":\"collector_scope_limited\",\"namespaces\":[\"alpha\",\"gamma\"],\"note\":\"Radar read services only in namespaces \\\"alpha,gamma\\\"; objects in other namespaces were not read, so this result cannot show they don't exist.\"}}"
+            "text": "{\"coverage\":{\"complete\":false,\"reason\":\"collector_scope_limited\",\"namespaces\":[\"alpha\",\"gamma\"],\"note\":\"Radar read services only in namespaces \\\"alpha,gamma\\\"; objects in other namespaces were not read, so this result cannot show they don't exist.\"},\"items\":[]}"
           }
-        ],
-        "structuredContent": {
-          "items": [],
-          "coverage": {
-            "complete": false,
-            "reason": "collector_scope_limited",
-            "namespaces": [
-              "alpha",
-              "gamma"
-            ],
-            "note": "Radar read services only in namespaces \"alpha,gamma\"; objects in other namespaces were not read, so this result cannot show they don't exist."
+        ]
+      }
+    },
+    {
+      "name": "partial and empty, kind by alias",
+      "objects": [
+        "beta"
+      ],
+      "arguments": {
+        "kind": "svc",
+        "context": "none"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"coverage\":{\"complete\":false,\"reason\":\"collector_scope_limited\",\"namespaces\":[\"alpha\",\"gamma\"],\"note\":\"Radar read services only in namespaces \\\"alpha,gamma\\\"; objects in other namespaces were not read, so this result cannot show they don't exist.\"},\"items\":[]}"
           }
-        }
+        ]
       }
     }
   ]

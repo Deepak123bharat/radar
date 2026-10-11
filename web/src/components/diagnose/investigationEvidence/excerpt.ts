@@ -71,6 +71,7 @@ export function storyExcerpt(
         data.resources as InvestigationResourceSummary[],
         items,
         options.scopeNamespace,
+        data.namespacesRead,
       );
       return entries.length > 0 ? { kind: "rows", entries } : undefined;
     }

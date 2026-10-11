@@ -31,8 +31,10 @@ import (
 	"k8s.io/client-go/rest"
 	ktesting "k8s.io/client-go/testing"
 
+	"github.com/skyhook-io/radar/internal/investigationrefs"
 	"github.com/skyhook-io/radar/internal/k8s"
 	pkgauth "github.com/skyhook-io/radar/pkg/auth"
+	"github.com/skyhook-io/radar/pkg/investigation"
 	"github.com/skyhook-io/radar/pkg/k8score"
 	"github.com/skyhook-io/radar/pkg/resourceid"
 )
@@ -547,18 +549,22 @@ type wireCoverage struct {
 }
 
 // partialListBody decodes a partial list_resources result, failing unless it
-// is the documented shape: one text block holding exactly {"items",
-// "coverage"}, coverage holding exactly {"complete": false, "reason",
-// "namespaces", "note"}, and structuredContent the same object.
+// is the documented shape: one text block and nothing else, holding exactly
+// {"coverage", "items"} with coverage first, and coverage holding exactly
+// {"complete": false, "reason", "namespaces", "note"}.
 func partialListBody(t *testing.T, result *mcpsdk.CallToolResult) ([]map[string]any, wireCoverage) {
 	t.Helper()
-	if result == nil || result.IsError || len(result.Content) != 1 {
-		t.Fatalf("a partial list is one successful text block, got %+v", result)
+	if result == nil || result.IsError || len(result.Content) != 1 || result.StructuredContent != nil {
+		t.Fatalf("a partial list is one successful text block without structuredContent, got %+v", result)
 	}
 	text := extractText(t, result)
+	// A reader that keeps only the head of a long result must keep the caveat.
+	if !strings.HasPrefix(text, `{"coverage":`) {
+		t.Fatalf("a partial list must lead with its coverage, got %.80s", text)
+	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(text), &top); err != nil || len(top) != 2 || top["items"] == nil || top["coverage"] == nil {
-		t.Fatalf("a partial list must be {\"items\", \"coverage\"}, got %s", text)
+		t.Fatalf("a partial list must be {\"coverage\", \"items\"}, got %s", text)
 	}
 	var rows []map[string]any
 	if err := json.Unmarshal(top["items"], &rows); err != nil || rows == nil {
@@ -584,15 +590,6 @@ func partialListBody(t *testing.T, result *mcpsdk.CallToolResult) ([]map[string]
 	}
 	if !strings.Contains(out.Note, "cannot show they don't exist") {
 		t.Fatalf("note must say the result cannot establish absence elsewhere: %q", out.Note)
-	}
-	structured, err := json.Marshal(result.StructuredContent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var fromText, fromStructured any
-	_ = json.Unmarshal([]byte(text), &fromText)
-	if err := json.Unmarshal(structured, &fromStructured); err != nil || !reflect.DeepEqual(fromText, fromStructured) {
-		t.Fatalf("structuredContent must be the text's object, got %s", structured)
 	}
 	return rows, out
 }
@@ -984,6 +981,37 @@ func TestListResourcesPartialCoverageTransport(t *testing.T) {
 			if !reflect.DeepEqual(gotWire, wantWire) {
 				t.Fatalf("the wire result no longer matches %s; update the fixture's result to:\n%s", partialListFixturePath, got)
 			}
+
+			// On the investigation mount the evidence middleware issues a ref
+			// for exactly this text and prepends its marker as a block of its
+			// own: the input internal/ai feeds every agent backend's parser.
+			text := extractText(t, result)
+			scope := strings.Repeat("a", 26)
+			refs := investigationrefs.NewRegistry()
+			lease, err := refs.Begin(scope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			annotate := investigationEvidenceReferenceMiddleware(refs)(func(context.Context, string, mcpsdk.Request) (mcpsdk.Result, error) {
+				return result, nil
+			})
+			annotated, err := annotate(context.WithValue(context.Background(), investigationEvidenceScopeKey{}, scope), "tools/call", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			blocks := annotated.(*mcpsdk.CallToolResult).Content
+			if len(blocks) != 2 {
+				t.Fatalf("annotated result has %d blocks, want the marker and the producer text", len(blocks))
+			}
+			marker, _ := blocks[0].(*mcpsdk.TextContent)
+			producer, _ := blocks[1].(*mcpsdk.TextContent)
+			if marker == nil || producer == nil || producer.Text != text {
+				t.Fatalf("annotated blocks = %#v, want a marker then the unchanged producer text", blocks)
+			}
+			_, ref := investigation.SplitRefMarker(marker.Text)
+			if marker.Text != investigation.RefMarker(ref) || lease.Close()[ref] != text {
+				t.Fatalf("marker %q must carry a ref issued for the producer text", marker.Text)
+			}
 		})
 	}
 }
@@ -1352,8 +1380,36 @@ func TestResourceReadsColdDynamicUnderNamespacePin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !containsName(extractText(t, result), "alpha-widget") {
-		t.Fatalf("cold pinned list lost widget: %s", extractText(t, result))
+	if got := rowNames(bareListBody(t, result)); !slices.Equal(got, []string{"alpha-widget"}) {
+		t.Fatalf("cold pinned list = %v, want alpha-widget", got)
+	}
+}
+
+// A --namespace-scope pin makes an unscoped read restricted to the pinned
+// namespace, so on a collector that covers only some namespaces it is still a
+// complete read of its scope: a bare array, not a partial list.
+func TestListResourcesUnderNamespacePinIsBare(t *testing.T) {
+	for _, class := range []coverageClass{coverageTyped, coverageCRD, coverageDirect} {
+		for _, caller := range []string{"auth disabled", "cluster-wide"} {
+			t.Run(fmt.Sprintf("%s/%s", class, caller), func(t *testing.T) {
+				kind := setupListCoverageFixture(t, class, true, "alpha", "beta")
+				oldPin, oldTarget := k8s.ForceNamespaceScope, k8s.GetNamespaceScopeTarget()
+				k8s.ForceNamespaceScope = true
+				k8s.SetNamespaceScopeOverride("alpha")
+				t.Cleanup(func() { k8s.ForceNamespaceScope = oldPin; k8s.SetNamespaceScopeOverride(oldTarget) })
+				ctx := context.Background()
+				if caller == "cluster-wide" {
+					ctx = withClusterAdmin(t, "pinned-lister")
+				}
+				result, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: kind, Context: "none"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := rowNames(bareListBody(t, result)); !slices.Equal(got, []string{"alpha-object"}) {
+					t.Fatalf("pinned list = %v, want alpha-object", got)
+				}
+			})
+		}
 	}
 }
 

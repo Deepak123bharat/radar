@@ -4,7 +4,7 @@ import {
   englishPlural,
   kindToPlural,
 } from "@skyhook-io/k8s-ui";
-import { apiVersionToGroup, pluralToKind } from "../../../../utils/navigation";
+import { apiVersionToGroup } from "../../../../utils/navigation";
 import {
   ProjectionBuilder,
   addChanges,
@@ -227,11 +227,13 @@ export function adaptListNamespaces(
 }
 
 // A list Radar's collector could read only in some namespaces arrives as
-// `{items, coverage}`, naming the namespaces it read; a complete list is the
+// `{coverage, items}`, naming the namespaces it read; a complete list is the
 // bare array.
 function listedRows(
   payload: unknown,
-): { rows: unknown[]; namespacesRead?: string[] } | undefined {
+):
+  | { rows: unknown[]; coverage?: { namespacesRead: string[]; note: string } }
+  | undefined {
   if (Array.isArray(payload)) return { rows: payload };
   const value = record(payload);
   const coverage = record(value?.coverage);
@@ -240,11 +242,15 @@ function listedRows(
     !value ||
     !Array.isArray(value.items) ||
     coverage?.complete !== false ||
-    !namespacesRead?.length
+    !namespacesRead?.length ||
+    !nonEmptyString(coverage.note)
   ) {
     return undefined;
   }
-  return { rows: value.items, namespacesRead };
+  return {
+    rows: value.items,
+    coverage: { namespacesRead, note: coverage.note },
+  };
 }
 
 export function adaptListResources(
@@ -258,7 +264,8 @@ export function adaptListResources(
     invalidPayload(builder, source);
     return;
   }
-  const { rows, namespacesRead } = listed;
+  const { rows, coverage } = listed;
+  const namespacesRead = coverage?.namespacesRead;
   const resources = rows
     .map(resourceSummary)
     .filter((item): item is InvestigationResourceSummary => Boolean(item));
@@ -268,11 +275,7 @@ export function adaptListResources(
   }
   const scope = scopeFromArgs(source);
   const args = record(parseJSON(source.args ?? ""));
-  // An empty list has no rows to name its kind; the request does.
-  const kinds =
-    resources.length === 0 && nonEmptyString(args?.kind)
-      ? [pluralToKind(args.kind)]
-      : [...new Set(resources.map((resource) => resource.kind))];
+  const kinds = [...new Set(resources.map((resource) => resource.kind))];
   const noun =
     kinds.length === 1
       ? kindToPlural(kinds[0]) === kinds[0].toLowerCase()
@@ -283,17 +286,16 @@ export function adaptListResources(
     ? args.namespace
     : undefined;
   const title = options.title ?? (namespace ? `${noun} in ${namespace}` : noun);
-  const readIn = namespacesRead
-    ? `${namespacesRead.length === 1 ? "namespace" : "namespaces"} ${namespacesRead.join(", ")}`
-    : undefined;
   if (resources.length === 0) {
     // list_resources intentionally returns [] for some RBAC-filtered reads;
     // even a successful transport outcome therefore cannot prove absence.
+    // The requested kind may be an alias ("svc"), so a partial read's copy
+    // is the server's note, which names the resource it resolved.
     builder.limit(
       source,
       "Resource inventory",
-      readIn
-        ? `Radar found no ${noun} in ${readIn}; other namespaces were not read, so this result cannot show that none exist elsewhere.`
+      coverage
+        ? `The listing returned nothing. ${coverage.note}`
         : `Radar found no matching resources for ${scope}. Anything you do not have permission to read was not searched.`,
       "unknown",
     );
@@ -329,10 +331,13 @@ export function adaptListResources(
       ]
         .filter(Boolean)
         .join(" · "),
-      data: { type: "inventory", resources, scope },
+      data: namespacesRead
+        ? { type: "inventory", resources, scope, namespacesRead }
+        : { type: "inventory", resources, scope },
     },
   );
-  if (readIn) {
+  if (namespacesRead) {
+    const readIn = `${namespacesRead.length === 1 ? "namespace" : "namespaces"} ${namespacesRead.join(", ")}`;
     builder.limit(
       source,
       "Resource inventory",

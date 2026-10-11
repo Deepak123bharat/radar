@@ -105,7 +105,9 @@ func TestPartialListCoverageSurvivesEveryAgentBackend(t *testing.T) {
 				}
 				defer lease.Close()
 				// The investigation transport issues the ref for the producer
-				// text and prepends its marker as a block of its own.
+				// text and prepends its marker as a block of its own;
+				// internal/mcp's TestListResourcesPartialCoverageTransport runs
+				// the real middleware over this fixture's result to pin that.
 				ref, issued := refs.Issue(scope, payload)
 				if !issued {
 					t.Fatal("could not issue the evidence ref")
