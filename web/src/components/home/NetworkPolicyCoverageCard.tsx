@@ -110,15 +110,9 @@ export function NetworkPolicyCoverageCard({ data, onNavigate }: NetworkPolicyCov
 
               <div className="grid grid-cols-1 gap-y-2 mt-4 w-full">
                 <StatRow label="Policies" value={data.totalPolicies} />
-                <StatRow label="Covered workloads" value={data.coveredWorkloads} total={data.totalWorkloads} />
-                {hasStagedPolicies && (
-                  <StatRow label="Covered if staged" value={coveredIfStaged} total={data.totalWorkloads} />
-                )}
+                <StatRow label="Covered workloads" value={data.coveredWorkloads} total={data.totalWorkloads} projected={hasStagedPolicies ? coveredIfStaged : undefined} />
                 {(unknown > 0 || (hasStagedPolicies && unknownIfStaged > 0)) && <StatRow label="Coverage unknown" value={unknown} projected={hasStagedPolicies ? unknownIfStaged : undefined} />}
-                <StatRow label="Uncovered workloads" value={data.totalWorkloads - data.coveredWorkloads - unknown} warn />
-                {hasStagedPolicies && (
-                  <StatRow label="Uncovered if staged" value={data.totalWorkloads - coveredIfStaged - unknownIfStaged} warn />
-                )}
+                <StatRow label="Uncovered workloads" value={data.totalWorkloads - data.coveredWorkloads - unknown} warn projected={hasStagedPolicies ? data.totalWorkloads - coveredIfStaged - unknownIfStaged : undefined} />
               </div>
             </>
           )}
@@ -153,7 +147,7 @@ function StatRow({ label, value, total, warn, projected }: {
         warn && value > 0 ? 'text-yellow-400' : 'text-theme-text-primary',
       )}>
         {total !== undefined ? `${value}/${total}` : value}
-        {projected !== undefined && <span className="text-[10px] font-normal text-theme-text-tertiary"> ({projected} if staged)</span>}
+        {projected !== undefined && <span className="text-[10px] font-normal text-theme-text-tertiary"> ({total !== undefined ? `${projected}/${total}` : projected} if staged)</span>}
       </span>
     </div>
   )

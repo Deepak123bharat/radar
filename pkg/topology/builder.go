@@ -2239,9 +2239,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			nodes = append(nodes, Node{ID: strings.ToLower(kind) + "/" + ch.GetNamespace() + "/" + ch.GetName(), Kind: NodeKind(kind), Name: ch.GetName(), Status: extractGenericStatus(ch), Data: map[string]any{
 				"namespace": ch.GetNamespace(), "labels": ch.GetLabels(), "apiVersion": ch.GetAPIVersion(),
 			}})
-			if kind == "Channel" {
-				knativeChannelResources = append(knativeChannelResources, ch)
-			}
+			knativeChannelResources = append(knativeChannelResources, ch)
 		}
 	}
 

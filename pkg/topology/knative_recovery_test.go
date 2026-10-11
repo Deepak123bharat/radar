@@ -1,6 +1,7 @@
 package topology
 
 import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -80,5 +81,36 @@ func TestTriggerBrokerAndObservedChannelOwnership(t *testing.T) {
 	edges := addKnativeReferenceEdges(nodes, nil, []*unstructured.Unstructured{trigger}, nil, []*unstructured.Unstructured{channel})
 	if len(edges) != 2 || edges[0].Source != "broker/events/b" || edges[1].Type != EdgeManages {
 		t.Fatalf("edges=%+v", edges)
+	}
+}
+
+func TestBuilderReadsBackingChannelOwnerBeforeStatusReference(t *testing.T) {
+	channelGVR := schema.GroupVersionResource{Group: "messaging.knative.dev", Version: "v1", Resource: "channels"}
+	memoryGVR := schema.GroupVersionResource{Group: "messaging.knative.dev", Version: "v1", Resource: "inmemorychannels"}
+	parent := genericIdentityObject(channelGVR, "Channel", "app", "events")
+	parent.Object["status"] = map[string]any{"channel": map[string]any{"apiVersion": "messaging.knative.dev/v1", "kind": "InMemoryChannel", "name": "events"}}
+	backing := genericIdentityObject(memoryGVR, "InMemoryChannel", "app", "events")
+	ctrl := true
+	backing.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: "messaging.knative.dev/v1", Kind: "Channel", Name: "events", Controller: &ctrl}})
+	dp := &genericIdentityDynamic{watched: []schema.GroupVersionResource{channelGVR, memoryGVR}, kinds: map[schema.GroupVersionResource]string{channelGVR: "Channel", memoryGVR: "InMemoryChannel"}, resources: map[schema.GroupVersionResource][]*unstructured.Unstructured{channelGVR: {parent}, memoryGVR: {backing}}, listCalls: map[schema.GroupVersionResource]int{}}
+	topo, err := NewBuilder(&mockProvider{}).WithDynamic(dp).Build(DefaultBuildOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, edge := range topo.Edges {
+		if edge.Source == "channel/app/events" && edge.Target == "inmemorychannel/app/events" {
+			if edge.Type != EdgeManages {
+				t.Fatalf("actual owner reduced to exposure: %+v", edge)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("missing actual backing-channel ownership")
+	}
+	rel := GetRelationshipsWithObject("InMemoryChannel", "app", "events", backing, topo, nil, dp, IndexByResource(topo))
+	if rel == nil || rel.Owner == nil || rel.Owner.Kind != "Channel" {
+		t.Fatalf("owner=%+v", rel)
 	}
 }

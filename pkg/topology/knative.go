@@ -75,6 +75,10 @@ func addKnativeReferenceEdges(nodes []Node, edges []Edge, triggers, sources, cha
 				appendResolvedRef(id, resourceid.NewRef(resourceid.GroupFromAPIVersion(owner.APIVersion), owner.Kind, channel.GetNamespace(), owner.Name), true, EdgeManages)
 			}
 		}
+	}
+	// Owner references must win over an identical declared status edge,
+	// independent of the discovery/list order of Channel and backing objects.
+	for _, channel := range channels {
 		appendRef(ids[resourceid.ResourceKey(resourceid.GroupFromAPIVersion(channel.GetAPIVersion()), channel.GetKind(), channel.GetNamespace(), channel.GetName())], channel, false, "status", "channel")
 	}
 	return edges

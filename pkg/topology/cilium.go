@@ -21,6 +21,7 @@ func (b *Builder) addCiliumPolicyNodes(nodes []Node, edges []Edge, opts BuildOpt
 		pod *corev1.Pod
 	}
 	var workloads []workload
+	workloadsByNamespace := map[string][]workload{}
 	existing := make(map[string]bool, len(nodes))
 	for _, node := range nodes {
 		existing[node.ID] = true
@@ -30,9 +31,11 @@ func (b *Builder) addCiliumPolicyNodes(nodes []Node, edges []Edge, opts BuildOpt
 		if !existing[id] {
 			return
 		}
-		workloads = append(workloads, workload{id, &corev1.Pod{
+		entry := workload{id, &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Namespace: ns, Labels: template.Labels}, Spec: template.Spec,
-		}})
+		}}
+		workloads = append(workloads, entry)
+		workloadsByNamespace[ns] = append(workloadsByNamespace[ns], entry)
 	}
 	for _, d := range deployments {
 		add("deployment", d.Namespace, d.Name, d.Spec.Template)
@@ -107,10 +110,11 @@ func (b *Builder) addCiliumPolicyNodes(nodes []Node, edges []Edge, opts BuildOpt
 				data["matchesAllPods"] = true
 				continue
 			}
-			for _, workload := range workloads {
-				if definition.namespaced && workload.pod.Namespace != ns {
-					continue
-				}
+			candidates := workloads
+			if definition.namespaced {
+				candidates = workloadsByNamespace[ns]
+			}
+			for _, workload := range candidates {
 				matches, decided, why := matcher.Selects(identities[workload.id], "")
 				if !decided {
 					unknownWorkloads[workload.id] = append(unknownWorkloads[workload.id], id)

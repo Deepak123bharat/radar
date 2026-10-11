@@ -88,6 +88,21 @@ func synthesizeManagedByFromNode(obj metav1.Object, nodeID string, target Resour
 	return nil
 }
 
+// IsGitOpsManagerKind identifies the exact in-cluster GitOps ownership
+// boundaries used by resource context and Applications. A manager's source
+// or parent manager does not own each of its generated descendants.
+func IsGitOpsManagerKind(kind NodeKind, group string) bool {
+	switch kind {
+	case KindApplication:
+		return group == "argoproj.io"
+	case KindKustomization:
+		return group == "kustomize.toolkit.fluxcd.io"
+	case KindHelmRelease:
+		return group == "helm.toolkit.fluxcd.io"
+	}
+	return false
+}
+
 // AcceptsManagerHint checks Flux origin labels against observed inventory and ancestry.
 // Origin labels remain useful when no inventory is available. Once an observed
 // Flux controller records inventory (or targets another cluster), membership
@@ -114,6 +129,11 @@ func (idx *RelationshipsIndex) AcceptsManagerHint(ref, target ResourceRef) bool 
 	for len(queue) > 0 {
 		current := queue[0]
 		queue = queue[1:]
+		// The nearest manager is the ownership boundary. Its source or
+		// parent manager is not the manager of generated descendants.
+		if currentNode := idx.nodesByID[current]; current != nodeID && currentNode != nil && IsGitOpsManagerKind(currentNode.Kind, nodeAPIGroupFromData(currentNode)) {
+			continue
+		}
 		incoming, _ := idx.EdgesFor(current)
 		for _, edge := range incoming {
 			if edge.Type != EdgeManages {
@@ -220,7 +240,7 @@ func parseArgoTrackingID(value string) (namespace, name string, ok bool) {
 }
 
 // walkTopmostOwner follows EdgeManages edges upward from the queried node
-// until no further owner exists, returning the topmost ancestor's ResourceRef.
+// until the first GitOps manager or final owner, returning that ResourceRef.
 // Returns nil when the queried resource has no owner in the topology. Cycle-
 // safe: stops at the first revisit.
 //
@@ -282,11 +302,19 @@ func walkTopmostOwnerFromNodeID(startID string, topo *Topology, dp DynamicProvid
 			break
 		}
 		visited[next] = true
-		ref := resourceRefForNodeID(next, topo, dp)
+		var ref *ResourceRef
+		if idx != nil {
+			ref = resourceRefForNode(idx.nodesByID[next], dp)
+		} else {
+			ref = resourceRefForNodeID(next, topo, dp)
+		}
 		if ref == nil {
 			break
 		}
 		topRef = ref
+		if IsGitOpsManagerKind(NodeKind(ref.Kind), ref.Group) {
+			break
+		}
 		cur = next
 	}
 	return topRef

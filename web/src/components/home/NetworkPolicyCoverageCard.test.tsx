@@ -35,9 +35,9 @@ describe("NetworkPolicyCoverageCard", () => {
     expect(html).toContain("30%");
     expect(html).toContain("(50% if staged applied)");
     expect(html).toContain("Covered workloads");
-    expect(html).toContain("Covered if staged");
+    expect(html).toContain("5/10 if staged");
     expect(html).toContain("Uncovered workloads");
-    expect(html).toContain("Uncovered if staged");
+    expect(html).toContain("5 if staged");
     // The delta segment's tone carries the direction: amber for coverage the
     // staged set would add. Its wording lives in a Tooltip portal, which server
     // rendering does not emit, so the class is what an assertion can reach.
@@ -97,5 +97,8 @@ it("keeps staged uncertainty in a single row and preserves the Home grid height"
  const html=render(<NetworkPolicyCoverageCard data={{totalPolicies:2,stagedPolicies:1,coveredWorkloads:1,unknownWorkloads:8,coveredWorkloadsIfStaged:0,unknownWorkloadsIfStaged:9,totalWorkloads:10}} onNavigate={()=>{}}/>)
  expect(html).toContain("h-[260px]")
  expect(html).toContain("(9 if staged)")
+ expect(html).toContain("(0/10 if staged)")
+ expect(html).not.toContain("Covered if staged")
+ expect(html).not.toContain("Uncovered if staged")
  expect(html).not.toContain("text-red-500")
 })

@@ -1,6 +1,7 @@
 package topology
 
 import (
+	"fmt"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -62,5 +63,38 @@ func TestCiliumNamespaceSpecsAndClusterwideCoverage(t *testing.T) {
 				t.Fatal("known mismatch must not become unknown")
 			}
 		})
+	}
+}
+
+// Exercise the namespaced selector hot path with many unrelated namespaces.
+func BenchmarkCiliumNamespacedPolicySelection(b *testing.B) {
+	const namespaces, workloadsPerNamespace, policiesPerNamespace = 500, 30, 6
+	nodes := make([]Node, 0, namespaces*workloadsPerNamespace)
+	deployments := make([]*appsv1.Deployment, 0, cap(nodes))
+	policies := make([]*unstructured.Unstructured, 0, namespaces*policiesPerNamespace)
+	gvr := schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}
+	for n := 0; n < namespaces; n++ {
+		ns := fmt.Sprintf("ns-%d", n)
+		for w := 0; w < workloadsPerNamespace; w++ {
+			name := fmt.Sprintf("web-%d", w)
+			nodes = append(nodes, Node{ID: "deployment/" + ns + "/" + name, Kind: KindDeployment, Name: name, Data: map[string]any{"namespace": ns}})
+			deployments = append(deployments, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}, Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "web"}}}}})
+		}
+		for p := 0; p < policiesPerNamespace; p++ {
+			obj := genericIdentityObject(gvr, "CiliumNetworkPolicy", ns, fmt.Sprintf("policy-%d", p))
+			obj.Object["spec"] = map[string]any{"endpointSelector": map[string]any{"matchLabels": map[string]any{"app": "web"}}}
+			policies = append(policies, obj)
+		}
+	}
+	dp := &genericIdentityDynamic{watched: []schema.GroupVersionResource{gvr}, kinds: map[schema.GroupVersionResource]string{gvr: "CiliumNetworkPolicy"}, resources: map[schema.GroupVersionResource][]*unstructured.Unstructured{gvr: policies}, listCalls: map[schema.GroupVersionResource]int{}}
+	builder := NewBuilder(&mockProvider{}).WithDynamic(dp)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var warnings []string
+		_, edges := builder.addCiliumPolicyNodes(nodes, nil, DefaultBuildOptions(), &warnings, deployments, nil, nil)
+		if len(edges) != namespaces*workloadsPerNamespace*policiesPerNamespace {
+			b.Fatalf("lost namespace selection: %d edges", len(edges))
+		}
 	}
 }
