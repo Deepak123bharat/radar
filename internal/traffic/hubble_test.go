@@ -637,3 +637,20 @@ func TestConnectSlowTLSRelayNotMistakenForPlaintext(t *testing.T) {
 		t.Fatalf("expected TLS connect to a slow Relay, got error: %s", info.Error)
 	}
 }
+
+func TestDetectStoresNothingForACancelledRequest(t *testing.T) {
+	relayPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "hubble-relay-1", Namespace: "kube-system", Labels: map[string]string{"k8s-app": "hubble-relay"}},
+		Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	h := NewHubbleSource(fake.NewSimpleClientset(relayPod, relayService(80, intstr.FromString("grpc"))))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := h.Detect(ctx); err == nil {
+		t.Fatal("a cancelled detection should return its context error")
+	}
+	if h.relayNamespace != "" || h.servicePort != 0 || h.relayPort != 0 {
+		t.Errorf("stored namespace=%q servicePort=%d relayPort=%d, want nothing: a cancelled request's lookups say nothing about the cluster", h.relayNamespace, h.servicePort, h.relayPort)
+	}
+}

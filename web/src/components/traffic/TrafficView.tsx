@@ -858,6 +858,10 @@ export function TrafficView({ namespaces, onSetNamespaces }: TrafficViewProps) {
       if (existing) {
         mergeFlowVolume(existing, flow)
         mergeRawPairs(existing, flow)
+        // The edge shows its lowest port, whatever order the server sent its
+        // parts in: the Internet node groups by it, and selections find the
+        // edge by it, so it must not change from one refresh to the next.
+        if (flow.port < existing.port) existing.port = flow.port
         // Everything merged here shares the key's direction-known state, so the
         // flag is already correct on the entry that was created first.
       } else {
@@ -1106,17 +1110,16 @@ export function TrafficView({ namespaces, onSetNamespaces }: TrafficViewProps) {
     setGraphSelection(prev => (prev?.type === 'node' && prev.nodeId === focusKey ? prev : null))
   }, [tooLargeToDraw, focusKey])
 
-  // Namespaces hidden in the sidebar are dropped at the source too, so their
-  // traffic can't fill the records limit. Only here: the flows query keeps
-  // them, since the sidebar lists them from its data to be shown again.
-  const recordsExcludedNamespaces = useMemo(() => {
-    const excluded = [...(hideSystem ? SYSTEM_NAMESPACE_LIST : []), ...hiddenNamespaces]
-    return excluded.length > 0 ? [...new Set(excluded)].sort() : undefined
-  }, [hideSystem, hiddenNamespaces])
+  // Namespaces hidden in the sidebar are dropped at the source too, when the
+  // request has room, so their traffic can't fill the records limit. Only
+  // here: the flows query keeps them, since the sidebar lists them from its
+  // data to be shown again.
+  const hiddenNamespaceList = useMemo(() => [...hiddenNamespaces].sort(), [hiddenNamespaces])
   const records = useTrafficRecords({
     namespaces,
     since: timeRange,
-    excludeNamespaces: recordsExcludedNamespaces,
+    excludeNamespaces: hideSystem ? SYSTEM_NAMESPACE_LIST : undefined,
+    optionalExcludeNamespaces: hiddenNamespaceList,
     excludeHost: hideSystem,
     match: recordsMatch,
     enabled: wizardState === 'ready' && !isConnecting && !connectionError,
@@ -1134,6 +1137,11 @@ export function TrafficView({ namespaces, onSetNamespaces }: TrafficViewProps) {
   // hides (below the connection threshold), so they are dropped here.
   const filteredRecords = useMemo(
     () => (records.data?.flows ?? []).filter(f => rawFlowPasses(f) && onSelectedEdge(f)),
+    [records.data?.flows, rawFlowPasses, onSelectedEdge])
+  // Only the records the view's filters drop: an endpoint lookup also returns
+  // edges the graph doesn't draw (outside a focus, or past the flows cap).
+  const recordsHiddenByFilters = useMemo(
+    () => (records.data?.flows ?? []).filter(f => onSelectedEdge(f) && !rawFlowPasses(f)).length,
     [records.data?.flows, rawFlowPasses, onSelectedEdge])
 
   const sampleSelection = useMemo(() => {
@@ -1177,8 +1185,7 @@ export function TrafficView({ namespaces, onSetNamespaces }: TrafficViewProps) {
       if (data.matched > data.flows.length) {
         parts.push(`Newest ${data.flows.length.toLocaleString()} of ${data.matched.toLocaleString()} records for this selection`)
       }
-      const hidden = data.flows.length - filteredRecords.length
-      if (hidden > 0) parts.push(`${hidden.toLocaleString()} of the ${data.flows.length.toLocaleString()} fetched are hidden by the view's filters`)
+      if (recordsHiddenByFilters > 0) parts.push(`${recordsHiddenByFilters.toLocaleString()} of the ${data.flows.length.toLocaleString()} fetched are hidden by the view's filters`)
       const covered = coverageLabel(data.coveredSince, data.timestamp)
       if (covered) parts.push(`Records cover the ${covered} of ${timeRange}`)
       return parts.length > 0 ? parts.join(' · ') : undefined
@@ -1189,7 +1196,7 @@ export function TrafficView({ namespaces, onSetNamespaces }: TrafficViewProps) {
     if (records.tooLarge) return `This selection is too large to look up on its own; showing its flows among the ${sample}`
     if (records.isError) return `Couldn't load this selection's records (${records.error?.message}); showing its flows among the ${sample}`
     return `Showing this selection's flows among the ${sample}`
-  }, [useRecords, records.data, filteredRecords.length, records.tooLarge, records.isError, records.error, sampleTotal, sampleSize, listSelection, timeRange])
+  }, [useRecords, records.data, recordsHiddenByFilters, records.tooLarge, records.isError, records.error, sampleTotal, sampleSize, listSelection, timeRange])
 
   // Stats for display
   const flowStats = useMemo(() => {

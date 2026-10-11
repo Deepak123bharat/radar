@@ -173,26 +173,21 @@ func (s *failingStatusObserver) ServerStatus(context.Context, *observerpb.Server
 	return nil, status.Error(codes.DeadlineExceeded, "a node did not answer")
 }
 
-func TestHubbleGetFlows_SplitsANamespaceViewOverItsNodes(t *testing.T) {
-	cases := []struct {
-		name string
-		opts FlowOptions
-		want uint64
-	}{
-		{"a namespace on a few nodes gets their full limit", FlowOptions{Namespaces: []string{"a"}, NamespaceNodes: 3}, hubbleDefaultNodeLimit},
-		{"a namespace across the cluster keeps the split", FlowOptions{Namespaces: []string{"a"}, NamespaceNodes: 200}, 250},
-		{"an unknown node count keeps the cluster split", FlowOptions{Namespaces: []string{"a"}}, 250},
-		{"a selection keeps the cluster split", FlowOptions{Namespaces: []string{"a"}, NamespaceNodes: 3, Match: &FlowMatch{Endpoints: []EndpointRef{{Namespace: "a", Name: "web-1", Kind: EndpointKindPod}}}}, 250},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+func TestHubbleGetFlows_SplitsANarrowedViewOverEveryNode(t *testing.T) {
+	// A namespace's flows are recorded on its peers' nodes too, so only the
+	// cluster's node count bounds what a narrowed fetch transfers.
+	for name, opts := range map[string]FlowOptions{
+		"namespaces": {Namespaces: []string{"a"}},
+		"selection":  {Namespaces: []string{"a"}, Match: &FlowMatch{Endpoints: []EndpointRef{{Namespace: "a", Name: "web-1", Kind: EndpointKindPod}}}},
+	} {
+		t.Run(name, func(t *testing.T) {
 			obs := &statusObserver{nodes: 200, scriptedObserver: scriptedObserver{responses: []*observerpb.GetFlowsResponse{flowResponse("a", "b")}}}
 			h := connectedHubble(t, obs)
-			if _, err := h.GetFlows(context.Background(), tc.opts); err != nil {
+			if _, err := h.GetFlows(context.Background(), opts); err != nil {
 				t.Fatal(err)
 			}
-			if got := obs.got.GetNumber(); got != tc.want {
-				t.Errorf("Number = %d, want %d", got, tc.want)
+			if got := obs.got.GetNumber(); got != 250 {
+				t.Errorf("Number = %d, want the budget split over all 200 nodes", got)
 			}
 		})
 	}
@@ -409,6 +404,21 @@ func TestHubbleFlowsRequest_TiesASelectionToTheNamespacesInView(t *testing.T) {
 		req := hubbleFlowsRequest(FlowOptions{Namespaces: many, Match: &FlowMatch{Endpoints: outside}}, false)
 		if wl := req.GetWhitelist(); len(wl) != 2 || len(wl[0].GetSourcePod()) != 300 || len(wl[0].GetDestinationPod()) != 0 {
 			t.Errorf("whitelist has %d filters, want the 300 namespaces on either side instead of 40 filters with 300 prefixes each", len(wl))
+		}
+	})
+
+	t.Run("pairs inside a long namespace list are sent as they are", func(t *testing.T) {
+		many := make([]string, 25)
+		for i := range many {
+			many[i] = fmt.Sprintf("team-%d", i)
+		}
+		var pairs []EndpointPair
+		for i := range 45 {
+			pairs = append(pairs, EndpointPair{Source: pod("team-1", fmt.Sprintf("web-%d", i)), Destination: pod("team-2", "db-0"), Port: 5432})
+		}
+		req := hubbleFlowsRequest(FlowOptions{Namespaces: many, Match: &FlowMatch{Pairs: pairs}}, false)
+		if wl := req.GetWhitelist(); len(wl) != 90 {
+			t.Errorf("whitelist has %d filters, want the 45 pairs both ways: nothing needs tying", len(wl))
 		}
 	})
 

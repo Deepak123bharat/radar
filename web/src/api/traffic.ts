@@ -175,6 +175,9 @@ function encodedMatch(match: TrafficMatch): string | null {
 export interface UseTrafficRecordsOptions extends TrafficScope {
   /** The selection, or null for no selection. */
   match: TrafficMatch | null
+  /** Namespaces also excluded when the request has room for them; the list
+   *  filters them out anyway. */
+  optionalExcludeNamespaces?: readonly string[]
   enabled?: boolean
 }
 
@@ -184,15 +187,24 @@ export interface UseTrafficRecordsOptions extends TrafficScope {
 export function useTrafficRecords(options: UseTrafficRecordsOptions) {
   const { enabled = true } = options
   const { guard, gatedKey, support } = useRadarFeature('trafficRecords')
-  // Serialized once per selection, not per render: a merged edge can carry
-  // tens of thousands of pairs.
+  // Serialized when the selection changes (each refresh), not on every
+  // render: a merged edge can carry tens of thousands of pairs.
   const match = useMemo(() => (options.match ? encodedMatch(options.match) : null), [options.match])
-  const params = trafficScopeParams(options)
+  const optional = options.optionalExcludeNamespaces ?? []
+  let scope: TrafficScope = optional.length > 0
+    ? { ...options, excludeNamespaces: [...(options.excludeNamespaces ?? []), ...optional] }
+    : options
+  let params = trafficScopeParams(scope)
   if (match) params.set('match', match)
+  if (optional.length > 0 && params.toString().length > MAX_TRAFFIC_QUERY_CHARS) {
+    scope = options
+    params = trafficScopeParams(scope)
+    if (match) params.set('match', match)
+  }
   const tooLarge = options.match !== null && (match === null || params.toString().length > MAX_TRAFFIC_QUERY_CHARS)
 
   const query = useQuery<TrafficRecordsResponse>({
-    queryKey: ['traffic-flows', 'records', ...trafficScopeKey(options), match, ...gatedKey],
+    queryKey: ['traffic-flows', 'records', ...trafficScopeKey(scope), match, ...gatedKey],
     queryFn: () => guard(() => fetchApiJSON<TrafficRecordsResponse>(`/traffic/flows/records?${params.toString()}`)),
     staleTime: 5000,
     enabled: enabled && match !== null && !tooLarge && support !== 'unsupported',

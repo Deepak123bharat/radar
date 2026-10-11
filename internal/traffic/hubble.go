@@ -158,10 +158,16 @@ func (h *HubbleSource) Detect(ctx context.Context) (*DetectionResult, error) {
 		return result, nil
 	}
 
-	// Step 5: Store discovered configuration
+	// Step 5: Store discovered configuration, unless the request ended: the
+	// lookups above then failed for that reason, not because of the cluster,
+	// and a later Connect would use what they left.
+	relayPort := h.resolveTargetPort(ctx, relaySvc)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	h.mu.Lock()
 	h.relayNamespace = relayNamespace
-	h.relayPort = h.resolveTargetPort(ctx, relaySvc)
+	h.relayPort = relayPort
 	h.servicePort = servicePort
 	h.clusterIP = relaySvc.Spec.ClusterIP
 	h.useTLS = useTLS
@@ -1172,9 +1178,6 @@ func hubblePairsWhitelist(pairs []EndpointPair) []*flowpb.FlowFilter {
 // more prefixes than hubbleMaxTiedPrefixes (a long namespace list on many
 // filters): every node checks each one against each flow.
 func hubbleWithinNamespaces(filters []*flowpb.FlowFilter, namespaces []string) []*flowpb.FlowFilter {
-	if len(filters)*len(namespaces) > hubbleMaxTiedPrefixes {
-		return nil
-	}
 	prefixes := make([]string, len(namespaces))
 	for i, ns := range namespaces {
 		prefixes[i] = ns + "/"
@@ -1197,12 +1200,16 @@ func hubbleWithinNamespaces(filters []*flowpb.FlowFilter, namespaces []string) [
 		return in, len(in) == len(pods)
 	}
 	var out []*flowpb.FlowFilter
+	added := 0
 	for _, f := range filters {
 		src, srcAll := within(f.GetSourcePod())
 		dst, dstAll := within(f.GetDestinationPod())
 		if srcAll || dstAll {
 			out = append(out, f)
 			continue
+		}
+		if added += len(src) + len(dst); added > hubbleMaxTiedPrefixes {
+			return nil
 		}
 		if len(src) > 0 {
 			v := proto.Clone(f).(*flowpb.FlowFilter)
@@ -1334,16 +1341,11 @@ func (h *HubbleSource) fetchFlowsViaGRPC(ctx context.Context, opts FlowOptions) 
 	}
 
 	req := hubbleFlowsRequest(opts, false)
-	// A view narrowed to some namespaces splits the budget over the nodes
-	// running their pods: split over every node in the cluster, each busy node
-	// would be cut short while the fetch stays far below the budget. Otherwise,
-	// and for a selection (it shows only its newest records, and a busy
-	// endpoint is on every node), the budget is split over every node.
-	nodes := opts.NamespaceNodes
-	if nodes <= 0 || len(hubbleNamespaces(opts)) == 0 || opts.Match.Size() > 0 {
-		nodes = h.connectedNodes(ctx, client)
-	}
-	req.Number = hubbleNodeLimit(req.Number, nodes)
+	// Split over every node Relay reads from, narrowed or not: a namespace's
+	// flows are recorded at both ends, so its traffic is on its peers' nodes
+	// too, and only every node bounds what the fetch transfers. Narrowing still
+	// covers more of the window, since Number counts only the flows that match.
+	req.Number = hubbleNodeLimit(req.Number, h.connectedNodes(ctx, client))
 	var windowStart time.Time
 	if opts.Since > 0 {
 		windowStart = time.Now().Add(-opts.Since)

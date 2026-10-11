@@ -629,6 +629,13 @@ describe('selectedEdgeMatcher', () => {
     expect(selectedEdgeMatcher(pairs, true, asDrawn)({ ...record('api', 'web', 41234), l7Protocol: 'HTTP', l7Type: 'RESPONSE' })).toBe(false)
   })
 
+  // Known and unavoidable: the response carries the client's port, so with
+  // two edges web→api on different ports it belongs to either.
+  it('matches an old Radar\'s response to each of the caller\'s edges', () => {
+    const on = selectedEdgeMatcher([{ source: ep('shop', 'web'), destination: ep('shop', 'api'), port: 9090 }], false, asDrawn)
+    expect(on({ ...record('api', 'web', 41234), l7Protocol: 'HTTP', l7Type: 'RESPONSE' })).toBe(true)
+  })
+
   it('matches everything with no selection', () => {
     expect(selectedEdgeMatcher(null, true, asDrawn)(record('a', 'b', 1))).toBe(true)
   })

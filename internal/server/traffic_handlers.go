@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/apimachinery/pkg/labels"
-
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/traffic"
 )
@@ -216,34 +214,12 @@ const trafficRecordsLimit = trafficFlowSample
 // the 8 KiB limits of the proxies in front; this guards the server.
 const maxTrafficMatchBytes = 16 << 10
 
-// namespaceNodeCount counts the nodes running pods in the namespaces, 0 for
-// all namespaces or when the pod cache can't say.
-func namespaceNodeCount(cache *k8s.ResourceCache, namespaces []string) int {
-	if len(namespaces) == 0 || cache == nil || cache.Pods() == nil {
-		return 0
-	}
-	nodes := map[string]bool{}
-	for _, ns := range namespaces {
-		pods, err := cache.Pods().Pods(ns).List(labels.Everything())
-		if err != nil {
-			return 0
-		}
-		for _, pod := range pods {
-			if pod.Spec.NodeName != "" {
-				nodes[pod.Spec.NodeName] = true
-			}
-		}
-	}
-	return len(nodes)
-}
-
 // trafficFlowOptions reads the query parameters the flows and records
 // endpoints share. namespaces is the caller's resolved namespace scope.
 func trafficFlowOptions(r *http.Request, namespaces []string) (traffic.FlowOptions, error) {
 	q := r.URL.Query()
 	opts := traffic.DefaultFlowOptions()
 	opts.Namespaces = namespaces
-	opts.NamespaceNodes = namespaceNodeCount(k8s.GetResourceCache(), namespaces)
 	if len(namespaces) == 1 {
 		opts.Namespace = namespaces[0]
 	}

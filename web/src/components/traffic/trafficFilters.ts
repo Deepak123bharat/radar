@@ -390,8 +390,9 @@ export function pairKey(source: { namespace?: string; name: string }, destinatio
  * draws (`drawn`). A Radar from before caller-oriented responses
  * (`responsesCallerOriented` unset) sends an HTTP response from server to
  * client, on the client's port, so there a response is also matched to an
- * edge running the other way, whatever its port. Nothing else is: other
- * traffic between the same endpoints is on edges of its own.
+ * edge running the other way. Its port says nothing about which of the
+ * caller's edges it answers, so it is matched to each of them; other traffic
+ * between the same endpoints is not, being on edges of its own.
  */
 export function selectedEdgeMatcher(
   pairs: TrafficEndpointPair[] | null,
