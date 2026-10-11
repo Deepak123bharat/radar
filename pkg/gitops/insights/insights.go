@@ -274,6 +274,10 @@ type HistoryItem struct {
 	RawMessage  string `json:"rawMessage,omitempty"`
 	Source      string `json:"source,omitempty"`
 	InitiatedBy string `json:"initiatedBy,omitempty"`
+	// Rollbackable is set on every Argo CD status.history entry: whether
+	// RollbackArgoApp accepts it (gitops.ArgoHistoryEntryRollbackable). Nil on
+	// rows it doesn't apply to, such as the current operation and Flux.
+	Rollbackable *bool `json:"rollbackable,omitempty"`
 }
 
 type Capabilities struct {
@@ -1369,7 +1373,8 @@ func buildHistory(root *unstructured.Unstructured, tool string) []HistoryItem {
 					}
 				}
 			}
-			out = append(out, HistoryItem{ID: id, Revision: argoRevisionLabel(m), DeployedAt: gitops.StringValue(m["deployedAt"]), Source: argoSourceLabel(m), InitiatedBy: initiatedBy})
+			rollbackable := gitops.ArgoHistoryEntryRollbackable(m)
+			out = append(out, HistoryItem{ID: id, Revision: argoRevisionLabel(m), DeployedAt: gitops.StringValue(m["deployedAt"]), Source: argoSourceLabel(m), InitiatedBy: initiatedBy, Rollbackable: &rollbackable})
 		}
 		if op, ok, _ := unstructured.NestedMap(root.Object, "status", "operationState"); ok {
 			initiatedBy := ""

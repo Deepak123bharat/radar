@@ -21,6 +21,7 @@ import {
   entryTone,
   gitopsToSeverity,
   healthStatusRank,
+  historyRollbackBlockedReason,
   isArgoResourceSyncEligible,
   messageToPhase,
   normalizeHealthStatus,
@@ -1711,6 +1712,7 @@ function HistoryRows({
         // the in-flight current operation row has no ID and rolling "back"
         // to it is meaningless.
         const showRollback = canRollback && !!item.id && !!onRollback
+        const blockedReason = historyRollbackBlockedReason(item, rollbackBlockedReason)
         return (
           // `group` enables the Rollback button's hover-reveal; baseline
           // opacity-40 keeps it touch-discoverable.
@@ -1731,22 +1733,22 @@ function HistoryRows({
                 )}
                 {showRollback && (
                   <Tooltip
-                    content={rollbackBlockedReason || `Roll back to revision ${item.revision || `#${item.id}`}`}
+                    content={blockedReason || `Roll back to revision ${item.revision || `#${item.id}`}`}
                     delay={200}
                     wrapperClassName="ml-auto"
                   >
                     {/* Two visually distinct states:
                         - Enabled: low-emphasis baseline (opacity-40), brightens on row hover
-                        - Disabled (auto-sync on): full opacity but desaturated, cursor-not-allowed,
+                        - Disabled (auto-sync on, or an entry with no source): full opacity but desaturated, cursor-not-allowed,
                           no hover affordance — reads unambiguously as "not actionable, here's why" */}
                     <button
                       type="button"
-                      onClick={() => !rollbackBlockedReason && onRollback?.(item)}
-                      disabled={!!rollbackBlockedReason}
-                      aria-disabled={!!rollbackBlockedReason}
+                      onClick={() => !blockedReason && onRollback?.(item)}
+                      disabled={!!blockedReason}
+                      aria-disabled={!!blockedReason}
                       className={clsx(
                         'rounded border px-1.5 py-0.5 text-[10px] transition-opacity',
-                        rollbackBlockedReason
+                        blockedReason
                           ? 'cursor-not-allowed border-theme-border bg-theme-base text-theme-text-tertiary'
                           : 'border-theme-border bg-theme-elevated text-theme-text-secondary opacity-40 hover:bg-theme-hover hover:text-theme-text-primary hover:opacity-100 focus-visible:opacity-100 group-hover:opacity-100'
                       )}

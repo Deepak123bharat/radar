@@ -872,6 +872,38 @@ func TestBuildHistoryArgo_MultiSourceEntry(t *testing.T) {
 	}
 }
 
+// Each Argo history row carries whether RollbackArgoApp accepts it, so the UI
+// disables Rollback on the same entries the API refuses; the current
+// operation row is not a history entry and carries nothing.
+func TestBuildHistoryArgo_Rollbackable(t *testing.T) {
+	root := argoApp(map[string]any{
+		"operationState": map[string]any{"phase": "Succeeded", "finishedAt": "2026-05-03T14:00:00Z"},
+		"history": []any{
+			map[string]any{"id": int64(0), "deployedAt": "2026-05-03T11:00:00Z", "revision": "aaa111"},
+			map[string]any{"id": int64(1), "deployedAt": "2026-05-03T12:00:00Z", "revision": "bbb222", "source": map[string]any{"repoURL": "https://github.com/org/app", "path": "guestbook"}},
+			map[string]any{
+				"id":         int64(2),
+				"deployedAt": "2026-05-03T13:00:00Z",
+				"revisions":  []any{"ccc333", "ddd444"},
+				"source":     map[string]any{"repoURL": ""},
+				"sources":    []any{map[string]any{"repoURL": "https://github.com/org/app", "path": "guestbook"}},
+			},
+		},
+	})
+	got := map[string]*bool{}
+	for _, item := range BuildHistory(root) {
+		got[item.ID] = item.Rollbackable
+	}
+	if r := got[""]; r != nil {
+		t.Errorf("operation row rollbackable = %v, want unset", *r)
+	}
+	for id, want := range map[string]bool{"0": false, "1": true, "2": true} {
+		if r := got[id]; r == nil || *r != want {
+			t.Errorf("entry %s rollbackable = %v, want %v", id, r, want)
+		}
+	}
+}
+
 // A running operation has finishedAt="" and used to fall to the bottom of
 // history due to the descending DeployedAt sort. Falling back to startedAt
 // keeps it at the top where it belongs.
