@@ -7170,20 +7170,24 @@ export function useWorkloadRuns(
   namespace: string,
   name: string,
   enabled = true,
-  options?: { refetchActive?: boolean; clusterScoped?: boolean; role?: string; search?: string; state?: string; selected?: string },
+  options?: { refetchActive?: boolean; clusterScoped?: boolean; namespaces?: string[]; role?: string; search?: string; state?: string; selected?: string },
 ) {
   const clusterScoped = options?.clusterScoped ?? false;
   const ns = clusterScoped ? "_" : namespace;
+  // A cluster-scoped template's runs live in many namespaces; the view's
+  // namespace selection narrows them, as it does every other list.
+  const viewNamespaces = clusterScoped ? (options?.namespaces ?? []).join(",") : "";
   const params = new URLSearchParams();
   if (clusterScoped) params.set("clusterScoped", "true");
+  if (viewNamespaces) params.set("namespaces", viewNamespaces);
   for (const key of ["role", "search", "state", "selected"] as const) { if (options?.[key]) params.set(key, options[key]); }
   const queryString = params.toString();
 
   return useQuery<WorkloadRunsResponse>({
-    queryKey: ["workload-runs", kind, namespace, name, clusterScoped, options?.role ?? '', options?.search ?? '', options?.state ?? '', options?.selected ?? ''],
+    queryKey: ["workload-runs", kind, namespace, name, clusterScoped, viewNamespaces, options?.role ?? '', options?.search ?? '', options?.state ?? '', options?.selected ?? ''],
     placeholderData: (previous, query) => {
       if (previous?.collection !== 'members') return undefined
-      const identity = ["workload-runs", kind, namespace, name, clusterScoped, options?.role ?? '', options?.search ?? '', options?.state ?? '']
+      const identity = ["workload-runs", kind, namespace, name, clusterScoped, viewNamespaces, options?.role ?? '', options?.search ?? '', options?.state ?? '']
       return identity.every((value, index) => query?.queryKey[index] === value) ? previous : undefined
     },
     queryFn: () =>
