@@ -471,9 +471,10 @@ Each error carries a reason code twice: as the prefix of its text
 
 Branch on `structuredContent.reason`; the text is for people and for clients that
 read only text. Errors without a reason (an absent object's `resource not found`,
-a disconnected cluster, a serialization failure) stay text-only. `diagnose`
-reports Radar's collector refusals with the same codes and shape. The codes are
-defined in `pkg/readreason`.
+a disconnected cluster, a serialization failure) stay text-only. Workload and
+GitOps `diagnose` root reads use the same readiness and synchronization checks;
+an unobserved target is not reported as absent. Collector refusals carry the
+same codes and shape. The codes are defined in `pkg/readreason`.
 
 Reasons separate the calling user's permissions from Radar's collection access:
 

@@ -1368,6 +1368,80 @@ func TestResourceReadsNamespaceCollectorUnauthorized(t *testing.T) {
 	if err == nil || !strings.HasPrefix(err.Error(), "collector_unauthorized:") {
 		t.Fatalf("unscoped list must not omit a namespace whose credentials were rejected: %v", err)
 	}
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+	}{{"auth disabled", context.Background()}, {"cluster-wide", withClusterAdmin(t, "credential-admin")}} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := handleListResources(tc.ctx, nil, listResourcesInput{Kind: "pods", Context: "none"})
+			if err == nil || !strings.HasPrefix(err.Error(), "collector_unauthorized:") {
+				t.Fatalf("unrestricted list must not omit a namespace whose credentials were rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestDiagnoseRejectsUnobservedTypedTargets(t *testing.T) {
+	for _, pending := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pending=%v", pending), func(t *testing.T) {
+			client := fake.NewClientset(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "present", Namespace: "alpha"}})
+			var err error
+			want := "collector_scope_limited:"
+			if pending {
+				err = k8s.InitTestPromotedSyncingCache(client, 5*time.Second, time.Minute, map[string]time.Duration{"pods": time.Hour})
+				want = "kind_sync_pending:"
+			} else {
+				err = k8s.InitScopedTestResourceCache(client, map[string]k8score.ResourceScope{"pods": {Enabled: true, Namespace: "beta"}})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(k8s.ResetTestState)
+			_, _, err = handleDiagnose(context.Background(), nil, testDiagnoseInput("pod", "alpha", "present"))
+			if err == nil || !strings.HasPrefix(err.Error(), want) || strings.Contains(err.Error(), "not found") {
+				t.Fatalf("unobserved target must not be declared absent, want %s, got %v", want, err)
+			}
+		})
+	}
+}
+
+func TestDiagnoseRejectsUnsyncedDynamicTargets(t *testing.T) {
+	if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(k8s.ResetTestState)
+	previousWait := dynamicSyncWait
+	dynamicSyncWait = 20 * time.Millisecond
+	t.Cleanup(func() { dynamicSyncWait = previousWait })
+	listKinds := map[schema.GroupVersionResource]string{}
+	var resources []k8s.APIResource
+	for _, b := range []resourceid.Builtin{
+		{Kind: "Rollout", Resource: "rollouts", Group: "argoproj.io", Version: "v1alpha1"},
+		{Kind: "Application", Resource: "applications", Group: "argoproj.io", Version: "v1alpha1"},
+	} {
+		gvr := schema.GroupVersionResource{Group: b.Group, Version: b.Version, Resource: b.Resource}
+		listKinds[gvr] = b.Kind + "List"
+		resources = append(resources, k8s.APIResource{Group: b.Group, Version: b.Version, Name: b.Resource, Kind: b.Kind, Namespaced: true, Verbs: []string{"list", "watch", "get"}})
+	}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds)
+	dyn.PrependReactor("list", "*", func(action ktesting.Action) (bool, runtime.Object, error) {
+		if action.(interface{ GetListOptions() metav1.ListOptions }).GetListOptions().Limit == 1 {
+			return false, nil, nil
+		}
+		return true, nil, fmt.Errorf("initial list unavailable")
+	})
+	if err := k8s.InitTestDynamicResourceCache(dyn, resources); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(k8s.ResetTestDynamicState)
+	for _, kind := range []string{"rollout", "application"} {
+		t.Run(kind, func(t *testing.T) {
+			_, _, err := handleDiagnose(context.Background(), nil, testDiagnoseInput(kind, "alpha", "present"))
+			if err == nil || !strings.HasPrefix(err.Error(), "kind_sync_pending:") || strings.Contains(err.Error(), "not found") {
+				t.Fatalf("unsynced target must not be declared absent, got %v", err)
+			}
+		})
+	}
 }
 
 func TestReadDynamicScopeRereadsOnlyBeforeSync(t *testing.T) {

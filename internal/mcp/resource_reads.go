@@ -123,9 +123,12 @@ func resourceReadCache(ctx context.Context, kind, group string, namespaces []str
 		return nil, nil, errNotConnected()
 	}
 	result := k8s.GetCachedPermissionResult()
-	for _, ns := range namespaces {
-		if result != nil {
-			if probeErr := result.NamespaceProbeErrors[gvr.Resource][ns]; apierrors.IsUnauthorized(probeErr) {
+	if result != nil {
+		for ns, probeErr := range result.NamespaceProbeErrors[gvr.Resource] {
+			if namespaces != nil && !slices.Contains(namespaces, ns) {
+				continue
+			}
+			if apierrors.IsUnauthorized(probeErr) {
 				return nil, nil, collectorUnauthorizedError(gvr.Resource, probeErr)
 			}
 		}
