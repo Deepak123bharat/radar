@@ -489,6 +489,8 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 
 	// API routes
 	r.Route("/api", func(r chi.Router) {
+		r.Use(markGlobalNsHonored)
+
 		// Streaming endpoints (SSE/WebSocket) - no timeout
 		r.Get("/events/stream", s.handleSSE)
 		r.Get("/pods/{namespace}/{name}/logs/stream", s.handlePodLogsStream)
@@ -1513,6 +1515,32 @@ func (s *Server) parseNamespacesForUser(r *http.Request) []string {
 // this process caches.
 func ignoresNamespacePick(r *http.Request) bool {
 	return r.URL.Query().Get("globalNs") == "1"
+}
+
+// globalNsHeader tells a caller that this Radar understood globalNs=1. A caller
+// reading Radars of mixed versions (Radar Hub's fleet fan-outs) cannot see the
+// pick from the response, so it reads the header's absence as "an older Radar
+// that may have ignored the parameter and narrowed this read to a saved pick".
+// Older Radars ignore it on most reads; /api/search has honored it since 1.8.0
+// without sending the header.
+const (
+	globalNsHeader        = "X-Radar-Global-Ns"
+	globalNsHeaderHonored = "honored"
+)
+
+// markGlobalNsHonored sets globalNsHeader on every response the /api routes
+// serve to a request carrying globalNs=1, whether or not the caller has a pick
+// and whether or not the route reads one: a route that never applies the pick
+// honors the opt-out trivially. Requests the auth middleware rejects never
+// reach it. The claim holds only while every read that applies the pick goes
+// through ignoresNamespacePick (today parseNamespacesForUser and search).
+func markGlobalNsHonored(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ignoresNamespacePick(r) {
+			w.Header().Set(globalNsHeader, globalNsHeaderHonored)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // resolveHelmNamespaces decides which namespaces a Helm list (releases, upgrade

@@ -161,6 +161,42 @@ func TestProxyAuth_GlobalNsReadsIgnoreSavedPick(t *testing.T) {
 	}
 }
 
+// A caller reading Radars of mixed versions tells an older Radar, which ignores
+// globalNs=1 and may still narrow the read to a saved pick, by the absence of
+// the response marker. So the marker must be present whenever the parameter is
+// recognized, even for a caller with no pick, and absent otherwise.
+func TestProxyAuth_GlobalNsResponseMarker(t *testing.T) {
+	prevCtx := k8s.SetTestContextName("test-ctx")
+	t.Cleanup(func() { k8s.SetTestContextName(prevCtx) })
+	env := newAuthTestServer(t)
+	env.srv.permCache.Set("alice", nil, &pkgauth.UserPermissions{AllowedNamespaces: []string{"default", "broken"}})
+	env.srv.permCache.Set("bob", nil, &pkgauth.UserPermissions{AllowedNamespaces: []string{"default", "broken"}})
+	env.srv.setActiveNamespaceForUser(reqAs("alice"), []string{"broken"})
+
+	cases := []struct {
+		user, path string
+		want       string
+	}{
+		{"alice", "/api/resources/deployments?globalNs=1", globalNsHeaderHonored},
+		{"bob", "/api/resources/deployments?globalNs=1", globalNsHeaderHonored},
+		{"alice", "/api/resources/deployments?globalNs=1&namespaces=default", globalNsHeaderHonored},
+		{"alice", "/api/search?q=kind:Deployment&globalNs=1", globalNsHeaderHonored},
+		{"alice", "/api/resources/deployments", ""},
+		{"alice", "/api/resources/deployments?globalNs=0", ""},
+		{"alice", "/api/search?q=kind:Deployment", ""},
+	}
+	for _, tc := range cases {
+		resp := env.authGet(t, tc.path, tc.user, "")
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s as %s: status %d", tc.path, tc.user, resp.StatusCode)
+		}
+		if got := resp.Header.Get(globalNsHeader); got != tc.want {
+			t.Errorf("GET %s as %s: %s = %q, want %q", tc.path, tc.user, globalNsHeader, got, tc.want)
+		}
+	}
+}
+
 // Under --namespace-scope the omnibar's global search must keep returning
 // cluster-scoped hits (Nodes, Namespaces, ...) to a user allowed to list them.
 // Clamping its scope to the pinned namespace would turn that namespace into a
