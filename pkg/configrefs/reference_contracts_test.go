@@ -28,7 +28,7 @@ func TestContourSecretNamespaceContract(t *testing.T) {
 		valid         bool
 	}{
 		{"tls", "app", "tls", true}, {"certs/tls.pem", "certs", "tls.pem", true},
-		{"certs/a/b", "", "", false}, {"/tls", "", "", false}, {"certs/", "", "", false},
+		{"certs/a/b", "", "", false}, {"/tls", "app", "tls", true}, {"certs/", "", "", false},
 		{"", "", "", false}, {"certs/*", "", "", false},
 	} {
 		ref, valid := ContourSecretReference(tc.raw, "app")

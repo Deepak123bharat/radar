@@ -16,8 +16,8 @@ describe('getHTTPProxyTLSSecret', () => {
   it('defaults an empty namespace to the proxy namespace', () => {
     expect(getHTTPProxyTLSSecret(proxy('/cert'))).toEqual({ namespace: 'shop', name: 'cert' })
   })
-  it('splits only at the first slash', () => {
-    expect(getHTTPProxyTLSSecret(proxy('certs/a/b'))).toEqual({ namespace: 'certs', name: 'a/b' })
+  it('rejects names that cannot identify a Kubernetes Secret', () => {
+    expect(getHTTPProxyTLSSecret(proxy('certs/a/b'))).toBeNull()
   })
   it('returns null without a secret', () => {
     expect(getHTTPProxyTLSSecret(proxy())).toBeNull()

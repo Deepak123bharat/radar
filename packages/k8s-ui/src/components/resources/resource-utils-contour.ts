@@ -33,14 +33,17 @@ export function hasHTTPProxyTLS(resource: any): boolean {
   return !!resource.spec?.virtualhost?.tls
 }
 
-// Contour reads tls.secretName as "namespace/name" when another namespace
-// delegates the Secret with a TLSCertificateDelegation; a bare name, or an
-// empty namespace, is in the proxy's own namespace.
 export function getHTTPProxyTLSSecret(resource: any): { namespace: string; name: string } | null {
-  const ref: string | undefined = resource.spec?.virtualhost?.tls?.secretName
-  if (!ref) return null
-  const ownNamespace = resource.metadata?.namespace ?? ''
-  const slash = ref.indexOf('/')
-  if (slash < 0) return { namespace: ownNamespace, name: ref }
-  return { namespace: ref.slice(0, slash) || ownNamespace, name: ref.slice(slash + 1) }
+  const raw: string | undefined = resource.spec?.virtualhost?.tls?.secretName
+  return raw ? getContourSecretReference(raw, resource.metadata?.namespace ?? '') ?? null : null
+}
+
+/** Contour's delegated TLS secret form is namespace/name. */
+export function getContourSecretReference(raw: string, defaultNamespace: string): { name: string; namespace: string } | undefined {
+  const parts = raw.split('/')
+  const namespace = parts.length === 1 ? defaultNamespace : parts[0] || defaultNamespace
+  const name = parts.length === 1 ? parts[0] : parts[1]
+  const label = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
+  if (parts.length > 2 || !namespace || namespace.length > 63 || !label.test(namespace) || !name || name.length > 253 || !name.split('.').every(part => part.length <= 63 && label.test(part))) return undefined
+  return { name, namespace }
 }

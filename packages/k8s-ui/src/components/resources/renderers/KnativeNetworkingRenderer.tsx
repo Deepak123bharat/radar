@@ -1,13 +1,13 @@
+import { KnativeReferenceLink } from './KnativeReferenceLink'
 import { Network, ShieldCheck, Server, Globe } from 'lucide-react'
 import { clsx } from 'clsx'
-import { Section, PropertyList, Property, ConditionsSection, KnativeNotReadyBanner, ResourceLink } from '../../ui/drawer-components'
+import { Section, PropertyList, Property, ConditionsSection, KnativeNotReadyBanner } from '../../ui/drawer-components'
 import { Badge } from '../../ui/Badge'
-import { kindToPlural } from '../../../utils/navigation'
 import { getKnativeConditionStatus } from '../resource-utils-knative'
 
 interface RendererProps {
   data: any
-  onNavigate?: (ref: { kind: string; namespace: string; name: string }) => void
+  onNavigate?: (ref: { kind: string; namespace: string; name: string; group?: string }) => void
 }
 
 // ============================================================================
@@ -166,12 +166,7 @@ export function ServerlessServiceRenderer({ data, onNavigate }: RendererProps) {
           <Property label="Protocol" value={protocolType} />
           {objectRef && (
             <Property label="Target" value={
-              <ResourceLink
-                name={objectRef.name}
-                kind={kindToPlural(objectRef.kind || 'Deployment')}
-                namespace={ns}
-                onNavigate={onNavigate}
-              />
+              <KnativeReferenceLink reference={objectRef} namespace={ns} onNavigate={onNavigate} />
             } />
           )}
           {serviceName && <Property label="Public Service" value={serviceName} />}
@@ -213,12 +208,7 @@ export function DomainMappingRenderer({ data, onNavigate }: RendererProps) {
           ) : undefined} />
           {ref && (
             <Property label="Target" value={
-              <ResourceLink
-                name={ref.name}
-                kind={kindToPlural(ref.kind || 'Service')}
-                namespace={ns}
-                onNavigate={onNavigate}
-              />
+              <KnativeReferenceLink reference={ref} namespace={ns} onNavigate={onNavigate} />
             } />
           )}
           {tlsSecret && <Property label="TLS Secret" value={tlsSecret} />}

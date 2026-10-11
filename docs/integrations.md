@@ -590,6 +590,8 @@ See the main [README](../README.md#gitops) for the user-facing overview. This se
 
 **Workflow operations**: Reconcile, Reconcile-with-source (Kustomization/HelmRelease), Suspend/Resume.
 
+Flux management links use exact API group, kind, namespace and name from observed inventory. HelmRelease inventory is authoritative even when empty. Releases whose controller version does not record inventory use the paired `helm.toolkit.fluxcd.io/name` and `helm.toolkit.fluxcd.io/namespace` labels. Generic application-instance labels do not establish Flux ownership, and remote-cluster inventory is not joined to local objects.
+
 **Diagnosis**: Conditions extracted to issues (Ready=False, Stalled=True, Reconciling=True). Per-resource diff and recent events not yet available for Flux (HelmRelease-installed resources don't carry `last-applied-configuration`; tracked in [#601](https://github.com/skyhook-io/radar/issues/601)).
 
 ### ArgoCD
@@ -669,6 +671,8 @@ See the main [README](../README.md#gitops) for the user-facing overview. This se
 ### What Radar Shows
 
 **Topology:** Full Istio traffic path — IstioGateway → VirtualService → Service, and DestinationRule → Service configuration edges. See how traffic flows through gateway listeners, virtual service routing rules, and into backend services.
+
+Service links accept short names in the rule's namespace or full `name.namespace.svc.<domain>` names. Radar reads a unique registry domain from standard observed Istiod Deployments' `--domain` argument, using Istio's `cluster.local` default when no override is observed. Conflicting or unresolved control-plane arguments leave FQDN links unresolved. External control planes and nonstandard launch configurations may therefore need additional domain discovery; arbitrary dotted hosts are not treated as local Services.
 
 **VirtualService Detail View:**
 - HTTP/TCP/TLS routing rules with match conditions
@@ -1401,6 +1405,8 @@ The panel shows only what you could read yourself: listing policies and reading 
   <img src="screenshots/integrations/calico-policy-topology.png" alt="Calico policy topology" width="900">
   <br><em>Calico policy topology — enforced relationships use solid edges; staged previews use dashed edges</em>
 </p>
+
+Cilium matching shares one compiled selector across topology, dashboard and flow evaluation. It reads `spec` and `specs`, distinguishes node selectors from endpoint selectors, and includes observed Namespace labels and the Pod service account. Cluster identity, non-Kubernetes label sources and keys affected by Cilium's default identity-label filter remain unknown. Custom Cilium identity-label configurations are not discovered. These views describe selection from cached Kubernetes identity, not CNI enforcement. Unknown selection is shown separately from known uncovered workloads and is also carried into resource relationships and agent context. Empty selectors remain visible in relationship lists without drawing an edge to every workload.
 
 **Dashboard Coverage Card:** The home dashboard includes a Network Policy Coverage card showing total policy count, the percentage of workloads covered by at least one enforced policy, and a count of uncovered workloads. When staged Calico policies exist, it separately shows projected coverage if those policies were applied. That projection can be **lower** than today's coverage — a staged deletion removes the protection of the policy it names — and the bar marks the part that would be lost.
 
