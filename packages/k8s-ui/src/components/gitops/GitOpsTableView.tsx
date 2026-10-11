@@ -36,7 +36,7 @@ import { DistributionBar } from '../ui/DistributionBar'
 import { RowActionMenu, type RowActionItem } from '../ui/RowActionMenu'
 import { BoardTableSkeleton, BoardRailSkeleton } from '../ui/BoardSkeleton'
 import { getGitOpsResourceStatus } from './detail-helpers'
-import { isArgoOperationInProgress, isArgoSuspendedByRadar } from '../resources/resource-utils-argo'
+import { isArgoAutoSyncEnabled, isArgoOperationInProgress, isArgoSuspendedByRadar } from '../resources/resource-utils-argo'
 import { toggleSet } from './GitOpsGraphFilterRail'
 import { useFilterState, defineFilterSchema } from '../../filter-state'
 import { parseContextName } from '../../utils/context-name'
@@ -1973,7 +1973,7 @@ export function normalizeArgoApplication(resource: any): GitOpsRow {
     destinationNamespace: resource.spec?.destination?.namespace ?? '',
     createdAt: resource.metadata?.creationTimestamp ?? '',
     lastSync: argoLastSync ?? '',
-    autoSync: Boolean(resource.spec?.syncPolicy?.automated),
+    autoSync: isArgoAutoSyncEnabled(resource),
     terminating: isTerminating(resource),
     terminationStartedAt: terminationStartedAt(resource),
     raw: resource,

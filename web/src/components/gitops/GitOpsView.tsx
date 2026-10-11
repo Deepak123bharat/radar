@@ -22,6 +22,7 @@ import {
   getGitOpsResourceStatus,
   getGitOpsTool,
   isDestinationRef,
+  isArgoAutoSyncEnabled,
   isArgoOperationInProgress,
   isArgoSuspendedByRadar,
   gitOpsInsightChangeKey,
@@ -390,11 +391,12 @@ function GitOpsDetailView({ namespaces, onOpenResource, onOpenSettings }: GitOps
   const switchFlow = useContextSwitchFlow()
   const status = resourceQ.data ? getGitOpsResourceStatus(kind, resourceQ.data) : null
   const tool = getGitOpsTool(kind, group)
-  // Argo "auto-sync ON" is determined by spec.syncPolicy.automated being set,
-  // not by health.status === Suspended (which is Argo's CronJob-style suspend).
+  // Argo "auto-sync ON" is read from spec.syncPolicy.automated (honoring
+  // `enabled: false`), not from health.status === Suspended (which is Argo's
+  // CronJob-style suspend).
   // The toggle button reads from this so the label flips correctly when an
   // app is in Manual mode or suspended via Radar's annotations.
-  const argoAutoSyncEnabled = kind === 'applications' && Boolean(resourceQ.data?.spec?.syncPolicy?.automated)
+  const argoAutoSyncEnabled = kind === 'applications' && isArgoAutoSyncEnabled(resourceQ.data)
   // Radar-driven Argo suspension is signaled by annotations that record the
   // pre-suspend prune/selfHeal state for restoration on resume. When present,
   // the app is in a deliberately-paused state (vs. Manual mode, which is a

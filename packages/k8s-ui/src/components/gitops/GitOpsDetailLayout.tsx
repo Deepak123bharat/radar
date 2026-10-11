@@ -75,7 +75,7 @@ export interface ArgoActionHandlers {
   terminating: boolean
   suspending: boolean
   resuming: boolean
-  // autoSyncEnabled: caller derives from spec.syncPolicy.automated.
+  // autoSyncEnabled: caller derives via isArgoAutoSyncEnabled.
   autoSyncEnabled: boolean
   // isRunning: caller derives from status.operationState.phase === 'Running'.
   isRunning: boolean

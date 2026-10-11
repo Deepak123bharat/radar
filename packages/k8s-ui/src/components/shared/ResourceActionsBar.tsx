@@ -29,6 +29,7 @@ import type { SelectedResource, WorkloadRevision } from '../../types'
 import type { RadarUpgradeRequirement } from '../../types/fetch-error'
 import { displayKindName } from '../ui/drawer-components'
 import { getDefaultContainerName } from '../resources/resource-utils'
+import { isArgoAutoSyncEnabled } from '../resources/resource-utils-argo'
 import { SetImageDialog, type SetImageOwnership } from './SetImageDialog'
 import { DrainPlanDialog, DEFAULT_DRAIN_DIALOG_OPTIONS, type DrainDialogOptions, type DrainPlan } from './DrainPlanDialog'
 import type { WorkloadImageInventory, WorkloadImageUpdate } from '../../types/core'
@@ -864,7 +865,7 @@ function ArgoActions({ resource, data, onSync, isSyncing, onRefresh, isRefreshin
   onSuspend?: (params: { namespace: string; name: string }) => void; isSuspending?: boolean
   onResume?: (params: { namespace: string; name: string }) => void; isResuming?: boolean
 }) {
-  const hasAutomatedSync = !!data?.spec?.syncPolicy?.automated
+  const autoSyncEnabled = isArgoAutoSyncEnabled(data)
 
   return (
     <>
@@ -901,7 +902,7 @@ function ArgoActions({ resource, data, onSync, isSyncing, onRefresh, isRefreshin
         </Tooltip>
       )}
 
-      {hasAutomatedSync ? (
+      {autoSyncEnabled ? (
         onSuspend && (
           <button
             onClick={() => onSuspend({
