@@ -29,6 +29,7 @@ import { MetricsChart } from '../../ui/MetricsChart'
 import { Badge } from '../../ui/Badge'
 import { MetricsUnavailableNotice } from './MetricsUnavailableNotice'
 import { ContainerEnvironmentSection } from './ContainerEnvironmentSection'
+import { formatRelativeAgeTime } from '../../../utils/format'
 
 function parseValidDate(dateStr: string): Date | null {
   const d = new Date(dateStr)
@@ -36,13 +37,7 @@ function parseValidDate(dateStr: string): Date | null {
 }
 
 function formatMsAgo(dateStr: string): string | null {
-  const d = parseValidDate(dateStr)
-  if (!d) return null
-  const ms = Date.now() - d.getTime()
-  if (ms < 60000) return 'just now'
-  if (ms < 3600000) return `${Math.floor(ms / 60000)}m ago`
-  if (ms < 86400000) return `${Math.floor(ms / 3600000)}h ago`
-  return `${Math.floor(ms / 86400000)}d ago`
+  return parseValidDate(dateStr) ? formatRelativeAgeTime(dateStr) : null
 }
 
 function getRestartRecency(finishedAt: string | undefined, restarts: number): { color: string; label: string | null } {
@@ -456,6 +451,25 @@ export function PodRenderer({
           <Property label="Node" value={
             data.spec?.nodeName ? <ResourceLink name={data.spec.nodeName} kind="nodes" onNavigate={onNavigate} /> : undefined
           } copyable onCopy={onCopy} copied={copied} />
+          {/* A nomination outlives its meaning: the API server clears it on binding by
+              default only from Kubernetes 1.35, and pod GC fails a terminating unbound
+              Pod without clearing it. Only a Pending, unbound, live Pod can still use it. */}
+          {data.status?.nominatedNodeName && !data.spec?.nodeName && data.status?.phase === 'Pending' && !data.metadata?.deletionTimestamp && (
+            <Property
+              label={
+                <Tooltip content="The node this Pod is expected to run on, set by the scheduler or another component. It can change before the Pod is bound." position="right">
+                  <span className="border-b border-dotted border-theme-text-tertiary cursor-help">Nominated Node</span>
+                </Tooltip>
+              }
+              value={<ResourceLink name={data.status.nominatedNodeName} kind="nodes" onNavigate={onNavigate} />}
+            />
+          )}
+          {data.spec?.priorityClassName && <Property label="Priority Class" value={
+            <ResourceLink name={data.spec.priorityClassName} kind="priorityclasses" group="scheduling.k8s.io" onNavigate={onNavigate} />
+          } />}
+          {data.spec?.runtimeClassName && <Property label="Runtime Class" value={
+            <ResourceLink name={data.spec.runtimeClassName} kind="runtimeclasses" group="node.k8s.io" onNavigate={onNavigate} />
+          } />}
           <Property label="Pod IP" value={data.status?.podIP} copyable onCopy={onCopy} copied={copied} />
           <Property label="Host IP" value={data.status?.hostIP} />
           <Property

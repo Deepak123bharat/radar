@@ -12,16 +12,31 @@ import { DialogPortal } from '../ui/DialogPortal'
 import { Badge } from '../ui/Badge'
 import {
   canConfirmGitOpsWrite,
+  gitOpsWriteGuardKey,
   type GitOpsWrite,
   type GitOpsWriteGuard,
 } from '../../utils/gitops-write-guard'
 import { GitOpsWriteWarning } from './GitOpsWriteWarning'
 
 /** The GitOps write guard for the object whose Pod template the dialog
- *  writes, evaluated by the host for {@link SET_IMAGE_WRITES}. */
+ *  writes, evaluated by the host: for {@link SET_IMAGE_WRITES} until the
+ *  containers are known, then for {@link setImageWrites} of the containers
+ *  {@link onSelectionChange} reports. */
 export interface SetImageOwnership {
   guard: GitOpsWriteGuard
   onOpenOwner?: () => void
+  /** The containers the dialog lists and the ones being changed, so the
+   *  guard can judge exactly those (null until the containers load). */
+  onSelectionChange?: (selection: SetImageSelection | null) => void
+  /** {@link setImageSelectionKey} of the selection `guard` was evaluated
+   *  for. When set, Update waits until it matches the dialog's current
+   *  selection. */
+  selectionKey?: string
+}
+
+export interface SetImageSelection {
+  containers: Pick<WorkloadContainerImage, 'type' | 'name'>[]
+  changed: Pick<WorkloadContainerImage, 'type' | 'name'>[]
 }
 
 export interface SetImageDialogProps {
@@ -85,8 +100,23 @@ export function reconcileRefreshedImageDrafts(
   return { drafts: nextDrafts, changedCurrentKeys }
 }
 
-// Which containers change isn't known until the user edits, so the guard
-// covers every container image (an approximate list path).
+export function setImageSelectionKey(selection: SetImageSelection | null): string {
+  if (!selection) return ''
+  const rows = (refs: SetImageSelection['containers']) => refs.map((c) => [c.type, c.name])
+  return JSON.stringify([rows(selection.containers), rows(selection.changed)])
+}
+
+/** One write per container, by name: the guard's verdict for exactly the
+ *  images being changed. */
+export function setImageWrites(containers: Pick<WorkloadContainerImage, 'type' | 'name'>[]): GitOpsWrite[] {
+  return containers.map((container) => ({
+    scope: 'spec',
+    paths: [`spec.template.spec.${container.type === 'initContainer' ? 'initContainers' : 'containers'}[name=${container.name}].image`],
+    description: container.name,
+  }))
+}
+
+// Before the containers load, the guard covers every container image.
 export const SET_IMAGE_WRITES: GitOpsWrite[] = [
   {
     scope: 'spec',
@@ -160,7 +190,9 @@ export function SetImageDialog({
   const [submitting, setSubmitting] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
-  const [acknowledged, setAcknowledged] = useState(false)
+  // The guard key the acknowledgment was given for: a different verdict
+  // (fresh evidence, other containers, a changed policy) asks again.
+  const [ackedKey, setAckedKey] = useState('')
   const [changedCurrentKeys, setChangedCurrentKeys] = useState<string[]>([])
   const onLoadRef = useRef(onLoad)
   const loadRequestRef = useRef(0)
@@ -174,7 +206,6 @@ export function SetImageDialog({
     const previousInventory = inventory
     const previousDrafts = drafts
     setLoading(true)
-    setAcknowledged(false)
     setLoadError(null)
     try {
       const next = await onLoadRef.current()
@@ -222,7 +253,7 @@ export function SetImageDialog({
     setDrafts({})
     setChangedCurrentKeys([])
     setSubmitError(null)
-    setAcknowledged(false)
+    setAckedKey('')
     void loadInventory()
   }, [open, workloadLabel, workloadName, workloadResource])
 
@@ -236,12 +267,27 @@ export function SetImageDialog({
     ) ?? false
   const busy = pending || submitting
   const ownershipResolved = ownership !== undefined
+  const onSelectionChange = ownership?.onSelectionChange
+  const selectionKey = setImageSelectionKey(
+    inventory ? { containers: inventory.containers, changed: updates } : null,
+  )
+  useEffect(() => {
+    if (!onSelectionChange) return
+    const [containers, changed] = selectionKey ? (JSON.parse(selectionKey) as [string[][], string[][]]) : [null, null]
+    const toRefs = (rows: string[][]) => rows.map(([type, name]) => ({ type: type as WorkloadContainerImage['type'], name }))
+    onSelectionChange(containers && changed ? { containers: toRefs(containers), changed: toRefs(changed) } : null)
+  }, [onSelectionChange, selectionKey])
   const guard = ownership?.guard
+  // The host evaluates the guard after it hears of an edit; until then the
+  // verdict on screen is for other containers.
+  const guardCurrent = ownership?.selectionKey === undefined || ownership.selectionKey === selectionKey
+  const guardKey = gitOpsWriteGuardKey(guard)
+  const acknowledged = Boolean(guardKey) && ackedKey === guardKey
   const canSubmit = canSubmitImageUpdates({
     updateCount: updates.length,
     hasEmptyImage,
-    ownershipConfirmable: canConfirmGitOpsWrite(guard, acknowledged),
-    busy: busy || loading,
+    ownershipConfirmable: guardCurrent && canConfirmGitOpsWrite(guard, acknowledged),
+    busy,
     loadFailed: Boolean(loadError),
   })
 
@@ -310,26 +356,15 @@ export function SetImageDialog({
             {workloadLabel}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => void loadInventory(true)}
-            disabled={busy || loading || !inventory}
-            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs btn-brand-muted disabled:opacity-50"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            Refresh
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={busy}
-            aria-label="Close"
-            className="rounded p-1 text-theme-text-tertiary hover:bg-theme-hover hover:text-theme-text-primary disabled:opacity-50"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          disabled={busy}
+          aria-label="Close"
+          className="rounded p-1 text-theme-text-tertiary hover:bg-theme-hover hover:text-theme-text-primary disabled:opacity-50"
+        >
+          <X className="h-4 w-4" />
+        </button>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
@@ -398,9 +433,9 @@ export function SetImageDialog({
               <GitOpsWriteWarning
                 guard={guard}
                 acknowledged={acknowledged}
-                onAcknowledgedChange={setAcknowledged}
+                onAcknowledgedChange={(value) => setAckedKey(value ? guardKey : '')}
                 onOpenOwner={ownership?.onOpenOwner}
-                disabled={busy || loading}
+                disabled={busy}
               />
             )}
 
@@ -409,7 +444,7 @@ export function SetImageDialog({
               containers={regular}
               drafts={drafts}
               changedCurrentKeys={changedCurrentKeys}
-              disabled={busy || loading}
+              disabled={busy}
               onChange={(container, image) =>
                 setDrafts((current) => ({
                   ...current,
@@ -423,7 +458,7 @@ export function SetImageDialog({
                 containers={init}
                 drafts={drafts}
                 changedCurrentKeys={changedCurrentKeys}
-                disabled={busy || loading}
+                disabled={busy}
                 onChange={(container, image) =>
                   setDrafts((current) => ({
                     ...current,
@@ -464,12 +499,10 @@ export function SetImageDialog({
             disabled={!canSubmit}
             className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs btn-brand disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {(busy || loading) && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-            {pending || submitting
+            {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {busy
               ? 'Updating…'
-              : loading
-                ? 'Refreshing…'
-                : `Update ${updates.length || ''} image${updates.length === 1 ? '' : 's'}`.replace(
+              : `Update ${updates.length || ''} image${updates.length === 1 ? '' : 's'}`.replace(
                   '  ',
                   ' ',
                 )}

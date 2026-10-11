@@ -36,6 +36,15 @@ describe('GitOpsWriteWarning', () => {
     expect(html).toContain('change it in the GitOps source')
     expect(html).toContain('View Argo CD Application')
     expect(html).toContain('type="checkbox"')
+    expect(html).toContain('I understand Argo CD will revert this.')
+  })
+
+  it('asks the acknowledgment in the verdict’s own terms', () => {
+    const html = render({
+      ...base,
+      evidence: { ...base.evidence!, policy: { tool: 'argocd', auto: false, selfHeal: false, prune: false, suspended: null } },
+    })
+    expect(html).toContain('Argo CD Application argocd/api may revert this change.')
     expect(html).toContain('I understand Argo CD may revert this.')
   })
 
@@ -49,6 +58,13 @@ describe('GitOpsWriteWarning', () => {
     const html = render({ ...base, writes: [{ scope: 'create-child' }] })
     expect(html).toContain('Managed by Argo CD Application argocd/api.')
     expect(html).not.toContain('type="checkbox"')
+  })
+
+  it('leaves vertical spacing to the parent', () => {
+    for (const input of [base, { ...base, ownerPending: true }, { ...base, writes: [{ scope: 'create-child' as const }] }]) {
+      const root = render(input).match(/^<div class="([^"]*)"/)?.[1] ?? ''
+      expect(root).not.toMatch(/(^|\s)m[bt]-/)
+    }
   })
 
   it('renders nothing when unmanaged', () => {

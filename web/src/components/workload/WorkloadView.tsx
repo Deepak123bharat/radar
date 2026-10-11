@@ -18,6 +18,7 @@ import {
   type ResourceOwnershipContext,
   type ServingResourceDetail,
   type AuditFinding,
+  dedupeResourceRefs,
   gitOpsRouteForOwner,
   gitOpsOwnerFromRelationships,
   isDiagnoseKind,
@@ -26,6 +27,10 @@ import {
   isCoreBatchJob,
   type SetImageOwnership,
   SET_IMAGE_WRITES,
+  setImageWrites,
+  setImageSelectionKey,
+  gitOpsWriteEvidencePaths,
+  type SetImageSelection,
   type WorkloadImageTarget,
 } from '@skyhook-io/k8s-ui'
 import type { ServicePortRenderProps } from '@skyhook-io/k8s-ui/components/resources/renderers/ServiceRenderer'
@@ -92,6 +97,7 @@ import { RightsizingPanel } from '../resource/RightsizingStrip'
 import { WorkloadCostTab } from '../cost/WorkloadCostTab'
 import { isOpenCostWorkloadKind } from '../cost/kinds'
 import { isRadarFeatureUnsupported } from '../../api/radarFeatures'
+import { useTrafficAvailable } from '../../api/traffic'
 import { useResourceAudit, useResourceIssues, useResources, useTrace, fetchTraceWithProbes, fetchInClusterCapability, runInClusterMerged } from '../../api/client'
 import { AuditAlerts, getRadarUpgradeRequirement, ResourceIssuesSection, ReachabilityView, TraceSummary, InClusterConsentDialog, traceFingerprint, staticPollUnreliable, summarizeInClusterTests, type Trace as NetworkTrace, type InClusterCapability, inClusterConsentGiven, consentRequestRows } from '@skyhook-io/k8s-ui'
 import { WorkloadLogsViewer } from '../logs/WorkloadLogsViewer'
@@ -228,6 +234,10 @@ export function WorkloadViewRoute({ onNavigateToResource }: WorkloadViewRoutePro
     />
   )
 }
+
+// The kinds the traffic map draws as a node of their own: those that own
+// pods, which it groups under them.
+const TRAFFIC_WORKLOAD_PLURALS = new Set(['deployments', 'statefulsets', 'daemonsets', 'rollouts', 'cronjobs', 'jobs'])
 
 // ============================================================================
 // WORKLOAD VIEW WRAPPER — injects data fetching hooks
@@ -835,6 +845,23 @@ export function WorkloadView({
     (path: string) => navigateRouter(path),
     [navigateRouter],
   )
+  // Offered for the kinds the traffic map draws as one node, and only once a
+  // traffic source is known to be available on this cluster. A Job something
+  // controls (a CronJob, a JobSet) is not one: the map groups its pods under
+  // that owner, so it is offered only once the Job is known to have none.
+  const isJob = apiKind.toLowerCase() === 'jobs'
+  const controlledJob = isJob && (!resource ||
+    (resource.metadata?.ownerReferences ?? []).some((ref: { controller?: boolean }) => ref.controller))
+  const trafficKind = !!namespace && TRAFFIC_WORKLOAD_PLURALS.has(apiKind.toLowerCase()) && !controlledJob
+  const trafficAvailable = useTrafficAvailable(trafficKind)
+  const openLiveTraffic = useCallback(() => {
+    const params = new URLSearchParams()
+    const namespaces = searchParams.get('namespaces')
+    if (namespaces) params.set('namespaces', namespaces)
+    params.set('focus', `${namespace}/${name}`)
+    navigateRouter({ pathname: '/traffic', search: params.toString() })
+  }, [navigateRouter, searchParams, namespace, name])
+  const offerLiveTraffic = trafficKind && trafficAvailable
   // Drawer TraceSummary CTA → open the full resource view ON the Reachability tab.
   // The generic onExpand navigates to the workload path but drops the query, so we
   // navigate directly to that path WITH ?tab=reachability - the deeplink the
@@ -856,57 +883,13 @@ export function WorkloadView({
     },
     [navigateRouter, searchParams],
   )
-  const imageOwnershipSource = activeImageTargetOwnership ? imageTargetOwnershipResolution : workloadOwnership
-  const imageGuardTarget = activeImageTargetOwnership
-    ? {
-        kind: activeImageTargetOwnership.target.kind,
-        group: activeImageTargetOwnership.target.group,
-        namespace: activeImageTargetOwnership.target.namespace,
-        name: activeImageTargetOwnership.target.name,
-      }
-    : { kind: resource?.kind ?? pluralToKind(apiKind), group: effectiveGroup ?? '', namespace, name }
-  const { guard: imageGuard, refresh: refreshImageGuard } = useGitOpsWriteGuard({
-    target: imageGuardTarget,
-    writes: SET_IMAGE_WRITES,
-    ownership: imageOwnershipSource,
-    ownershipError: (activeImageTargetOwnership ? activeImageTargetOwnership.response.relationships : relationships)
-      ? null
-      : "Radar couldn't read the resource's management ownership",
-    enabled: imageGuardRequested,
-  })
-  const {
-    owner: imageOwner,
-    helmOwner: imageHelmOwner,
-    ownerVerified: imageOwnerVerified,
-  } = imageOwnershipSource
-  const imageOwnership = useMemo<SetImageOwnership | undefined>(() => {
-    if (!imageGuard) return undefined
-    const owner = imageOwner
-    const helmOwner = imageHelmOwner
-    return {
-      guard: imageGuard,
-      onOpenOwner: owner
-        ? imageOwnerVerified
-          ? () => handleOpenGitOpsResource(owner)
-          : undefined
-        : helmOwner
-          ? () => handleOpenHelmRelease(helmOwner)
-          : undefined,
-    }
-  }, [
-    handleOpenGitOpsResource,
-    handleOpenHelmRelease,
-    imageGuard,
-    imageOwner,
-    imageHelmOwner,
-    imageOwnerVerified,
-  ])
   const loadImagesWithTargetOwnership = useCallback(
     async (params: { kind: string; namespace: string; name: string }) => {
       const request = ++imageOwnershipRequestRef.current
       setImageGuardRequested(true)
-      await refetchResource()
-      await refreshImageGuard()
+      // Each open and refresh re-reads the evidence: the owner's sync policy
+      // or ignore rules may have changed since the dialog last opened.
+      void queryClient.invalidateQueries({ queryKey: ['gitops-write-evidence'] })
       const inventory = await baseActionsBarProps.onLoadImages!(params)
       const targetDiffers =
         inventory.target.resource.toLowerCase() !== params.kind.toLowerCase() ||
@@ -953,14 +936,15 @@ export function WorkloadView({
         },
       )
       // Warm the cache the target's ownership resolution reads, so the
-      // dialog doesn't open on a still-pending inherited lookup.
+      // dialog doesn't open on a still-pending inherited lookup. A failed
+      // read surfaces there as unknown ownership, not as a failed load.
       if (inheritedRef) {
         await fetchRelationships(
           kindToPluralWithGroup(inheritedRef.kind, inheritedRef.group ?? ''),
           inheritedRef.namespace,
           inheritedRef.name,
           inheritedRef.group,
-        )
+        ).catch(() => undefined)
       }
       if (request === imageOwnershipRequestRef.current) {
         setImageTargetOwnership({
@@ -975,8 +959,71 @@ export function WorkloadView({
       }
       return inventory
     },
-    [baseActionsBarProps.onLoadImages, queryClient, refetchResource, refreshImageGuard],
+    [baseActionsBarProps.onLoadImages, queryClient, setImageTargetOwnership],
   )
+  const imageOwnershipSource = activeImageTargetOwnership ? imageTargetOwnershipResolution : workloadOwnership
+  const imageGuardTarget = activeImageTargetOwnership
+    ? {
+        kind: activeImageTargetOwnership.target.kind,
+        group: activeImageTargetOwnership.target.group,
+        namespace: activeImageTargetOwnership.target.namespace,
+        name: activeImageTargetOwnership.target.name,
+      }
+    : { kind: resource?.kind ?? pluralToKind(apiKind), group: effectiveGroup ?? '', namespace, name }
+  // Once the dialog lists the containers, ask about each by name (so the
+  // evidence can't predate the list) and judge the ones being changed.
+  const [imageSelection, setImageSelection] = useState<SetImageSelection | null>(null)
+  const imageWrites = useMemo(
+    () =>
+      imageSelection
+        ? setImageWrites(imageSelection.changed.length ? imageSelection.changed : imageSelection.containers)
+        : SET_IMAGE_WRITES,
+    [imageSelection],
+  )
+  const imageEvidencePaths = useMemo(
+    () => (imageSelection ? gitOpsWriteEvidencePaths(setImageWrites(imageSelection.containers)) : undefined),
+    [imageSelection],
+  )
+  const { guard: imageGuard, ownership: imageGuardOwnership } = useGitOpsWriteGuard({
+    target: imageGuardTarget,
+    writes: imageWrites,
+    evidencePaths: imageEvidencePaths,
+    ownership: imageOwnershipSource,
+    relationshipsUnavailable: activeImageTargetOwnership
+      ? !activeImageTargetOwnership.response.relationships
+      : Boolean(resource) && !relationships,
+    enabled: imageGuardRequested,
+  })
+  const {
+    owner: imageOwner,
+    helmOwner: imageHelmOwner,
+    ownerVerified: imageOwnerVerified,
+  } = imageGuardOwnership
+  const imageOwnership = useMemo<SetImageOwnership | undefined>(() => {
+    if (!imageGuard) return undefined
+    const owner = imageOwner
+    const helmOwner = imageHelmOwner
+    return {
+      guard: imageGuard,
+      onSelectionChange: setImageSelection,
+      selectionKey: setImageSelectionKey(imageSelection),
+      onOpenOwner: owner
+        ? imageOwnerVerified
+          ? () => handleOpenGitOpsResource(owner)
+          : undefined
+        : helmOwner
+          ? () => handleOpenHelmRelease(helmOwner)
+          : undefined,
+    }
+  }, [
+    handleOpenGitOpsResource,
+    handleOpenHelmRelease,
+    imageGuard,
+    imageOwner,
+    imageHelmOwner,
+    imageOwnerVerified,
+    imageSelection,
+  ])
   const actionsBarProps = useMemo(
     () => ({
       ...baseActionsBarProps,
@@ -1260,6 +1307,7 @@ export function WorkloadView({
         helmOwnerSource={helmOwnerSource}
         onOpenHelmRelease={handleOpenHelmRelease}
         onNavigateGitOpsPath={handleNavigateGitOpsPath}
+        onOpenLiveTraffic={offerLiveTraffic ? openLiveTraffic : undefined}
       />
       <CreateResourceDialog
         open={duplicateDialogOpen}
@@ -1283,22 +1331,12 @@ export function WorkloadView({
 
 function collectServingRefs(relationships: Relationships | undefined): ResourceRef[] {
   if (!relationships) return []
-  return dedupeRefs([
+  return dedupeResourceRefs([
     ...(relationships.services ?? []),
     ...(relationships.ingresses ?? []),
     ...(relationships.gateways ?? []),
     ...(relationships.routes ?? []),
   ])
-}
-
-function dedupeRefs(refs: ResourceRef[]): ResourceRef[] {
-  const seen = new Set<string>()
-  return refs.filter((ref) => {
-    const key = `${ref.kind}/${ref.namespace}/${ref.name}/${ref.group ?? ''}`
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
 }
 
 const POD_OWNERSHIP_WORKLOAD_KINDS = new Set([

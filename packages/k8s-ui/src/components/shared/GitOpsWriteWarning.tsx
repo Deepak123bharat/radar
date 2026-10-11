@@ -43,7 +43,9 @@ export function GitOpsWriteWarning({
   onAcknowledgedChange,
   onOpenOwner,
   disabled = false,
-  className = 'mb-0',
+  // Not undefined: AlertBanner would add its own mb-4, and a margin utility
+  // overrides the parent's space-y gap.
+  className = '',
 }: GitOpsWriteWarningProps) {
   if (guard.pending) {
     return (
@@ -124,7 +126,9 @@ export function GitOpsWriteWarning({
           disabled={disabled}
           className="mt-0.5 h-3.5 w-3.5 accent-skyhook-500"
         />
-        <span>I understand {tool} may revert this.</span>
+        <span>
+          I understand {tool} {guard.level === 'will-revert' ? 'will' : 'may'} revert this.
+        </span>
       </label>
     </AlertBanner>
   )

@@ -5,6 +5,7 @@ import {
   canConfirmGitOpsWrite,
   evaluateGitOpsWriteGuard,
   gitOpsWriteEvidencePaths,
+  gitOpsWriteGuardKey,
   type GitOpsPathEvidence,
   type GitOpsWrite,
   type GitOpsWriteEvidence,
@@ -120,10 +121,11 @@ describe('evaluateGitOpsWriteGuard', () => {
       expect(g.summary).not.toMatch(/won't be reverted|not declared in Git/i)
     })
 
-    it('no evidence at all ⇒ may-revert', () => {
-      const g = guard({ writes: [hibernate], evidenceError: 'boom' })
+    it('no evidence at all ⇒ may-revert, and says why', () => {
+      const g = guard({ writes: [hibernate], evidenceError: 'GitOps revert warnings need a newer Radar' })
       expect(g.level).toBe('may-revert')
-      expect(g.perWrite[0].reason).toContain("can't see which fields")
+      expect(g.requiresAck).toBe(true)
+      expect(g.perWrite[0].reason).toContain("can't see which fields the GitOps source declares (GitOps revert warnings need a newer Radar)")
     })
 
     it('unknown fields (no paths) ⇒ may-revert', () => {
@@ -161,13 +163,25 @@ describe('evaluateGitOpsWriteGuard', () => {
       expect(g.perWrite[0].reason).toContain('jq')
     })
 
-    it('Flux ssa: IfNotPresent ⇒ info', () => {
+    // The annotation on the live object doesn't prove the source declares it.
+    it('Flux ssa: IfNotPresent on the live object ⇒ may-revert', () => {
       const g = guard({
         owner: kustomization,
         writes: [hibernate],
         evidence: evidence({ tool: 'fluxcd', auto: true, selfHeal: true, prune: true, suspended: false, objectReconcile: 'if-not-present' }, [pathEvidence({ lastApplied: 'present' })]),
       })
-      expect(g.level).toBe('info')
+      expect(g.level).toBe('may-revert')
+      expect(g.requiresAck).toBe(true)
+      expect(g.perWrite[0].reason).toContain("can't confirm the GitOps source declares it")
+    })
+
+    it('an owner matched by name only never waives the acknowledgment', () => {
+      const ignored = evidence({ ...selfHeal, respectIgnoreDifferences: true }, [pathEvidence({ lastApplied: 'present', ignored: 'effective', ignoredBy: 'spec.ignoreDifferences' })])
+      expect(guard({ writes: [hibernate], evidence: ignored }).level).toBe('info')
+      const byName = guard({ writes: [hibernate], evidence: ignored, ownerMatchedByName: true })
+      expect(byName.level).toBe('may-revert')
+      expect(byName.requiresAck).toBe(true)
+      expect(byName.perWrite[0].reason).toContain('by name only')
     })
   })
 
@@ -266,8 +280,10 @@ describe('evaluateGitOpsWriteGuard', () => {
   })
 
   it('unverifiable ownership needs acknowledgement', () => {
-    const g = evaluateGitOpsWriteGuard({ target, owner: null, ownershipError: 'lookup failed', writes: [hibernate] })
+    const why = "Radar couldn't read this resource, so it can't tell whether a GitOps tool or Helm manages it."
+    const g = evaluateGitOpsWriteGuard({ target, owner: null, ownershipError: why, writes: [hibernate] })
     expect(g.requiresAck).toBe(true)
+    expect(g.summary).toBe(`A GitOps tool may revert this change. ${why}`)
   })
 
   it('reports the worst write and keeps per-write reasons', () => {
@@ -303,37 +319,83 @@ describe('gitOpsWriteEvidencePaths', () => {
   })
 })
 
-
-it('keeps wildcard manager exemptions conservative for image writes', () => {
-  const path = 'spec.template.spec.containers[*].image'
-  const g = evaluateGitOpsWriteGuard({
-    target: { kind: 'Deployment', group: 'apps', namespace: 'prod', name: 'api' },
-    owner: argo,
-    writes: [{ scope: 'spec', paths: [path] }],
-    evidence: evidence(selfHeal, [{ path, lastApplied: 'present', ownedBy: [{ manager: 'image-updater', operation: 'Apply', approximate: true }], ownedByGitOps: false, approximate: true, ignored: 'unevaluated', ignoredBy: 'spec.ignoreDifferences managedFieldsManagers' }]),
+describe('gitOpsWriteGuardKey', () => {
+  it('changes with the verdict and stays put for the same one', () => {
+    const mayRevert = guard({ writes: [hibernate], evidence: evidence(manual, [pathEvidence({ lastApplied: 'present' })]) })
+    const willRevert = guard({ writes: [hibernate], evidence: evidence(selfHeal, [pathEvidence({ lastApplied: 'present' })]) })
+    expect(gitOpsWriteGuardKey(mayRevert)).not.toBe('')
+    expect(gitOpsWriteGuardKey(mayRevert)).toBe(gitOpsWriteGuardKey(guard({ writes: [hibernate], evidence: evidence(manual, [pathEvidence({ lastApplied: 'present' })]) })))
+    expect(gitOpsWriteGuardKey(mayRevert)).not.toBe(gitOpsWriteGuardKey(willRevert))
+    expect(gitOpsWriteGuardKey(guard({ writes: [hibernate], ownerPending: true }))).toBe('')
+    expect(gitOpsWriteGuardKey(undefined)).toBe('')
   })
-  expect(g.level).toBe('may-revert')
-  expect(g.requiresAck).toBe(true)
-  expect(canConfirmGitOpsWrite(g, false)).toBe(false)
-  expect(g.perWrite[0].reason).toContain('managedFieldsManagers')
-  expect(g.perWrite[0].reason).not.toContain('written in jq')
 })
 
-it.each([
-  [argo, { ...selfHeal }, 'spec', 'effective'],
-  [kustomization, { tool: 'fluxcd', auto: true, selfHeal: true, prune: true, suspended: false, objectReconcile: 'ignore' }, 'spec', undefined],
-  [kustomization, { tool: 'fluxcd', auto: true, selfHeal: true, prune: true, suspended: false, objectReconcile: 'if-not-present' }, 'spec', undefined],
-  [kustomization, { tool: 'fluxcd', auto: true, selfHeal: true, prune: true, suspended: false, objectReconcile: 'ignore' }, 'delete', undefined],
-  [argo, { ...selfHeal }, 'create-child', undefined],
-] as const)('hedges info-level assurances for %s %s %s', (owner, policy, scope, ignored) => {
-  const g = guard({ owner, writes: [{ scope, paths: [HIBERNATE] }], evidence: evidence(policy, [pathEvidence({ ignored })]) })
-  expect(g.level).toBe('info')
-  expect(g.perWrite[0].reason).toContain('not expected')
-  expect(g.perWrite[0].reason).not.toMatch(/won['’]t (?:overwrite|revert|be recreated)/)
-})
+describe('copy', () => {
+  it('never promises a change will not be reverted', () => {
+    const optedOut = evidence({ ...selfHeal, objectReconcile: 'ignore' }, [pathEvidence({ lastApplied: 'present' })])
+    const ignored = evidence({ ...selfHeal, respectIgnoreDifferences: true }, [pathEvidence({ lastApplied: 'present', ignored: 'effective', ignoredBy: 'spec.ignoreDifferences' })])
+    for (const g of [
+      guard({ writes: [hibernate], evidence: optedOut }),
+      guard({ writes: [hibernate], evidence: ignored }),
+      guard({ writes: [{ scope: 'create-child', description: 'A Backup' }] }),
+      guard({ writes: [{ scope: 'delete' }], evidence: optedOut }),
+    ]) {
+      expect(g.level).toBe('info')
+      for (const w of g.perWrite) expect(w.reason).not.toMatch(/won.t/)
+    }
+  })
 
-it('hedges an independent Helm child assurance', () => {
-  const g = guard({ owner: null, helmRelease: { name: 'app', namespace: 'prod' }, writes: [{ scope: 'create-child' }] })
-  expect(g.level).toBe('info')
-  expect(g.perWrite[0].reason).toContain('an upgrade is not expected to revert it')
+  it("doesn't let an object's opt-out waive a change whose fields are unknown", () => {
+    const optedOut = evidence({ ...selfHeal, objectReconcile: 'ignore' })
+    const g = guard({ writes: [{ scope: 'spec' }], evidence: optedOut })
+    expect(g.level).toBe('may-revert')
+    expect(g.requiresAck).toBe(true)
+  })
+
+  it('describes a rule that covers only some of the entries as unconfirmed', () => {
+    const g = guard({
+      writes: [hibernate],
+      evidence: evidence({ ...selfHeal, respectIgnoreDifferences: true }, [
+        pathEvidence({ lastApplied: 'present', ignored: 'unevaluated', ignoredBy: 'spec.ignoreDifferences jsonPointers' }),
+      ]),
+    })
+    expect(g.level).toBe('may-revert')
+    expect(g.requiresAck).toBe(true)
+    expect(g.perWrite[0].reason).toBe(
+      "Radar can't confirm the Application's ignore rule (spec.ignoreDifferences jsonPointers) covers this field, so the next sync may overwrite it.",
+    )
+  })
+
+  it('a wildcard the source declares for only some entries may revert, not will', () => {
+    const partial = guard({ writes: [hibernate], evidence: evidence(selfHeal, [pathEvidence({ lastApplied: 'present', partial: true })]) })
+    expect(partial.level).toBe('may-revert')
+    expect(partial.requiresAck).toBe(true)
+    expect(partial.perWrite[0].reason).toBe('The GitOps source sets this for some containers but not others; the ones it sets will be overwritten at the next sync.')
+    const whole = guard({ writes: [hibernate], evidence: evidence(selfHeal, [pathEvidence({ lastApplied: 'present' })]) })
+    expect(whole.level).toBe('will-revert')
+  })
+
+  it('a path that matches nothing in the live object adds no verdict', () => {
+    const g = guard({
+      writes: [{ scope: 'spec', paths: ['spec.template.spec.containers[*].image', 'spec.template.spec.initContainers[*].image'] }],
+      evidence: evidence({ ...selfHeal, respectIgnoreDifferences: true }, [
+        pathEvidence({ path: 'spec.template.spec.containers[*].image', lastApplied: 'present', ignored: 'effective', ignoredBy: 'spec.ignoreDifferences' }),
+        pathEvidence({ path: 'spec.template.spec.initContainers[*].image', empty: true }),
+      ]),
+    })
+    expect(g.level).toBe('info')
+    expect(g.requiresAck).toBe(false)
+  })
+
+  it('names the owner once, in the headline', () => {
+    for (const ev of [
+      evidence({ ...selfHeal, respectIgnoreDifferences: true }, [pathEvidence({ lastApplied: 'present', ignored: 'effective', ignoredBy: 'spec.ignoreDifferences' })]),
+      evidence({ ...selfHeal, suspended: true }, [pathEvidence({ lastApplied: 'present' })]),
+      evidence(selfHeal, [pathEvidence({ lastApplied: 'present', ignored: 'comparison-only', ignoredBy: 'spec.ignoreDifferences' })]),
+    ]) {
+      const g = guard({ writes: [hibernate], evidence: ev })
+      expect(g.summary.split('argocd/pg').length - 1).toBe(1)
+    }
+  })
 })

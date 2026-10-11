@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -13,10 +15,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/podlogs"
+	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
 func TestPrepareLogsRequiresInventoryAndLogGrantsBeforeLookup(t *testing.T) {
@@ -105,41 +110,55 @@ func TestParseCNPGLogQuery(t *testing.T) {
 	}
 }
 
-func TestCNPGStreamCursorResumesWithoutReplay(t *testing.T) {
-	var c cnpgStreamCursor
-	first := c.restartOptions("postgres", 200, nil)
-	if first.TailLines == nil || *first.TailLines != 200 || first.SinceTime != nil || !first.Follow || !first.Timestamps || first.Container != "postgres" {
-		t.Fatalf("first start = %+v", first)
+// logAPIServer answers every request with body, the way the apiserver relays
+// the kubelet's answer to a pod log request.
+func logAPIServer(t *testing.T, body string) *kubernetes.Clientset {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	client, err := kubernetes.NewForConfig(&rest.Config{Host: srv.URL})
+	if err != nil {
+		t.Fatal(err)
 	}
-	line := func(ts, content string) podlogs.Entry {
-		return podlogs.Entry{Timestamp: ts, Content: content}
-	}
-	for _, e := range []podlogs.Entry{line("2026-09-28T14:00:00.1Z", "a"), line("2026-09-28T14:00:05.7Z", "b"), line("2026-09-28T14:00:05.7Z", "c")} {
-		if !c.admit(e) {
-			t.Fatalf("fresh line %+v rejected", e)
-		}
-	}
+	return client
+}
 
-	restart := c.restartOptions("postgres", 200, nil)
-	if restart.TailLines != nil || restart.SinceSeconds != nil || restart.SinceTime == nil ||
-		!restart.SinceTime.Time.Equal(time.Date(2026, 9, 28, 14, 0, 5, 0, time.UTC)) {
-		t.Fatalf("restart = %+v, want sinceTime at the last delivered second and no tail", restart)
-	}
-
-	// The resumed follow replays the boundary second.
-	replayed := []podlogs.Entry{line("2026-09-28T14:00:05.2Z", "earlier in the second"), line("2026-09-28T14:00:05.7Z", "b"), line("2026-09-28T14:00:05.7Z", "c")}
-	for _, e := range replayed {
-		if c.admit(e) {
-			t.Errorf("replayed line %+v admitted", e)
-		}
-	}
-	for _, e := range []podlogs.Entry{line("2026-09-28T14:00:05.7Z", "d"), line("2026-09-28T14:00:06Z", "e")} {
-		if !c.admit(e) {
-			t.Errorf("new line %+v rejected", e)
-		}
-	}
-	if c.admit(line("2026-09-28T14:00:05.7Z", "d")) {
-		t.Error("line before the new last timestamp admitted")
+// The CNPG live view emits a stream's last line even when it arrives with the
+// end of the stream, so the kubelet's notice used to show up as a Postgres line,
+// again every time the view reopened the stream.
+func TestFollowCNPGContainerLogs_DropsLogsUnavailableNotice(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    string
+		want    []string
+		wantErr error
+	}{
+		{"kubelet notice", "unable to retrieve container logs for containerd://6e2396b58f81ea5e", nil, k8score.ErrLogsUnavailable},
+		{"last line without a newline", "2026-09-28T14:19:58.5Z database system is ready\n2026-09-28T14:19:59.5Z received fast shutdown request", []string{"database system is ready", "received fast shutdown request"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := logAPIServer(t, tc.body)
+			logCh := make(chan podlogs.Entry, 10)
+			_, err := followCNPGContainerLogs(context.Background(), client, "db", "pg-orders-2", corev1.PodLogOptions{Container: "postgres", Timestamps: true, Follow: true}, 1, logCh)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			close(logCh)
+			var got []string
+			for entry := range logCh {
+				got = append(got, entry.Content)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("got %q, want %q", got, tc.want)
+				}
+			}
+		})
 	}
 }
 

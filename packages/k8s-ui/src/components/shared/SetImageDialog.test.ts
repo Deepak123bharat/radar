@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import type { WorkloadContainerImage } from '../../types/core'
-import { canConfirmGitOpsWrite, evaluateGitOpsWriteGuard } from '../../utils/gitops-write-guard'
+import { canConfirmGitOpsWrite, evaluateGitOpsWriteGuard, gitOpsWriteGuardKey } from '../../utils/gitops-write-guard'
 import {
   SET_IMAGE_WRITES,
   canSubmitImageUpdates,
   changedImageUpdates,
   describeImageUpdateBehavior,
   reconcileRefreshedImageDrafts,
+  setImageWrites,
 } from './SetImageDialog'
 
 const containers: WorkloadContainerImage[] = [
@@ -142,5 +143,56 @@ describe('canSubmitImageUpdates', () => {
     expect(canSubmitImageUpdates({ ...ready, busy: true })).toBe(false)
     expect(canSubmitImageUpdates({ ...ready, loadFailed: true })).toBe(false)
     expect(canSubmitImageUpdates({ ...ready, ownershipConfirmable: false })).toBe(false)
+  })
+})
+
+describe('setImageWrites', () => {
+  it('names each container, so the verdict is for exactly the images being changed', () => {
+    expect(setImageWrites(containers).map((w) => w.paths)).toEqual([
+      ['spec.template.spec.containers[name=app].image'],
+      ['spec.template.spec.containers[name=sidecar].image'],
+      ['spec.template.spec.initContainers[name=migrate].image'],
+    ])
+  })
+
+  it("asks again when the evidence doesn't cover a changed container", () => {
+    // Evidence read before the dialog listed the init container covers only
+    // the app image, which the owner ignores.
+    const guard = evaluateGitOpsWriteGuard({
+      target: { kind: 'Deployment', group: 'apps', namespace: 'prod', name: 'api' },
+      owner: { tool: 'argocd', kind: 'applications', namespace: 'argocd', name: 'api' },
+      writes: setImageWrites([{ type: 'initContainer', name: 'migrate' }]),
+      evidence: {
+        uid: 'u',
+        resourceVersion: '1',
+        owner: null,
+        policy: { tool: 'argocd', auto: true, selfHeal: true, prune: false, suspended: null, respectIgnoreDifferences: true },
+        paths: [{ path: 'spec.template.spec.containers[name=app].image', lastApplied: 'present', ownedBy: [], ownedByGitOps: false, ignored: 'effective', ignoredBy: 'spec.ignoreDifferences' }],
+      },
+    })
+    expect(guard.level).toBe('may-revert')
+    expect(canConfirmGitOpsWrite(guard, false)).toBe(false)
+  })
+})
+
+describe('acknowledgment scope', () => {
+  it("an acknowledgment for one container's image doesn't cover another's with the same verdict", () => {
+    const guardFor = (name: string) =>
+      evaluateGitOpsWriteGuard({
+        target: { kind: 'Deployment', group: 'apps', namespace: 'prod', name: 'api' },
+        owner: { tool: 'argocd', kind: 'applications', namespace: 'argocd', name: 'api' },
+        writes: setImageWrites([{ type: 'container', name }]),
+        evidence: {
+          uid: 'u',
+          resourceVersion: '1',
+          owner: null,
+          policy: { tool: 'argocd', auto: true, selfHeal: true, prune: false, suspended: null },
+          paths: ['app', 'sidecar'].map((n) => ({ path: `spec.template.spec.containers[name=${n}].image`, lastApplied: 'present' as const, ownedBy: [], ownedByGitOps: false })),
+        },
+      })
+    const sidecar = guardFor('sidecar')
+    const app = guardFor('app')
+    expect(app.level).toBe(sidecar.level)
+    expect(gitOpsWriteGuardKey(app)).not.toBe(gitOpsWriteGuardKey(sidecar))
   })
 })

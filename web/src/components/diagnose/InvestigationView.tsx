@@ -959,7 +959,7 @@ export function InvestigationView({
     useGitOpsWriteGuard({
       target: { kind, group: run.group, namespace, name },
       writes: APPLY_WRITES,
-      managedBy: run.managedBy,
+      declaredManager: run.managedBy,
       enabled: confirmApply,
     });
   const navigateRouter = useNavigate();
@@ -969,6 +969,9 @@ export function InvestigationView({
     helmOwner: applyHelmOwner,
   } = applyOwnership;
   const openApplyOwner = useMemo(() => {
+    // A host without resource navigation (Radar Hub's fleet Diagnose panel)
+    // has no route for the owner either.
+    if (!onOpenResource) return undefined;
     const owner = applyOwner;
     const helmOwner = applyHelmOwner;
     if (owner && applyOwnerVerified) {
@@ -981,7 +984,7 @@ export function InvestigationView({
         );
     }
     return undefined;
-  }, [applyOwner, applyOwnerVerified, applyHelmOwner, navigateRouter]);
+  }, [applyOwner, applyOwnerVerified, applyHelmOwner, navigateRouter, onOpenResource]);
   const [pendingFix, setPendingFix] = useState("");
   const requestApply = (fix: string) => {
     if (interactionsBlocked) return;

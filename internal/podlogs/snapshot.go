@@ -27,6 +27,9 @@ type Entry struct {
 	Level   string `json:"level,omitempty"`
 	Logger  string `json:"logger,omitempty"`
 	Message string `json:"message,omitempty"`
+	// Follow identifies the follow request that read the line, so a stream
+	// loop can tell a resumed follow's replay from lines it has not sent.
+	Follow int `json:"-"`
 }
 
 // CollectPods fetches logs from all pods concurrently. Non-nil even
@@ -228,6 +231,9 @@ func fetchPodContainerLogs(ctx context.Context, client kubernetes.Interface, nam
 	content, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, false, err
+	}
+	if k8score.IsLogsUnavailableNotice(string(content)) {
+		return nil, false, k8score.ErrLogsUnavailable
 	}
 	clipped := bounded && int64(len(content)) > maxSnapshotSourceBytes
 	if clipped {

@@ -1,8 +1,9 @@
+import { dedupeResourceRefs, omitResourceRefs } from '../../utils/resource-refs'
 import { Disclosure } from './Disclosure'
 import { createContext, useContext, useState } from 'react'
 import { Copy, Check, Tag, AlertTriangle, CheckCircle, ExternalLink, Layers, X, Minus } from 'lucide-react'
 import { clsx } from 'clsx'
-import { formatAge, formatDuration, formatResources } from '../resources/resource-utils'
+import { formatDuration, formatResources } from '../resources/resource-utils'
 import { getEffectiveResources } from '../../utils/extended-resources'
 import { Tooltip } from './Tooltip'
 import { getKindColorClass } from '../ui/Badge'
@@ -206,6 +207,12 @@ const NEGATIVE_POLARITY_TYPES = new Set([
   'NetworkUnavailable',
   // Core K8s — Pod
   'DisruptionTarget',
+  // Core K8s — Namespace
+  'NamespaceDeletionDiscoveryFailure',
+  'NamespaceDeletionGroupVersionParsingFailure',
+  'NamespaceDeletionContentFailure',
+  'NamespaceContentRemaining',
+  'NamespaceFinalizersRemaining',
   // Core K8s — workloads
   'ReplicaFailure',
   // NPD — upstream default configs
@@ -220,6 +227,9 @@ const NEGATIVE_POLARITY_TYPES = new Set([
   'ReadOnlyRootFileSystem',
   'ResourceExhausted',
   'Swap',
+  'StoragePressureRootFileSystem',
+  'DPv2MigrationUnsupportedCNI',
+  'UnsupportedEBPFPrograms',
   // NPD — AKS extensions (learn.microsoft.com/azure/aks/node-problem-detector)
   'FilesystemCorruptionProblem',
   'KubeletProblem',
@@ -541,7 +551,7 @@ export function MetadataSection({ data }: { data: any }) {
         <Property label="Generation" value={meta.generation} />
         <Property label="Created" value={meta.creationTimestamp ? (
           <Tooltip content={new Date(meta.creationTimestamp).toLocaleString()}>
-            <span className="border-b border-dotted border-theme-text-tertiary cursor-help">{formatAge(meta.creationTimestamp)}</span>
+            <span className="border-b border-dotted border-theme-text-tertiary cursor-help">{formatRelativeAgeTime(meta.creationTimestamp)}</span>
           </Tooltip>
         ) : '-'} />
       </PropertyList>
@@ -798,24 +808,18 @@ export type CopyHandler = (text: string, key: string) => void
 import type { TimelineEvent, Relationships, ResourceRef } from '../../types'
 import { isChangeEvent, isK8sEvent } from '../../types'
 import { Link } from 'lucide-react'
+import { formatRelativeAgeTime } from '../../utils/format'
 
 interface RelatedResourcesSectionProps {
   relationships: Relationships | undefined
   onNavigate?: (ref: ResourceRef) => void
 }
 
-function dedupeRefs(refs: ResourceRef[]): ResourceRef[] {
-  const seen = new Set<string>()
-  return refs.filter(ref => {
-    const key = `${ref.kind}/${ref.namespace}/${ref.name}`
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-}
-
 export function RelatedResourcesSection({ relationships, onNavigate }: RelatedResourcesSectionProps) {
   if (!relationships) return null
+
+  const configRefs = omitResourceRefs(relationships.configRefs ?? [], relationships.dependencies ?? [])
+  const consumers = omitResourceRefs(relationships.consumers ?? [], relationships.dependents ?? [])
 
   const hasRelationships =
     relationships.owner ||
@@ -834,6 +838,8 @@ export function RelatedResourcesSection({ relationships, onNavigate }: RelatedRe
     (relationships.pdbs && relationships.pdbs.length > 0) ||
     (relationships.networkPolicies && relationships.networkPolicies.length > 0) ||
     (relationships.resourceClaims && relationships.resourceClaims.length > 0) ||
+    (relationships.dependencies && relationships.dependencies.length > 0) ||
+    (relationships.dependents && relationships.dependents.length > 0) ||
     relationships.scaleTarget
 
   if (!hasRelationships) return null
@@ -851,43 +857,49 @@ export function RelatedResourcesSection({ relationships, onNavigate }: RelatedRe
           <RelationshipGroup label="Node" refs={[relationships.node]} onNavigate={onNavigate} />
         )}
         {relationships.children && relationships.children.length > 0 && (
-          <RelationshipGroup label="Children" refs={dedupeRefs(relationships.children)} onNavigate={onNavigate} />
+          <RelationshipGroup label="Children" refs={dedupeResourceRefs(relationships.children)} onNavigate={onNavigate} />
         )}
         {relationships.services && relationships.services.length > 0 && (
-          <RelationshipGroup label="Services" refs={dedupeRefs(relationships.services)} onNavigate={onNavigate} />
+          <RelationshipGroup label="Services" refs={dedupeResourceRefs(relationships.services)} onNavigate={onNavigate} />
         )}
         {relationships.ingresses && relationships.ingresses.length > 0 && (
-          <RelationshipGroup label="Ingresses" refs={dedupeRefs(relationships.ingresses)} onNavigate={onNavigate} />
+          <RelationshipGroup label="Ingresses" refs={dedupeResourceRefs(relationships.ingresses)} onNavigate={onNavigate} />
         )}
         {relationships.gateways && relationships.gateways.length > 0 && (
-          <RelationshipGroup label="Gateways" refs={dedupeRefs(relationships.gateways)} onNavigate={onNavigate} />
+          <RelationshipGroup label="Gateways" refs={dedupeResourceRefs(relationships.gateways)} onNavigate={onNavigate} />
         )}
         {relationships.routes && relationships.routes.length > 0 && (
-          <RelationshipGroup label="Routes" refs={dedupeRefs(relationships.routes)} onNavigate={onNavigate} />
+          <RelationshipGroup label="Routes" refs={dedupeResourceRefs(relationships.routes)} onNavigate={onNavigate} />
         )}
         {relationships.pods && relationships.pods.length > 0 && (
-          <RelationshipGroup label="Pods" refs={dedupeRefs(relationships.pods)} onNavigate={onNavigate} />
+          <RelationshipGroup label="Pods" refs={dedupeResourceRefs(relationships.pods)} onNavigate={onNavigate} />
         )}
-        {relationships.configRefs && relationships.configRefs.length > 0 && (
-          <RelationshipGroup label="Configuration" refs={dedupeRefs(relationships.configRefs)} onNavigate={onNavigate} />
+        {configRefs.length > 0 && (
+          <RelationshipGroup label="Configuration" refs={dedupeResourceRefs(configRefs)} onNavigate={onNavigate} />
         )}
-        {relationships.consumers && relationships.consumers.length > 0 && (
-          <RelationshipGroup label="Used By" refs={dedupeRefs(relationships.consumers)} onNavigate={onNavigate} />
+        {consumers.length > 0 && (
+          <RelationshipGroup label="Used By" refs={dedupeResourceRefs(consumers)} onNavigate={onNavigate} />
         )}
         {relationships.scalers && relationships.scalers.length > 0 && (
-          <RelationshipGroup label="Autoscaler" refs={dedupeRefs(relationships.scalers)} onNavigate={onNavigate} />
+          <RelationshipGroup label="Autoscaler" refs={dedupeResourceRefs(relationships.scalers)} onNavigate={onNavigate} />
         )}
         {relationships.storageRefs && relationships.storageRefs.length > 0 && (
-          <RelationshipGroup label="Storage" refs={dedupeRefs(relationships.storageRefs)} onNavigate={onNavigate} />
+          <RelationshipGroup label="Storage" refs={dedupeResourceRefs(relationships.storageRefs)} onNavigate={onNavigate} />
         )}
         {relationships.pdbs && relationships.pdbs.length > 0 && (
-          <RelationshipGroup label="Disruption Budget" refs={dedupeRefs(relationships.pdbs)} onNavigate={onNavigate} />
+          <RelationshipGroup label="Disruption Budget" refs={dedupeResourceRefs(relationships.pdbs)} onNavigate={onNavigate} />
         )}
         {relationships.networkPolicies && relationships.networkPolicies.length > 0 && (
-          <RelationshipGroup label="Network Policies" refs={dedupeRefs(relationships.networkPolicies)} onNavigate={onNavigate} />
+          <RelationshipGroup label="Network Policies" refs={dedupeResourceRefs(relationships.networkPolicies)} onNavigate={onNavigate} />
         )}
         {relationships.resourceClaims && relationships.resourceClaims.length > 0 && (
-          <RelationshipGroup label="Resource Claims" refs={dedupeRefs(relationships.resourceClaims)} onNavigate={onNavigate} />
+          <RelationshipGroup label="Resource Claims" refs={dedupeResourceRefs(relationships.resourceClaims)} onNavigate={onNavigate} />
+        )}
+        {relationships.dependencies && relationships.dependencies.length > 0 && (
+          <RelationshipGroup label="Depends On" refs={dedupeResourceRefs(relationships.dependencies)} onNavigate={onNavigate} />
+        )}
+        {relationships.dependents && relationships.dependents.length > 0 && (
+          <RelationshipGroup label="Required By" refs={dedupeResourceRefs(relationships.dependents)} onNavigate={onNavigate} />
         )}
         {relationships.scaleTarget && (
           <RelationshipGroup label="Scale Target" refs={[relationships.scaleTarget]} onNavigate={onNavigate} />

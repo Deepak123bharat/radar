@@ -70,9 +70,16 @@ export interface GitOpsPathEvidence {
   /** A manager of the owner's controller owns the field. */
   ownedByGitOps: boolean
   approximate?: boolean
+  /** The path has a wildcard, and the source declares the field on some of
+   *  the entries it matches (one container's image but not another's). */
+  partial?: boolean
+  /** The wildcard matches nothing in the live object (no init containers),
+   *  so the write can't touch this path. */
+  empty?: boolean
   /** `effective`: the owner is not expected to overwrite it. `comparison-only`: Argo
    *  ignoreDifferences without RespectIgnoreDifferences. `unevaluated`: a
-   *  matching rule uses jqPathExpressions, which Radar doesn't evaluate. */
+   *  matching rule uses jqPathExpressions, which Radar doesn't evaluate, or
+   *  covers only some of the entries a wildcard path matches. */
   ignored?: 'effective' | 'comparison-only' | 'unevaluated'
   ignoredBy?: string
 }
@@ -99,6 +106,8 @@ export interface GitOpsWriteEvidence {
   policy: GitOpsWritePolicyEvidence | null
   policyError?: string
   controllerOwner?: { apiVersion: string; kind: string; name: string }
+  /** The Argo CD Application's status lists the object among its resources. */
+  ownerTracksTarget?: boolean
   paths: GitOpsPathEvidence[]
 }
 
@@ -114,8 +123,11 @@ export interface GitOpsWriteGuardInput {
   operatorOwner?: GitOpsWriteOperatorOwner | null
   /** Ownership or evidence is still loading. */
   ownerPending?: boolean
-  /** The host could not determine ownership at all. */
+  /** The host could not determine ownership: one sentence saying why, shown as the reason. */
   ownershipError?: string | null
+  /** The owner was matched by name only (an Argo CD tracking label without a
+   *  namespace), so its policy can't waive an acknowledgment. */
+  ownerMatchedByName?: boolean
   evidence?: GitOpsWriteEvidence | null
   /** The evidence request failed. */
   evidenceError?: string | null
@@ -169,11 +181,28 @@ export function describeGitOpsOwner(owner: GitOpsOwnerRef): string {
   return `${gitOpsToolLabel(owner.tool)} ${OWNER_KIND_LABEL[owner.kind]} ${ref}`
 }
 
+/** `the Application`: the owner as reasons name it, after a headline that already named it in full. */
+function ownerKindRef(owner: GitOpsOwnerRef): string {
+  return `the ${OWNER_KIND_LABEL[owner.kind]}`
+}
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1)
+}
+
 /** The tool named in acknowledgments: `Argo CD`, `Flux`, `Helm`. */
 export function guardToolLabel(guard: Pick<GitOpsWriteGuard, 'owner' | 'helmRelease'>): string {
   if (guard.owner) return gitOpsToolLabel(guard.owner.tool)
   if (guard.helmRelease) return 'Helm'
   return 'a GitOps tool'
+}
+
+/** Identifies what an acknowledgment was given for; it changes when the
+ *  verdict, owner, reasons or the fields being written do. */
+export function gitOpsWriteGuardKey(guard: GitOpsWriteGuard | undefined): string {
+  if (!guard || guard.pending) return ''
+  const owner = guard.owner ? `${guard.owner.kind}/${guard.owner.namespace ?? ''}/${guard.owner.name}` : guard.helmRelease ? `helm/${guard.helmRelease.namespace}/${guard.helmRelease.name}` : ''
+  return [guard.level, owner, guard.ownershipError ?? '', ...guard.perWrite.map((w) => `${w.write.scope}:${(w.write.paths ?? []).join(',')}:${w.level}:${w.reason}`)].join('|')
 }
 
 export function canConfirmGitOpsWrite(guard: GitOpsWriteGuard | undefined, acked: boolean): boolean {
@@ -229,11 +258,11 @@ function declaredOutcome(ctx: Context): Verdict {
   if (!policy) {
     return {
       level: 'may-revert',
-      reason: `Radar couldn't read the sync policy of ${describeGitOpsOwner(owner)} (${ctx.policyUnknown}); the next sync will overwrite it.`,
+      reason: `Radar couldn't read ${ownerKindRef(owner)}'s sync policy (${ctx.policyUnknown}); the next sync will overwrite it.`,
     }
   }
   if (policy.suspended) {
-    return { level: 'may-revert', reason: `${describeGitOpsOwner(owner)} is suspended; resuming it will overwrite this change.` }
+    return { level: 'may-revert', reason: `${capitalize(ownerKindRef(owner))} is suspended; resuming it will overwrite this change.` }
   }
   if (policy.selfHeal) {
     return { level: 'will-revert', reason: `It will be overwritten at ${nextSync(ctx)}.` }
@@ -260,6 +289,7 @@ function classifyPath(ctx: Context, path: string | null): Verdict {
   const { owner, policy } = ctx
   const tool = gitOpsToolLabel(owner.tool)
   const ev = path ? ctx.input.evidence?.paths.find((p) => p.path === path) : undefined
+  if (ev?.empty) return { level: 'none', reason: '' }
 
   // Helm's drift exemptions only stop drift correction: the next upgrade's
   // three-way merge still resets a field the chart renders.
@@ -271,16 +301,22 @@ function classifyPath(ctx: Context, path: string | null): Verdict {
         ? `drift detection ignores this field (${ev.ignoredBy ?? 'ignore rule'})`
         : null
     : null
-  if (!helm && policy?.objectReconcile === 'ignore') {
+  // A change whose fields are unknown may be the one that removes the opt-out.
+  if (!helm && path && policy?.objectReconcile === 'ignore') {
     return { level: 'info', reason: `This object opts out of ${tool} reconciliation, so a sync is not expected to overwrite it.` }
   }
+  // Flux reads IfNotPresent from the desired manifest; the live annotation
+  // may have been added by hand or outlived a change in the source.
   if (policy?.objectReconcile === 'if-not-present') {
-    return { level: 'info', reason: `${tool} only creates this object when it's missing, so a sync is not expected to overwrite it.` }
+    return {
+      level: 'may-revert',
+      reason: `This object carries ${tool}'s IfNotPresent annotation, but Radar can't confirm the GitOps source declares it; if it doesn't, the next reconcile overwrites this change.`,
+    }
   }
   if (!helm && ev?.ignored === 'effective') {
     return {
       level: 'info',
-      reason: `${describeGitOpsOwner(owner)} ignores this field (${ev.ignoredBy ?? 'ignore rule'}), so a sync is not expected to overwrite it.`,
+      reason: `${capitalize(ownerKindRef(owner))} ignores this field (${ev.ignoredBy ?? 'ignore rule'}), so a sync is not expected to overwrite it.`,
     }
   }
 
@@ -289,22 +325,30 @@ function classifyPath(ctx: Context, path: string | null): Verdict {
     if (ev?.ignored === 'unevaluated') {
       return {
         level: 'may-revert',
-        reason: `${describeGitOpsOwner(owner)} has an ignoreDifferences rule (${ev.ignoredBy ?? 'ignore rule'}) whose coverage Radar can't verify, so it may or may not keep a sync from overwriting this field.`,
+        reason: `Radar can't confirm ${ownerKindRef(owner)}'s ignore rule (${ev.ignoredBy ?? 'spec.ignoreDifferences'}) covers this field, so the next sync may overwrite it.`,
       }
     }
     if (ev?.ignored === 'comparison-only') {
       return {
         level: 'may-revert',
-        reason: `${describeGitOpsOwner(owner)} excludes this field from comparison (${ev.ignoredBy ?? 'ignoreDifferences'}) without RespectIgnoreDifferences, so self-heal won't react, but the next sync will overwrite it.`,
+        reason: `${capitalize(ownerKindRef(owner))} excludes this field from comparison (${ev.ignoredBy ?? 'ignoreDifferences'}) without RespectIgnoreDifferences, so self-heal won't react, but the next sync will overwrite it.`,
       }
     }
     const outcome = helmExemption
       ? { level: 'may-revert' as const, reason: `Flux won't correct it as drift because ${helmExemption}, but the next Helm upgrade overwrites it.` }
       : declaredOutcome(ctx)
+    // A wildcard the source only partly declares: which entries revert
+    // depends on which one the user changes.
+    if (ev?.partial && !policy?.replace && outcome.level === 'will-revert') {
+      return {
+        level: 'may-revert',
+        reason: `The GitOps source sets this for some containers but not others; the ones it sets will be overwritten at ${nextSync(ctx)}.`,
+      }
+    }
     const why =
       declared && ev
         ? `The GitOps source sets this field (${evidenceNote(ev, owner)}).`
-        : `${describeGitOpsOwner(owner)} syncs with Replace=true, which replaces the whole object.`
+        : `${capitalize(ownerKindRef(owner))} syncs with Replace=true, which replaces the whole object.`
     return { level: outcome.level, reason: `${why} ${outcome.reason}` }
   }
 
@@ -313,7 +357,11 @@ function classifyPath(ctx: Context, path: string | null): Verdict {
     return { level: 'may-revert', reason: `Radar doesn't know which fields this change touches. ${unknown}` }
   }
   if (!ev || ev.error) {
-    return { level: 'may-revert', reason: `Radar can't see which fields the GitOps source declares. ${unknown}` }
+    const cause = ev?.error || ctx.input.evidenceError
+    return {
+      level: 'may-revert',
+      reason: `Radar can't see which fields the GitOps source declares${cause ? ` (${cause})` : ''}. ${unknown}`,
+    }
   }
   return {
     level: 'may-revert',
@@ -337,17 +385,17 @@ function classifyDelete(ctx: Context): Verdict {
   if (!policy) {
     return {
       level: 'may-revert',
-      reason: `Radar couldn't read the sync policy of ${describeGitOpsOwner(owner)} (${ctx.policyUnknown}); the next sync will recreate it.`,
+      reason: `Radar couldn't read ${ownerKindRef(owner)}'s sync policy (${ctx.policyUnknown}); the next sync will recreate it.`,
     }
   }
   if (policy.objectReconcile === 'ignore') {
     if (owner.kind === 'helmreleases') {
       return { level: 'may-revert', reason: "Flux drift detection skips this object, but the next Helm upgrade recreates it." }
     }
-    return { level: 'info', reason: `This object opts out of ${tool} reconciliation, so it is not expected to be recreated by that reconciliation.` }
+    return { level: 'info', reason: `This object opts out of ${tool} reconciliation, so it is not expected to be recreated.` }
   }
   if (policy.suspended) {
-    return { level: 'may-revert', reason: `${describeGitOpsOwner(owner)} is suspended; resuming it will recreate it.` }
+    return { level: 'may-revert', reason: `${capitalize(ownerKindRef(owner))} is suspended; resuming it will recreate it.` }
   }
   if (policy.selfHeal) {
     return { level: 'will-revert', reason: `${tool} will recreate it at ${nextSync(ctx)}.` }
@@ -385,12 +433,11 @@ function classifyWrite(input: GitOpsWriteGuardInput, owner: GitOpsOwnerRef | nul
     return write.scope === 'delete' ? classifyDelete(ctx) : classifyFieldWrite(ctx, write)
   }
   if (input.helmRelease) {
-    const release = `${input.helmRelease.namespace}/${input.helmRelease.name}`
     if (write.scope === 'create-child') {
-      return { level: 'info', reason: `A new object isn't part of Helm release ${release}, so an upgrade is not expected to revert it.` }
+      return { level: 'info', reason: "A new object isn't part of the release, so a Helm upgrade is not expected to revert it." }
     }
     if (write.scope === 'delete') {
-      return { level: 'may-revert', reason: `The next helm upgrade or rollback of ${release} will recreate it.` }
+      return { level: 'may-revert', reason: 'The next Helm upgrade or rollback will recreate it.' }
     }
     const helmOwned = (write.paths ?? []).some((path) =>
       input.evidence?.paths.find((p) => p.path === path)?.ownedBy.some((o) => o.tool === 'helm'),
@@ -398,14 +445,14 @@ function classifyWrite(input: GitOpsWriteGuardInput, owner: GitOpsOwnerRef | nul
     return {
       level: 'may-revert',
       reason: helmOwned
-        ? `Helm release ${release} set this field; the next helm upgrade or rollback will overwrite it.`
-        : `If the chart sets this field, the next helm upgrade or rollback of ${release} will overwrite it.`,
+        ? 'Helm set this field; the next Helm upgrade or rollback will overwrite it.'
+        : 'If the chart sets this field, the next Helm upgrade or rollback will overwrite it.',
     }
   }
   if (input.ownershipError && write.scope !== 'create-child') {
     return {
       level: 'may-revert',
-      reason: `Radar couldn't verify whether a GitOps tool manages this resource (${input.ownershipError}). If one does, it may revert this change.`,
+      reason: input.ownershipError,
     }
   }
   return { level: 'none', reason: '' }
@@ -433,7 +480,17 @@ export function evaluateGitOpsWriteGuard(input: GitOpsWriteGuardInput): GitOpsWr
   const ownershipError = owner || helmRelease ? null : (input.ownershipError ?? null)
   const normalized: GitOpsWriteGuardInput = { ...input, owner, helmRelease, ownershipError }
 
-  const perWrite = input.writes.map((write) => ({ write, ...classifyWrite(normalized, owner, write) }))
+  const perWrite = input.writes.map((write) => {
+    const verdict = classifyWrite(normalized, owner, write)
+    if (owner && input.ownerMatchedByName && verdict.level === 'info' && write.scope !== 'create-child') {
+      return {
+        write,
+        level: 'may-revert' as const,
+        reason: `${verdict.reason} Radar matched ${ownerKindRef(owner)} by name only, so it can't confirm this.`,
+      }
+    }
+    return { write, ...verdict }
+  })
   const level = perWrite.reduce<GitOpsWriteLevel>((max, entry) => maxLevel(max, entry.level), 'none')
   const top = perWrite.find((entry) => entry.level === level)
   const summary = level === 'none' ? '' : [headline({ owner, helmRelease }, level), top?.reason ?? ''].filter(Boolean).join(' ')

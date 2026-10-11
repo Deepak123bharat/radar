@@ -455,10 +455,16 @@ func (s *Server) handleWorkloadLogsStream(w http.ResponseWriter, r *http.Request
 
 	// Channel for aggregated log lines
 	logCh := make(chan podlogs.Entry, 1000)
+	unavailableCh := make(chan string)
+	unavailable := podlogs.UnavailableSources{}
 
 	// Track active streams
 	var activeStreams sync.Map // podName/containerName -> cancel func
 	var streamWg sync.WaitGroup
+	// A container's follow ends when it exits and the next discovery pass
+	// reopens it, so each container resumes after the last line it sent.
+	cursors := map[string]*podlogs.StreamCursor{}
+	follows := 0
 
 	// Start streaming from each pod/container
 	startPodStreams := func(pods []*corev1.Pod) {
@@ -470,16 +476,24 @@ func (s *Server) handleWorkloadLogsStream(w http.ResponseWriter, r *http.Request
 					continue // Already streaming
 				}
 
+				follows++
+				follow := follows
+				opts := podlogs.CursorFor(cursors, key, pod.UID, follow).RestartOptions(c, tailLines, sinceSeconds)
 				streamCtx, streamCancel := context.WithCancel(ctx)
 				activeStreams.Store(key, streamCancel)
 
 				streamWg.Add(1)
-				go func(podName, containerName, key string, streamCtx context.Context) {
+				go func(podName, key string, streamCtx context.Context) {
 					defer streamWg.Done()
 					defer activeStreams.Delete(key)
 
-					streamPodLogs(streamCtx, client, namespace, podName, containerName, tailLines, sinceSeconds, logCh)
-				}(pod.Name, c, key, streamCtx)
+					if err := streamPodLogs(streamCtx, client, namespace, podName, opts, follow, logCh); err != nil {
+						select {
+						case unavailableCh <- key:
+						case <-streamCtx.Done():
+						}
+					}
+				}(pod.Name, key, streamCtx)
 			}
 		}
 	}
@@ -505,7 +519,21 @@ func (s *Server) handleWorkloadLogsStream(w http.ResponseWriter, r *http.Request
 			return
 
 		case entry := <-logCh:
+			key := entry.Pod + "/" + entry.Container
+			if unavailable.Remove(key) {
+				sendSSEEvent(w, flusher, "notice", map[string]string{"notice": unavailable.Notice()})
+			}
+			if cursor := cursors[key]; cursor != nil && !cursor.Admit(entry) {
+				continue
+			}
 			sendSSEEvent(w, flusher, "log", entry)
+
+		case key := <-unavailableCh:
+			// A stream canceled during pod removal can still deliver its report.
+			podName, _, _ := strings.Cut(key, "/")
+			if knownPods[podName] && unavailable.Add(key) {
+				sendSSEEvent(w, flusher, "notice", map[string]string{"notice": unavailable.Notice()})
+			}
 
 		case <-discoveryTicker.C:
 			// Re-discover pods
@@ -547,6 +575,14 @@ func (s *Server) handleWorkloadLogsStream(w http.ResponseWriter, r *http.Request
 						}
 						return true
 					})
+					for key := range cursors {
+						if strings.HasPrefix(key, podName+"/") {
+							delete(cursors, key)
+						}
+					}
+					if unavailable.RemovePod(podName) {
+						sendSSEEvent(w, flusher, "notice", map[string]string{"notice": unavailable.Notice()})
+					}
 					// Notify frontend
 					sendSSEEvent(w, flusher, "pod_removed", map[string]string{
 						"pod":    podName,
@@ -589,16 +625,16 @@ func shouldWaitForPodsInLogStream(kind string, metadata workloadLogMetadata) boo
 }
 
 // streamPodLogs streams logs from a single pod/container to the log channel
-func streamPodLogs(ctx context.Context, client kubernetes.Interface, namespace, podName, containerName string, tailLines int64, sinceSeconds *int64, logCh chan<- podlogs.Entry) {
-	stream, err := k8score.GetContainerLogs(ctx, client, namespace, podName, containerName, k8score.LogOptions{
-		TailLines:    &tailLines,
-		SinceSeconds: sinceSeconds,
-		Timestamps:   true,
-		Follow:       true,
-	})
+//
+// It returns k8score.ErrLogsUnavailable when the node answers with its notice
+// instead of logs. Every other ending, including a failed open the next
+// discovery pass retries, returns nil.
+func streamPodLogs(ctx context.Context, client kubernetes.Interface, namespace, podName string, opts corev1.PodLogOptions, follow int, logCh chan<- podlogs.Entry) error {
+	containerName := opts.Container
+	stream, err := client.CoreV1().Pods(namespace).GetLogs(podName, &opts).Stream(ctx)
 	if err != nil {
 		log.Printf("[workload-logs] Failed to stream logs for %s/%s: %v", podName, containerName, err)
-		return
+		return nil
 	}
 	defer stream.Close()
 
@@ -606,15 +642,20 @@ func streamPodLogs(ctx context.Context, client kubernetes.Interface, namespace, 
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		default:
 			line, err := reader.ReadString('\n')
+			// The notice is the whole body with no trailing newline, so it
+			// arrives together with EOF.
+			if k8score.IsLogsUnavailableNotice(line) {
+				return k8score.ErrLogsUnavailable
+			}
 			if err != nil {
 				if err == io.EOF || ctx.Err() != nil {
-					return
+					return nil
 				}
 				log.Printf("[workload-logs] Read error for %s/%s: %v", podName, containerName, err)
-				return
+				return nil
 			}
 
 			line = strings.TrimSuffix(line, "\n")
@@ -629,9 +670,10 @@ func streamPodLogs(ctx context.Context, client kubernetes.Interface, namespace, 
 				Container: containerName,
 				Timestamp: ts,
 				Content:   content,
+				Follow:    follow,
 			}:
 			case <-ctx.Done():
-				return
+				return nil
 			}
 		}
 	}

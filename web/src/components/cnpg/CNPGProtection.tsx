@@ -1,5 +1,6 @@
 import { useId, useMemo, useState } from 'react'
 import { X } from 'lucide-react'
+import { formatRelativeAgeTime } from '@skyhook-io/k8s-ui/utils/format'
 import {
   Badge,
   DialogPortal,
@@ -9,7 +10,6 @@ import {
   cnpgScheduleDestinationBlocker,
   refToSelectedResource,
   FactValue,
-  formatAge,
   formatDuration,
   getCNPGBackupStatus,
   getCNPGClusterBarmanPlugin,
@@ -48,7 +48,7 @@ function backupStart(b: any): string | undefined {
 }
 
 function ageText(ts?: string): string {
-  return ts ? `${formatAge(ts)} ago` : '—'
+  return formatRelativeAgeTime(ts, '—')
 }
 
 interface StoreRow {

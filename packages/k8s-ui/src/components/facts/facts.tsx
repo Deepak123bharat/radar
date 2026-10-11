@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { clsx } from 'clsx'
 import type { HealthLevel } from '../resources/resource-utils'
 import { formatAge } from '../resources/resource-utils'
+import { formatRelativeAgeTime } from '../../utils/format'
 import { toneTextClass } from '../ui/status-tone'
 import { Tooltip } from '../ui/Tooltip'
 
@@ -24,12 +25,13 @@ export interface Fact {
 }
 
 export function FactValue({ fact, className }: { fact: Fact; className?: string }) {
-  const age = fact.at ? formatAge(fact.at) : null
+  const age = fact.at && fact.atMeaning === 'since' ? formatAge(fact.at) : null
+  const when = fact.at && fact.atMeaning !== 'since' ? formatRelativeAgeTime(fact.at) : null
   const body = (
     <span className={clsx(toneTextClass(fact.tone), className)}>
       {fact.text}
-      {age && fact.atMeaning === 'since' && <span className="text-theme-text-secondary"> for {age}</span>}
-      {age && fact.atMeaning !== 'since' && <span className="text-theme-text-secondary">{fact.text ? ' · ' : ''}{age} ago</span>}
+      {age && <span className="text-theme-text-secondary"> for {age}</span>}
+      {when && <span className="text-theme-text-secondary">{fact.text ? ' · ' : ''}{when}</span>}
     </span>
   )
   if (!fact.source && !fact.at && !fact.detail) return body

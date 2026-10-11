@@ -16,7 +16,6 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -24,6 +23,7 @@ import (
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/podlogs"
+	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
 // ClusterLogsResponse is GET /api/cnpg/clusters/{namespace}/{name}/logs.
@@ -37,29 +37,6 @@ type ClusterLogsResponse struct {
 	SourceLabels map[string]string `json:"sourceLabels,omitempty"`
 	CapturedAt   string            `json:"capturedAt"`
 	EmptyMessage string            `json:"emptyMessage"`
-}
-
-// admit reports whether an entry is new, recording it when it is. Lines
-// arrive in order per container, so anything before the last delivered
-// timestamp was already sent.
-func (c *cnpgStreamCursor) admit(entry podlogs.Entry) bool {
-	ts, err := time.Parse(time.RFC3339Nano, entry.Timestamp)
-	if err != nil {
-		return true
-	}
-	switch {
-	case ts.Before(c.last):
-		return false
-	case ts.Equal(c.last):
-		if c.atLast[entry.Content] {
-			return false
-		}
-	default:
-		c.last = ts
-		c.atLast = map[string]bool{}
-	}
-	c.atLast[entry.Content] = true
-	return true
 }
 
 // annotateCNPGLogEntry fills the parsed fields of a CloudNativePG log line and
@@ -257,46 +234,43 @@ func cnpgSnapshotLogSources(pods []*corev1.Pod, selected string) []podlogs.Sourc
 	return sources
 }
 
-// cnpgStreamCursor remembers where one container's follow left off, so a
-// stream that ends while its Pod is still an instance resumes instead of
-// replaying lines the client already has. Only the stream loop touches it.
-type cnpgStreamCursor struct {
-	last time.Time
-	// atLast holds the contents delivered with timestamp == last. The pod log
-	// API's sinceTime is second-granular, so a resume replays that second and
-	// only (timestamp, content) tells a replay from a new line.
-	atLast map[string]bool
-}
-
 type cnpgStreamHandle struct {
 	cancel context.CancelFunc
 }
 
-func followCNPGContainerLogs(ctx context.Context, client kubernetes.Interface, namespace, podName string, opts corev1.PodLogOptions, logCh chan<- podlogs.Entry) bool {
+// followCNPGContainerLogs reports whether it read the stream to its end, and
+// returns k8score.ErrLogsUnavailable when the node answers with its notice
+// instead of logs.
+func followCNPGContainerLogs(ctx context.Context, client kubernetes.Interface, namespace, podName string, opts corev1.PodLogOptions, follow int, logCh chan<- podlogs.Entry) (bool, error) {
 	stream, err := client.CoreV1().Pods(namespace).GetLogs(podName, &opts).Stream(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("[cnpg] Failed to follow logs for %s/%s/%s: %v", namespace, podName, opts.Container, err)
 		}
-		return false
+		return false, nil
 	}
 	defer stream.Close()
 	reader := bufio.NewReader(stream)
 	for {
 		line, err := reader.ReadString('\n')
 		if line = strings.TrimSuffix(line, "\n"); line != "" && (err == nil || err == io.EOF) {
+			// The kubelet's notice for a container it no longer holds logs for
+			// arrives as the stream's only line. It is not output.
+			if k8score.IsLogsUnavailableNotice(line) {
+				return false, k8score.ErrLogsUnavailable
+			}
 			ts, content := podlogs.ParseLine(line)
 			select {
-			case logCh <- podlogs.Entry{Pod: podName, Container: opts.Container, Timestamp: ts, Content: content, Previous: opts.Previous}:
+			case logCh <- podlogs.Entry{Pod: podName, Container: opts.Container, Timestamp: ts, Content: content, Previous: opts.Previous, Follow: follow}:
 			case <-ctx.Done():
-				return false
+				return false, nil
 			}
 		}
 		if err != nil {
 			if err != io.EOF && ctx.Err() == nil {
 				log.Printf("[cnpg] Failed to read logs for %s/%s/%s: %v", namespace, podName, opts.Container, err)
 			}
-			return err == io.EOF
+			return err == io.EOF, nil
 		}
 	}
 }
@@ -355,20 +329,6 @@ func ParseLogQuery(q url.Values, now time.Time) (LogQuery, error) {
 		}
 	}
 	return out, nil
-}
-
-// restartOptions returns the follow request for the next (re)start: the
-// caller's window the first time, and from the last delivered second after.
-func (c *cnpgStreamCursor) restartOptions(container string, tailLines int64, sinceSeconds *int64) corev1.PodLogOptions {
-	opts := corev1.PodLogOptions{Container: container, Timestamps: true, Follow: true}
-	if c.last.IsZero() {
-		opts.TailLines = &tailLines
-		opts.SinceSeconds = sinceSeconds
-		return opts
-	}
-	since := metav1.NewTime(c.last.Truncate(time.Second))
-	opts.SinceTime = &since
-	return opts
 }
 
 // selectCNPGLogPods narrows to the requested instance. ok is false when the
@@ -512,10 +472,14 @@ func (target *LogTarget) Follow(parent context.Context, query LogQuery, send fun
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	logCh := make(chan podlogs.Entry, 1000)
+	unavailableCh := make(chan string)
+	unavailable := podlogs.UnavailableSources{}
+	sendUnavailable := func() { send("notice", map[string]string{"notice": unavailable.Notice()}) }
 	var active sync.Map
 	var completed sync.Map
 	roles := map[string]string{}
-	cursors := map[string]*cnpgStreamCursor{}
+	cursors := map[string]*podlogs.StreamCursor{}
+	follows := 0
 	start := func(pods []*corev1.Pod) {
 		for _, pod := range pods {
 			if role := instanceRole(pod); role != "" {
@@ -542,12 +506,9 @@ func (target *LogTarget) Follow(parent context.Context, query LogQuery, send fun
 				if _, exists := active.Load(key); exists {
 					continue
 				}
-				cursor := cursors[key]
-				if cursor == nil {
-					cursor = &cnpgStreamCursor{}
-					cursors[key] = cursor
-				}
-				opts := cursor.restartOptions(c, query.TailLines, query.SinceSeconds)
+				follows++
+				follow := follows
+				opts := podlogs.CursorFor(cursors, key, pod.UID, follow).RestartOptions(c, query.TailLines, query.SinceSeconds)
 				if previous {
 					opts.Previous = true
 					opts.Follow = false
@@ -557,7 +518,15 @@ func (target *LogTarget) Follow(parent context.Context, query LogQuery, send fun
 				active.Store(key, handle)
 				go func(podName, key string) {
 					defer active.CompareAndDelete(key, handle)
-					if followCNPGContainerLogs(streamCtx, client, namespace, podName, opts, logCh) && terminated {
+					done, err := followCNPGContainerLogs(streamCtx, client, namespace, podName, opts, follow, logCh)
+					if err != nil {
+						select {
+						case unavailableCh <- key:
+						case <-streamCtx.Done():
+						}
+						return
+					}
+					if done && terminated {
 						completed.Store(key, run)
 					}
 				}(pod.Name, key)
@@ -576,8 +545,17 @@ func (target *LogTarget) Follow(parent context.Context, query LogQuery, send fun
 		select {
 		case <-ctx.Done():
 			return
+		case key := <-unavailableCh:
+			// A stream canceled during pod removal can still deliver its report.
+			podName, _, _ := strings.Cut(key, "/")
+			if known[podName] && unavailable.Add(key) {
+				sendUnavailable()
+			}
 		case entry := <-logCh:
-			if cursor := cursors[entry.Pod+"/"+entry.Container]; cursor != nil && !cursor.admit(entry) {
+			if unavailable.Remove(entry.Pod + "/" + entry.Container) {
+				sendUnavailable()
+			}
+			if cursor := cursors[entry.Pod+"/"+entry.Container]; cursor != nil && !cursor.Admit(entry) {
 				continue
 			}
 			if !query.keep(entry) {
@@ -634,6 +612,9 @@ func (target *LogTarget) Follow(parent context.Context, query LogQuery, send fun
 					}
 					return true
 				})
+				if unavailable.RemovePod(podName) {
+					sendUnavailable()
+				}
 				send("pod_removed", map[string]string{"pod": podName, "reason": "terminated"})
 			}
 			start(currentPods)

@@ -11,6 +11,7 @@ import { DialogPortal } from "@skyhook-io/k8s-ui/components/ui/DialogPortal";
 import { GitOpsWriteWarning } from "@skyhook-io/k8s-ui";
 import {
   canConfirmGitOpsWrite,
+  gitOpsWriteGuardKey,
   type GitOpsWriteGuard,
 } from "@skyhook-io/k8s-ui/utils/gitops-write-guard";
 import { parseContextName } from "../../utils/context-name";
@@ -59,10 +60,14 @@ export function ApplyDialog({
   // TODO(SKY-1075): once Radar can connect the user's SCM (GitHub/GitLab/…), replace
   //   direct apply on managed resources with "open a PR against the Git source"
   //   instead — the durable fix. See Linear SKY-1075.
-  const [acked, setAcked] = useState(false);
+  // The guard key the acknowledgment was given for: a different verdict (the
+  // owner resolved, the policy changed) asks again.
+  const guardKey = gitOpsWriteGuardKey(gitOpsGuard);
+  const [ackedKey, setAckedKey] = useState("");
   useEffect(() => {
-    if (open) setAcked(false);
+    if (open) setAckedKey("");
   }, [open]);
+  const acked = Boolean(guardKey) && ackedKey === guardKey;
   const applyBlocked = !canConfirmGitOpsWrite(gitOpsGuard, acked);
   return (
     <DialogPortal
@@ -143,7 +148,7 @@ export function ApplyDialog({
           <GitOpsWriteWarning
             guard={gitOpsGuard}
             acknowledged={acked}
-            onAcknowledgedChange={setAcked}
+            onAcknowledgedChange={(value) => setAckedKey(value ? guardKey : "")}
             onOpenOwner={onOpenGitOpsOwner}
           />
         )}

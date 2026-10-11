@@ -20,6 +20,9 @@ export interface ResolvedGitOpsOwner {
   ownerObject: any
   ownerPending: boolean
   ownerVerified: boolean
+  /** The Argo CD tracking label named no namespace and Radar filled it in
+   *  from a single Application of that name. */
+  ownerMatchedByName: boolean
   ownerStatus: GitOpsStatus | null
   /** The label/annotation that ties the object to its owner. */
   ownerSource: string | null
@@ -30,6 +33,9 @@ export interface ResolvedGitOpsOwner {
   inheritedLookupRef: ResourceRef | null
   lookupPending: boolean
   lookupError: boolean
+  /** The parent was read but the server sent no relationships for it (its
+   *  topology isn't built yet), so an inherited owner is unknown, not absent. */
+  relationshipsUnavailable: boolean
 }
 
 // Resolves who manages a resource: its own GitOps/Helm tracking metadata or,
@@ -42,6 +48,7 @@ export function useResolvedGitOpsOwner({
   relationships,
   resource,
   enabled = true,
+  cacheScope,
 }: {
   kind: string
   group?: string
@@ -50,6 +57,8 @@ export function useResolvedGitOpsOwner({
   relationships: Relationships | undefined
   resource: any
   enabled?: boolean
+  /** Keeps these reads apart from the shared resource cache (see useResource). */
+  cacheScope?: string
 }): ResolvedGitOpsOwner {
   const active = enabled && Boolean(relationships)
   const relationshipGitopsOwner = useMemo(
@@ -68,6 +77,7 @@ export function useResolvedGitOpsOwner({
     inheritedLookupRef?.namespace ?? '',
     inheritedLookupRef?.name ?? '',
     inheritedLookupRef?.group,
+    { cacheScope },
   )
   const inheritedGitopsOwner = useMemo(
     () => (inheritedLookupRef ? gitOpsOwnerFromRelationships(inherited.data?.relationships) : null),
@@ -96,6 +106,7 @@ export function useResolvedGitOpsOwner({
   const shouldResolveArgoNamespace = rawOwner?.tool === 'argocd' && !rawOwner.namespace
   const argoQuery = useResources<any>('applications', undefined, 'argoproj.io', {
     enabled: shouldResolveArgoNamespace,
+    cacheScope,
   })
   const argoApplications = argoQuery.data
   const owner = useMemo(() => resolveGitOpsOwner(rawOwner, argoApplications), [rawOwner, argoApplications])
@@ -107,7 +118,7 @@ export function useResolvedGitOpsOwner({
     owner?.namespace ?? '',
     owner?.name ?? '',
     ownerGroup,
-    { enabled: shouldFetchOwner },
+    { enabled: shouldFetchOwner, cacheScope },
   )
   const ownerObject = shouldFetchOwner ? ownerQuery.data : undefined
 
@@ -124,6 +135,7 @@ export function useResolvedGitOpsOwner({
     ownerObject,
     ownerPending: Boolean(shouldFetchOwner && ownerQuery.isLoading && !ownerQuery.data),
     ownerVerified: Boolean(shouldFetchOwner && ownerQuery.data),
+    ownerMatchedByName: Boolean(shouldResolveArgoNamespace && owner?.namespace),
     ownerStatus,
     ownerSource,
     helmOwner,
@@ -131,6 +143,7 @@ export function useResolvedGitOpsOwner({
     inheritedLookupRef,
     lookupPending: Boolean((inheritedLookupRef && inherited.isPending) || (shouldResolveArgoNamespace && argoQuery.isPending)),
     lookupError: Boolean(inheritedLookupRef && inherited.isError),
+    relationshipsUnavailable: Boolean(inheritedLookupRef && inherited.data && !inherited.data.relationships),
   }
 }
 
