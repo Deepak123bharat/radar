@@ -146,9 +146,12 @@ a `summary` naming the policy, whatever status the policy chose (a
 ValidatingAdmissionPolicy defaults to 422 Invalid). Only `rbac_denied` is ever
 presented as a role problem; any other error shows the server's message.
 `manage_gitops` returns the same denied tuple, or the admission summary, as a tool error.
-No action gains permissions from the capability endpoint. Cloud installations
-can opt into the default-off, owner-only `cloud.defaultRbac.gitopsActions`
-chart grant; see the chart README for its controller-authority implications.
+No action gains permissions from the capability endpoint. In Radar Cloud, the
+chart's owner-only write add-on grants `get`/`patch` on Argo CD Applications
+(`cloud.defaultRbac.integrationWrite.gitops.owner`, default `auto`: on when the
+owner role is the stock `admin` or `cluster-admin`); stock Flux already lets
+`admin` and `edit` patch its objects. See the [chart README](../deploy/helm/radar/README.md#cloud-owner-integration-writes)
+for the controller authority that grant delegates.
 
 ### Keyboard shortcuts (per-app detail page)
 

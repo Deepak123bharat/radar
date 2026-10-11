@@ -384,14 +384,15 @@ export function GitOpsDetailLayout(props: GitOpsDetailLayoutProps) {
                   <Collapse open={permissionsOpen} id={permissionsDisclosure.panelId}>
                     <div className="mt-2 max-w-xl space-y-2 rounded border border-theme-border bg-theme-surface p-3">
                       {denialReasons.map(reason => <p key={reason}>{reason}</p>)}
-                      <p>An admin can grant access with {props.isCloudDeployment && <>the chart's <code>cloud.defaultRbac.gitopsActions</code> setting (owners only) or </>}a RoleBinding{deniedGrants.length > 0 ? ' allowing:' : '.'}</p>
+                      {/* The chart's write add-on covers Argo CD Applications only; stock Flux already grants admin/edit. */}
+                      <p>An admin can grant access with {props.isCloudDeployment && isArgoApp && <>the chart's <code>cloud.defaultRbac.integrationWrite.gitops.owner</code> setting (owners only) or </>}a RoleBinding{deniedGrants.length > 0 ? ' allowing:' : '.'}</p>
                       {deniedGrants.length > 0 && <ul className="list-disc space-y-1 pl-4">
                         {deniedGrants.slice(0, 4).map(grant => <li key={grant}>{grant.split(' ').map((word, index) => <span key={index}><span className="whitespace-nowrap">{word}</span>{' '}</span>)}</li>)}
                         {deniedGrants.length > 4 && <li>And {deniedGrants.length - 4} more denied permission{deniedGrants.length === 5 ? '' : 's'}.</li>}
                       </ul>}
                       <div className="flex flex-wrap gap-3">
                         <a className="text-accent-text hover:underline" href="https://github.com/skyhook-io/radar/blob/main/docs/gitops.md#action-permissions" target="_blank" rel="noopener noreferrer">Action permissions</a>
-                        {props.isCloudDeployment && <a className="text-accent-text hover:underline" href="https://github.com/skyhook-io/radar/blob/main/deploy/helm/radar/README.md#optional-cloud-owner-gitops-actions" target="_blank" rel="noopener noreferrer">Chart RBAC settings</a>}
+                        {props.isCloudDeployment && isArgoApp && <a className="text-accent-text hover:underline" href="https://github.com/skyhook-io/radar/blob/main/deploy/helm/radar/README.md#cloud-owner-integration-writes" target="_blank" rel="noopener noreferrer">Chart RBAC settings</a>}
                       </div>
                     </div>
                   </Collapse>

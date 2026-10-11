@@ -31,7 +31,7 @@ describe('GitOps permission gates on rendered controls', () => {
     const html = renderToString(<GitOpsDetailLayout {...base} actionDisabledReasons={{ sync: reason, refresh: reason, suspend: reason }} actionPermissions={{ sync: argoDenial, refresh: argoDenial, suspend: argoDenial, validate: { allowed: true } }} />)
     expect(html).toContain('Some actions restricted for your role')
     expect(html).toContain('Action permissions')
-    expect(html).not.toContain('cloud.defaultRbac.gitopsActions')
+    expect(html).not.toContain('cloud.defaultRbac.integrationWrite')
     expect(html).not.toContain('Chart RBAC settings')
     expect(html).toContain('a RoleBinding')
     expect(html).toContain('applications.argoproj.io')
@@ -42,9 +42,23 @@ describe('GitOps permission gates on rendered controls', () => {
   })
   it('shows the Cloud chart guidance only when the host identifies a Cloud deployment', () => {
     const html = renderToString(<GitOpsDetailLayout {...base} isCloudDeployment actionDisabledReasons={{ refresh: reason }} actionPermissions={{ refresh: argoDenial }} />)
-    expect(html).toContain('cloud.defaultRbac.gitopsActions')
+    expect(html).toContain('cloud.defaultRbac.integrationWrite.gitops.owner')
     expect(html).toContain('Chart RBAC settings')
+    expect(html).toContain('README.md#cloud-owner-integration-writes')
     expect(html).toContain('setting (owners only) or')
+    expect(html).toContain('a RoleBinding')
+  })
+  it('does not point Flux denials at the chart setting, which grants Argo CD Applications only', () => {
+    const kustomizationPatch = { verb: 'patch', resource: 'kustomizations', group: 'kustomize.toolkit.fluxcd.io', namespace: 'apps', kind: 'Kustomization', name: 'demo' }
+    const html = renderToString(<GitOpsDetailLayout {...base} isCloudDeployment
+      identity={{ ...base.identity, kind: 'kustomizations', group: 'kustomize.toolkit.fluxcd.io', namespace: 'apps' }}
+      isArgoApp={false} isFlux isFluxWorkload
+      actionDisabledReasons={{ reconcile: reason }}
+      actionPermissions={{ reconcile: { allowed: false, denied: [kustomizationPatch] } }}
+    />)
+    expect(html).toContain('Actions restricted for your role')
+    expect(html).not.toContain('cloud.defaultRbac.integrationWrite')
+    expect(html).not.toContain('Chart RBAC settings')
     expect(html).toContain('a RoleBinding')
   })
   it('names only the denied cross-namespace source grants for partially allowed Flux actions', () => {
