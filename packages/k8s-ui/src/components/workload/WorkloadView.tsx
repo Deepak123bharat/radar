@@ -831,6 +831,9 @@ export function WorkloadView({
   const renderOverviewLeadForState = resourceGone ? undefined : renderOverviewLead
   const renderOverviewExtraForState = resourceGone ? undefined : renderOverviewExtra
   const renderDiagnoseTabForState = resourceGone ? undefined : renderDiagnoseTab
+  // A host's summary, tabs and subheader can hold actions on the live object.
+  const renderSummaryForState = resourceGone ? undefined : renderSummary
+  const extraTabsForState = resourceGone ? undefined : extraTabs
   // A remount closes any dialog the bar had open: once its actions are gone,
   // a confirm button left on screen would do nothing.
   const actionsBarKey = resourceGone ? 'gone' : 'live'
@@ -887,8 +890,8 @@ export function WorkloadView({
   const logsFallbackReady = !renderLogsTab || (!logsTabVisible && !podEvidenceLoading)
   const requestedTab: TabType = activeTab
   const summaryContext = { kind, apiKind, namespace, name, group, resource, onNavigate: onNavigateToResource }
-  const expandedSummary = expanded && resource ? renderSummary?.({ ...summaryContext, context: 'expanded' }) ?? null : null
-  const drawerSummary = !expanded && resource ? renderSummary?.({ ...summaryContext, context: 'drawer' }) ?? null : null
+  const expandedSummary = expanded && resource ? renderSummaryForState?.({ ...summaryContext, context: 'expanded' }) ?? null : null
+  const drawerSummary = !expanded && resource ? renderSummaryForState?.({ ...summaryContext, context: 'drawer' }) ?? null : null
   const tabs: DetailShellTab<TabType>[] = [
     { id: 'overview', label: 'Overview', icon: <Layers className="w-4 h-4" /> },
     { id: 'spec', label: specTab?.label ?? 'Spec & status', icon: specTab?.icon ?? <FileText className="w-4 h-4" />, hidden: !expandedSummary },
@@ -910,10 +913,10 @@ export function WorkloadView({
     { id: 'cost', label: 'Cost', icon: <Coins className="w-4 h-4" />, hidden: !costTabVisible },
     { id: 'yaml', label: 'YAML', icon: <FileText className="w-4 h-4" /> },
   ]
-  const allTabs = orderTabs(mergeExtraTabs(tabs, expanded ? extraTabs : undefined), expanded ? tabOrder : undefined)
+  const allTabs = orderTabs(mergeExtraTabs(tabs, expanded ? extraTabsForState : undefined), expanded ? tabOrder : undefined)
   const requestedTabAvailable = allTabs.some((tab) => tab.id === requestedTab && !tab.hidden)
   const effectiveTab: TabType = requestedTabAvailable ? requestedTab : 'overview'
-  const activeExtraTab = expanded ? extraTabs?.find((x) => x.id === effectiveTab) : undefined
+  const activeExtraTab = expanded ? extraTabsForState?.find((x) => x.id === effectiveTab) : undefined
   const shouldCommitFallback =
     requestedTab !== 'overview' &&
     !requestedTabAvailable &&
@@ -1122,7 +1125,7 @@ export function WorkloadView({
     <DetailShell
       breadcrumb={breadcrumb}
       wrapHeader={inlineBadges}
-      subheader={subheader}
+      subheader={resourceGone ? undefined : subheader}
       nav={
         breadcrumb || hideBackButton ? undefined : (
           <Tooltip content="Go back (Esc)" delay={150} position="bottom">
