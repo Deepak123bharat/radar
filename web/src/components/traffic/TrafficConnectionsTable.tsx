@@ -37,7 +37,7 @@ function rowSelection(flow: AggregatedFlow): TrafficGraphSelection {
 }
 
 function selectedRows(rows: GraphFlow[], selection: TrafficGraphSelection | null): Set<GraphFlow> {
-  if (selection?.type !== 'edge') return new Set()
+  if (selection?.type !== 'edge' || selection.port === undefined) return new Set()
   const between = rows.filter(flow =>
     graphEndpointId(flow.source) === selection.sourceId && graphEndpointId(flow.destination) === selection.destId &&
     !!flow.directionUnknown === !!selection.directionUnknown)

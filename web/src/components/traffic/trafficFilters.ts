@@ -312,9 +312,21 @@ export function dedupeHTTPPairs(flows: TrafficFlow[], callerOriented: boolean): 
 export type GraphFlow = AggregatedFlow & { rawPairs?: TrafficEndpointPair[] }
 
 /**
+ * The port an edge merged from several shows: its lowest real one, whatever
+ * order the parts arrived in (0 means none was reported, so it shows only
+ * when no part has a port). The Internet node groups by it and selections
+ * find the edge by it, so it must not change from one refresh to the next.
+ */
+export function mergedEdgePort(a: number, b: number): number {
+  if (a === 0) return b
+  if (b === 0) return a
+  return Math.min(a, b)
+}
+
+/**
  * Whether an edge carries a port: its own, or one of the edges merged into it.
- * A merged edge shows the port of whichever of its edges arrived first, which
- * changes between fetches, so a selection made on one port must still find it.
+ * A merged edge shows one of its ports, so a selection made on another must
+ * still find it.
  */
 export function edgeCarriesPort(flow: GraphFlow, port: number | undefined): boolean {
   return port === undefined || flow.port === port || !!flow.rawPairs?.some(p => p.port === port)
@@ -437,7 +449,7 @@ export function selectionRawPairs(
         !!flow.directionUnknown === !!selection.directionUnknown
   })
   // An edge stands for its port; an edge merged from several ports shows one
-  // of them, which can change between refreshes (edgesOnPort).
+  // of them and carries the rest (edgesOnPort).
   const selected = selection.type === 'node' ? touching : edgesOnPort(touching, f => f, selection.port)
   for (const flow of selected) {
     for (const pair of flow.rawPairs ?? []) {

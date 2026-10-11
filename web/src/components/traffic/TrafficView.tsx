@@ -17,7 +17,7 @@ import { AlertBanner, EmptyState, PaneLoader, FreshnessControl } from '@skyhook-
 import { useConnection } from '../../context/ConnectionContext'
 import { Tooltip } from '../ui/Tooltip'
 import { SEVERITY_TEXT } from '@skyhook-io/k8s-ui/utils/badge-colors'
-import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource, keepAvailable, effectiveThreshold, volumeUnit, type VolumeUnit, isExternalKind, mergeFlowVolume, coverageLabel, type GraphFlow, endpointPair, graphEndpoint, graphEndpointId, mergeRawPairs, selectedEdgeMatcher, selectionRawPairs, selectionMatch, graphSize, GRAPH_DRAW_BUDGET, GRAPH_DRAW_CEILING, parseFocus, focusParam, focusId, focusNeighborhood, touchesFocus, endpointSummaries, namespaceSummaries, type TrafficFocus } from './trafficFilters'
+import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource, keepAvailable, effectiveThreshold, volumeUnit, type VolumeUnit, isExternalKind, mergeFlowVolume, coverageLabel, type GraphFlow, endpointPair, graphEndpoint, graphEndpointId, mergeRawPairs, mergedEdgePort, selectedEdgeMatcher, selectionRawPairs, selectionMatch, graphSize, GRAPH_DRAW_BUDGET, GRAPH_DRAW_CEILING, parseFocus, focusParam, focusId, focusNeighborhood, touchesFocus, endpointSummaries, namespaceSummaries, type TrafficFocus } from './trafficFilters'
 
 // Consecutive 2s retries of an empty result that came with a transient warning.
 const MAX_EMPTY_RETRIES = 5
@@ -858,10 +858,7 @@ export function TrafficView({ namespaces, onSetNamespaces }: TrafficViewProps) {
       if (existing) {
         mergeFlowVolume(existing, flow)
         mergeRawPairs(existing, flow)
-        // The edge shows its lowest port, whatever order the server sent its
-        // parts in: the Internet node groups by it, and selections find the
-        // edge by it, so it must not change from one refresh to the next.
-        if (flow.port < existing.port) existing.port = flow.port
+        existing.port = mergedEdgePort(existing.port, flow.port)
         // Everything merged here shares the key's direction-known state, so the
         // flag is already correct on the entry that was created first.
       } else {
@@ -1185,7 +1182,7 @@ export function TrafficView({ namespaces, onSetNamespaces }: TrafficViewProps) {
       if (data.matched > data.flows.length) {
         parts.push(`Newest ${data.flows.length.toLocaleString()} of ${data.matched.toLocaleString()} records for this selection`)
       }
-      if (recordsHiddenByFilters > 0) parts.push(`${recordsHiddenByFilters.toLocaleString()} of the ${data.flows.length.toLocaleString()} fetched are hidden by the view's filters`)
+      if (recordsHiddenByFilters > 0) parts.push(`${recordsHiddenByFilters.toLocaleString()} record${recordsHiddenByFilters === 1 ? '' : 's'} hidden by the view's filters`)
       const covered = coverageLabel(data.coveredSince, data.timestamp)
       if (covered) parts.push(`Records cover the ${covered} of ${timeRange}`)
       return parts.length > 0 ? parts.join(' · ') : undefined

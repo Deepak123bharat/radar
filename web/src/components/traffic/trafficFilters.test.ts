@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { AggregatedFlow, TrafficFlow } from '../../types'
-import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource, keepAvailable, effectiveThreshold, volumeUnit, isExternalKind, isPolicyDropReason, requestRateOf, errorRateOf, formatRate, displayVolume, mergeFlowVolume, dedupeHTTPPairs, coverageLabel, latencyWeightOf, endpointPair, selectionRawPairs, mergeRawPairs, graphEndpoint, graphSize, parseFocus, focusParam, focusId, touchesFocus, focusNeighborhood, endpointSummaries, searchEndpoints, namespaceSummaries, namespaceOverBudget, hasStatusData, connectionRows, selectionMatch, edgeCarriesPort, edgesOnPort, selectedEdgeMatcher, type GraphFlow } from './trafficFilters'
+import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource, keepAvailable, effectiveThreshold, volumeUnit, isExternalKind, isPolicyDropReason, requestRateOf, errorRateOf, formatRate, displayVolume, mergeFlowVolume, dedupeHTTPPairs, coverageLabel, latencyWeightOf, endpointPair, selectionRawPairs, mergeRawPairs, graphEndpoint, graphSize, parseFocus, focusParam, focusId, touchesFocus, focusNeighborhood, endpointSummaries, searchEndpoints, namespaceSummaries, namespaceOverBudget, hasStatusData, connectionRows, selectionMatch, edgeCarriesPort, edgesOnPort, mergedEdgePort, selectedEdgeMatcher, type GraphFlow } from './trafficFilters'
 
 describe('matchesStatusRanges', () => {
   it('does not filter when nothing is selected', () => {
@@ -584,8 +584,8 @@ describe('selectionMatch', () => {
 })
 
 describe('edgeCarriesPort', () => {
-  // A merged edge shows the port of whichever server edge came first, which
-  // changes between fetches; a selection made on one port must still find it.
+  // A merged edge shows one of its ports; a selection made on another must
+  // still find it.
   it('finds a port merged into the edge, not just the one it shows', () => {
     const merged: GraphFlow = { ...edge('a/web', 'a/db'), port: 5432, rawPairs: [endpointPair({ ...edge('a/web', 'a/db'), port: 5432 }), endpointPair({ ...edge('a/web', 'a/db'), port: 6379 })] }
     expect(edgeCarriesPort(merged, 6379)).toBe(true)
@@ -661,5 +661,20 @@ describe('edgesOnPort', () => {
   it('keeps a selection on the :443 edge to that edge\'s records', () => {
     const sel = { type: 'edge' as const, sourceId: 'internet', destId: 'web/ingress', port: 443 }
     expect(selectionRawPairs([merged, tls], sel)).toEqual(tls.rawPairs)
+  })
+})
+
+describe('mergedEdgePort', () => {
+  it('shows the lowest port whatever order the parts arrive in', () => {
+    expect(mergedEdgePort(443, 80)).toBe(80)
+    expect(mergedEdgePort(80, 443)).toBe(80)
+  })
+
+  // Port 0 is "none reported" (ICMP, or a record without one): a few such
+  // records must not hide the real port.
+  it('ignores port 0 unless no part has a port', () => {
+    expect(mergedEdgePort(0, 5432)).toBe(5432)
+    expect(mergedEdgePort(5432, 0)).toBe(5432)
+    expect(mergedEdgePort(0, 0)).toBe(0)
   })
 })

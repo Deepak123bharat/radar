@@ -208,6 +208,10 @@ export function useTrafficRecords(options: UseTrafficRecordsOptions) {
     queryFn: () => guard(() => fetchApiJSON<TrafficRecordsResponse>(`/traffic/flows/records?${params.toString()}`)),
     staleTime: 5000,
     enabled: enabled && match !== null && !tooLarge && support !== 'unsupported',
+    // Kept while the same selection refetches with another scope (a namespace
+    // hidden), not when the selection changes: another selection's records
+    // would show under this one.
+    placeholderData: (prev, prevQuery) => (match !== null && prevQuery?.queryKey.includes(match) ? prev : undefined),
     retry: shouldRetryRadarQuery,
   })
   return { ...query, tooLarge, supported: support !== 'unsupported' }

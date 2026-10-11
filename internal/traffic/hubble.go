@@ -1291,6 +1291,11 @@ func (h *HubbleSource) connectedNodes(ctx context.Context, client observerpb.Obs
 	} else if c := h.clusterNodeCount(ctx); c > 0 {
 		n = c
 	}
+	if ctx.Err() != nil {
+		// The request ended: its failed lookups say nothing about the cluster,
+		// and a count stored now would be every user's for the next minute.
+		return n
+	}
 	h.mu.Lock()
 	h.nodeCount, h.nodeCountAt = n, time.Now()
 	h.mu.Unlock()

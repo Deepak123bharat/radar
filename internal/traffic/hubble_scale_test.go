@@ -248,6 +248,16 @@ func TestHubbleGetFlows_KeepsTheBudgetSplitWhenStatusFails(t *testing.T) {
 	})
 }
 
+func TestConnectedNodesStoresNothingForACancelledRequest(t *testing.T) {
+	h := connectedHubble(t, &failingStatusObserver{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.connectedNodes(ctx, h.observerClient)
+	if !h.nodeCountAt.IsZero() {
+		t.Errorf("stored a count of %d: a cancelled request's lookups would set every user's split for the next minute", h.nodeCount)
+	}
+}
+
 func TestHubbleGetFlows_KeepsTheNewestFlowsWithinTheBudget(t *testing.T) {
 	old := hubbleFlowBudget
 	hubbleFlowBudget = 3
