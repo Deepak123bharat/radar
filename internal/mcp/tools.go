@@ -867,10 +867,15 @@ func handleListResources(ctx context.Context, req *mcp.CallToolRequest, input li
 			return nil, nil, err
 		}
 	}
-	cache, allowed, err := resourceReadCache(ctx, kind, group, allowed)
+	cache, readScope, err := resourceReadCache(ctx, kind, group, allowed)
 	if err != nil {
 		return nil, nil, err
 	}
+	var coverage *listCoverage
+	if !clusterScoped && allowed == nil && readScope != nil {
+		coverage = collectorLimitedCoverage(kind, readreason.CollectorScopeLimited, readScope)
+	}
+	allowed = readScope
 
 	// For cluster-scoped reads, force a cluster-wide list (don't iterate
 	// per allowed namespace — cluster-scoped resources don't live there).
@@ -934,7 +939,7 @@ func handleListResources(ctx context.Context, req *mcp.CallToolRequest, input li
 		}
 	}
 
-	return toJSONResult(results)
+	return listResult(results, coverage)
 }
 
 func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, group string, namespaces []string, clusterScoped bool, contextMode string) (*mcp.CallToolResult, any, error) {
@@ -952,6 +957,11 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 
 	var rawItems []*unstructured.Unstructured
 	listed := false
+	// limitedBy is why an unrestricted read had to settle for the namespaces
+	// below instead of the cluster: Radar's identity was refused the
+	// cluster-wide list for this request (a direct kind), or the kind's
+	// informers cover only some namespaces.
+	var limitedBy readreason.Code
 	if directGVR, ok := dynamicReadGVR(kind, group); unrestrictedAll && ok && k8s.ShouldBypassDynamicInformer(directGVR) {
 		// A direct kind has no informer to establish its coverage. When the
 		// collector is refused cluster-wide, read the namespaces custom
@@ -962,6 +972,7 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 			rawItems, listed = items, true
 		case apierrors.IsForbidden(err) && dynamicCache != nil && len(dynamicCache.FallbackNamespaces()) > 0:
 			namespaces = dynamicCache.FallbackNamespaces()
+			limitedBy = readreason.CollectorAccessDenied
 		default:
 			return nil, nil, err
 		}
@@ -972,9 +983,11 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 		}
 		if observation := dynamicCache.Observation(gvr); observation.Scope == k8score.DynamicObservationScopeExplicitNamespaces {
 			namespaces = observation.Namespaces
+			limitedBy = readreason.CollectorScopeLimited
 		}
 	}
 
+	var coverage *listCoverage
 	switch {
 	case listed:
 	case len(namespaces) > 0:
@@ -1005,10 +1018,14 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 				}
 			}
 		}
-		if err := namespaceCoverageError(ctx, dynamicCollectorTarget(kind, group, "list"), unrestrictedAll, len(read), uncovered, covered, refusal); err != nil {
+		target := dynamicCollectorTarget(kind, group, "list")
+		if err := namespaceCoverageError(ctx, target, unrestrictedAll, len(read), uncovered, covered, refusal); err != nil {
 			return nil, nil, err
 		}
 		namespaces = read
+		if limitedBy != "" {
+			coverage = collectorLimitedCoverage(target.resource, limitedBy, read)
+		}
 	default:
 		items, err := readDynamicScope(ctx, kind, group, "", "list", listAt(""))
 		if err != nil {
@@ -1036,7 +1053,7 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 		}
 	}
 
-	return toJSONResult(allItems)
+	return listResult(allItems, coverage)
 }
 
 func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getResourceInput) (*mcp.CallToolResult, any, error) {

@@ -2,8 +2,10 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"strings"
 	"time"
@@ -55,6 +57,58 @@ func readErrorResult(err error) (*mcp.CallToolResult, bool) {
 	return result, true
 }
 
+// listCoverage says a list_resources read did not cover the cluster: Radar's
+// collector could read the kind only in Namespaces, so the rows cannot
+// establish that an object is absent anywhere else. A complete read carries
+// none and stays a bare array.
+type listCoverage struct {
+	Complete   bool            `json:"complete"`
+	Reason     readreason.Code `json:"reason"`
+	Namespaces []string        `json:"namespaces"`
+	Note       string          `json:"note"`
+}
+
+// partialList is a partial read's result. Agent backends join a result's text
+// blocks without separators and Findings parses the joined text, so the rows
+// and their coverage travel as one JSON text; structuredContent is the same
+// object, so a client that reads either one gets both.
+type partialList struct {
+	Items    []any        `json:"items"`
+	Coverage listCoverage `json:"coverage"`
+}
+
+func collectorLimitedCoverage(resource string, reason readreason.Code, read []string) *listCoverage {
+	read = slices.Clone(read)
+	slices.Sort(read)
+	where := fmt.Sprintf("namespace %q", read[0])
+	if len(read) > 1 {
+		where = fmt.Sprintf("namespaces %q", strings.Join(read, ","))
+	}
+	return &listCoverage{
+		Reason:     reason,
+		Namespaces: read,
+		Note:       fmt.Sprintf("Radar read %s only in %s; objects in other namespaces were not read, so this result cannot show they don't exist.", resource, where),
+	}
+}
+
+// listResult renders list_resources rows: a bare array for a complete read,
+// a partialList for a partial one.
+func listResult(items []any, coverage *listCoverage) (*mcp.CallToolResult, any, error) {
+	if coverage == nil {
+		return toJSONResult(items)
+	}
+	list := partialList{Items: items, Coverage: *coverage}
+	body, err := json.Marshal(list)
+	if err != nil {
+		log.Printf("[mcp] Failed to marshal result: %v", err)
+		return nil, nil, fmt.Errorf("failed to marshal result: %w", err)
+	}
+	return &mcp.CallToolResult{
+		Content:           []mcp.Content{&mcp.TextContent{Text: string(body)}},
+		StructuredContent: list,
+	}, nil, nil
+}
+
 func resourcePermissionError(checked bool, verb, group, resource, namespace string) error {
 	scope := "at cluster scope"
 	if strings.Contains(namespace, ",") {
@@ -104,9 +158,9 @@ func namespaceForError(namespaces []string) string {
 
 // resourceReadCache returns the cache to read kind from and the namespaces to
 // read under namespaceCoverageError's rule: nil (an unrestricted caller) reads
-// the typed collector's covered namespaces, and a finite list must be covered
-// in full. Dynamic kinds learn their coverage by reading, so their namespaces
-// pass through.
+// the typed collector's covered namespaces, so a non-nil answer to nil means
+// the read is partial, and a finite list must be covered in full. Dynamic kinds
+// learn their coverage by reading, so their namespaces pass through.
 func resourceReadCache(ctx context.Context, kind, group string, namespaces []string) (*k8s.ResourceCache, []string, error) {
 	gvr, builtin := k8s.BuiltinGVRAnyGroup(kind)
 	typed := builtin && (group == "" || group == gvr.Group) && k8s.TypedKindOwnsGroup(kind, gvr.Group)
@@ -174,10 +228,11 @@ func resourceReadCache(ctx context.Context, kind, group string, namespaces []str
 // --namespace-scope pin) needs every requested namespace covered: a partial
 // answer would read as the whole of its scope. An unrestricted caller's
 // unscoped read asks for whatever the collector covers (unrestrictedAll), so a
-// namespace missing from that is omitted, and only a read that covered nothing
-// fails. refusal is the API server's denial of the first uncovered namespace
-// when Radar read them for this request; nil means they lie outside the
-// coverage the collector established.
+// namespace missing from that is omitted, the result names the namespaces read
+// (listCoverage), and only a read that covered nothing fails. refusal is the
+// API server's denial of the first uncovered namespace when Radar read them
+// for this request; nil means they lie outside the coverage the collector
+// established.
 func namespaceCoverageError(ctx context.Context, target collectorTarget, unrestrictedAll bool, read int, uncovered, covered []string, refusal error) error {
 	if len(uncovered) == 0 || (unrestrictedAll && read > 0) {
 		return nil

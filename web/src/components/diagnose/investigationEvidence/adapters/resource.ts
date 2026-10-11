@@ -4,7 +4,7 @@ import {
   englishPlural,
   kindToPlural,
 } from "@skyhook-io/k8s-ui";
-import { apiVersionToGroup } from "../../../../utils/navigation";
+import { apiVersionToGroup, pluralToKind } from "../../../../utils/navigation";
 import {
   ProjectionBuilder,
   addChanges,
@@ -226,26 +226,53 @@ export function adaptListNamespaces(
   );
 }
 
+// A list Radar's collector could read only in some namespaces arrives as
+// `{items, coverage}`, naming the namespaces it read; a complete list is the
+// bare array.
+function listedRows(
+  payload: unknown,
+): { rows: unknown[]; namespacesRead?: string[] } | undefined {
+  if (Array.isArray(payload)) return { rows: payload };
+  const value = record(payload);
+  const coverage = record(value?.coverage);
+  const namespacesRead = stringArray(coverage?.namespaces);
+  if (
+    !value ||
+    !Array.isArray(value.items) ||
+    coverage?.complete !== false ||
+    !namespacesRead?.length
+  ) {
+    return undefined;
+  }
+  return { rows: value.items, namespacesRead };
+}
+
 export function adaptListResources(
   builder: ProjectionBuilder,
   source: InvestigationEvidenceSource,
   payload: unknown,
   options: { title?: string } = {},
 ): void {
-  if (!Array.isArray(payload)) {
+  const listed = listedRows(payload);
+  if (!listed) {
     invalidPayload(builder, source);
     return;
   }
-  const resources = payload
+  const { rows, namespacesRead } = listed;
+  const resources = rows
     .map(resourceSummary)
     .filter((item): item is InvestigationResourceSummary => Boolean(item));
-  if (resources.length !== payload.length) {
+  if (resources.length !== rows.length) {
     invalidPayload(builder, source);
     return;
   }
   const scope = scopeFromArgs(source);
   const args = record(parseJSON(source.args ?? ""));
-  const kinds = [...new Set(resources.map((resource) => resource.kind))];
+  // An empty list has no rows to name its kind; the request does.
+  const kinds =
+    resources.length === 0 && nonEmptyString(args?.kind)
+      ? [pluralToKind(args.kind)]
+      : [...new Set(resources.map((resource) => resource.kind))];
   const noun =
     kinds.length === 1
       ? kindToPlural(kinds[0]) === kinds[0].toLowerCase()
@@ -256,13 +283,18 @@ export function adaptListResources(
     ? args.namespace
     : undefined;
   const title = options.title ?? (namespace ? `${noun} in ${namespace}` : noun);
+  const readIn = namespacesRead
+    ? `${namespacesRead.length === 1 ? "namespace" : "namespaces"} ${namespacesRead.join(", ")}`
+    : undefined;
   if (resources.length === 0) {
     // list_resources intentionally returns [] for some RBAC-filtered reads;
     // even a successful transport outcome therefore cannot prove absence.
     builder.limit(
       source,
       "Resource inventory",
-      `Radar found no matching resources for ${scope}. Anything you do not have permission to read was not searched.`,
+      readIn
+        ? `Radar found no ${noun} in ${readIn}; other namespaces were not read, so this result cannot show that none exist elsewhere.`
+        : `Radar found no matching resources for ${scope}. Anything you do not have permission to read was not searched.`,
       "unknown",
     );
     return;
@@ -288,8 +320,24 @@ export function adaptListResources(
       relevance: "broader",
       tone: hasAdverseResource ? "warning" : "neutral",
       title,
-      summary: `${resources.length} returned${nonEmptyString(args?.group) ? ` · ${args.group}` : ""}`,
+      summary: [
+        `${resources.length} returned`,
+        nonEmptyString(args?.group) ? args.group : undefined,
+        namespacesRead
+          ? `only ${namespacesRead.length > 2 ? `${namespacesRead.length} namespaces` : namespacesRead.join(", ")} read`
+          : undefined,
+      ]
+        .filter(Boolean)
+        .join(" · "),
       data: { type: "inventory", resources, scope },
     },
   );
+  if (readIn) {
+    builder.limit(
+      source,
+      "Resource inventory",
+      `Radar read ${noun} only in ${readIn}; other namespaces were not read, so this list cannot show that none exist elsewhere.`,
+      "unknown",
+    );
+  }
 }

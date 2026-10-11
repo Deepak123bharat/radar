@@ -3,9 +3,12 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -292,10 +295,12 @@ func TestResourceReadsReportFailedAndDisabledTypedKinds(t *testing.T) {
 		}
 	}
 	result, _, err := handleListResources(context.Background(), nil, listResourcesInput{Kind: "services", Context: "none"})
-	if err != nil || extractText(t, result) != "[]" {
-		t.Fatalf("unscoped collector-covered list: %v, %v", result, err)
+	if err != nil {
+		t.Fatal(err)
 	}
-
+	if rows, coverage := partialListBody(t, result); len(rows) != 0 || !slices.Equal(coverage.Namespaces, []string{"alpha"}) {
+		t.Fatalf("unscoped collector-covered list must report its coverage: %s", extractText(t, result))
+	}
 }
 
 func TestResourceReadsDynamicPendingAndCollectorDenial(t *testing.T) {
@@ -534,6 +539,86 @@ func collectorRefusal(gr schema.GroupResource, verb, namespace string) error {
 	return apierrors.NewForbidden(gr, "", fmt.Errorf("User %q cannot %s resource %q in API group %q %s", collectorIdentity, verb, gr.Resource, gr.Group, scope))
 }
 
+// wireCoverage is a partial list's coverage as a client decodes it.
+type wireCoverage struct {
+	Reason     string
+	Namespaces []string
+	Note       string
+}
+
+// partialListBody decodes a partial list_resources result, failing unless it
+// is the documented shape: one text block holding exactly {"items",
+// "coverage"}, coverage holding exactly {"complete": false, "reason",
+// "namespaces", "note"}, and structuredContent the same object.
+func partialListBody(t *testing.T, result *mcpsdk.CallToolResult) ([]map[string]any, wireCoverage) {
+	t.Helper()
+	if result == nil || result.IsError || len(result.Content) != 1 {
+		t.Fatalf("a partial list is one successful text block, got %+v", result)
+	}
+	text := extractText(t, result)
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(text), &top); err != nil || len(top) != 2 || top["items"] == nil || top["coverage"] == nil {
+		t.Fatalf("a partial list must be {\"items\", \"coverage\"}, got %s", text)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(top["items"], &rows); err != nil || rows == nil {
+		t.Fatalf("items must be an array, got %s", top["items"])
+	}
+	var coverage map[string]json.RawMessage
+	if err := json.Unmarshal(top["coverage"], &coverage); err != nil || len(coverage) != 4 || string(coverage["complete"]) != "false" {
+		t.Fatalf("coverage must be {\"complete\": false, \"reason\", \"namespaces\", \"note\"}, got %s", top["coverage"])
+	}
+	var out wireCoverage
+	for key, into := range map[string]any{"reason": &out.Reason, "namespaces": &out.Namespaces, "note": &out.Note} {
+		if err := json.Unmarshal(coverage[key], into); err != nil {
+			t.Fatalf("coverage.%s: %v in %s", key, err, top["coverage"])
+		}
+	}
+	if len(out.Namespaces) == 0 || !slices.IsSorted(out.Namespaces) {
+		t.Fatalf("coverage must name the namespaces read, sorted: %v", out.Namespaces)
+	}
+	for _, ns := range out.Namespaces {
+		if !strings.Contains(out.Note, ns) {
+			t.Fatalf("note must name namespace %s: %q", ns, out.Note)
+		}
+	}
+	if !strings.Contains(out.Note, "cannot show they don't exist") {
+		t.Fatalf("note must say the result cannot establish absence elsewhere: %q", out.Note)
+	}
+	structured, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fromText, fromStructured any
+	_ = json.Unmarshal([]byte(text), &fromText)
+	if err := json.Unmarshal(structured, &fromStructured); err != nil || !reflect.DeepEqual(fromText, fromStructured) {
+		t.Fatalf("structuredContent must be the text's object, got %s", structured)
+	}
+	return rows, out
+}
+
+// bareListBody decodes a complete list_resources result: a bare array with no
+// structuredContent.
+func bareListBody(t *testing.T, result *mcpsdk.CallToolResult) []map[string]any {
+	t.Helper()
+	text := extractText(t, result)
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(text), &rows); err != nil || rows == nil || result.StructuredContent != nil {
+		t.Fatalf("a complete list must be a bare array without structuredContent, got %s (structured %v)", text, result.StructuredContent)
+	}
+	return rows
+}
+
+func rowNames(rows []map[string]any) []string {
+	names := make([]string, 0, len(rows))
+	for _, row := range rows {
+		name, _ := row["name"].(string)
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
 func assertNoCollectorLeak(t *testing.T, err error, hidden ...string) {
 	t.Helper()
 	if err == nil {
@@ -610,6 +695,17 @@ func coverageReason(class coverageClass) string {
 	return "collector_access_denied:"
 }
 
+// partialCoverageReason is why an unrestricted read covered only some
+// namespaces. Typed kinds and custom resources read the coverage their
+// informers established; a direct kind was refused the cluster-wide list for
+// this very request and fell back to the candidate namespaces.
+func partialCoverageReason(class coverageClass) string {
+	if class == coverageDirect {
+		return "collector_access_denied"
+	}
+	return "collector_scope_limited"
+}
+
 func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 	const anyHidden = "the collector's coverage does not include any namespace you can read"
 	cases := []struct {
@@ -629,9 +725,12 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 		// about where else Radar can read a custom resource or direct kind.
 		typedOnly bool
 		hidden    []string
+		// partial marks an unrestricted read the collector could serve only
+		// in alpha and gamma: its rows come with that coverage.
+		partial bool
 	}{
-		{name: "auth disabled reads the covered namespaces", rows: []string{"alpha-object"}},
-		{name: "cluster-wide caller reads the covered namespaces", caller: "admin", rows: []string{"alpha-object"}},
+		{name: "auth disabled reads the covered namespaces", rows: []string{"alpha-object"}, partial: true},
+		{name: "cluster-wide caller reads the covered namespaces", caller: "admin", rows: []string{"alpha-object"}, partial: true},
 		{name: "restricted caller fully covered", caller: "restricted", allowed: []string{"alpha", "gamma"}, rows: []string{"alpha-object"}},
 		{name: "restricted caller covered and empty", caller: "restricted", allowed: []string{"gamma"}, rows: []string{}},
 		{name: "explicit covered and empty", namespace: "gamma", rows: []string{}},
@@ -676,17 +775,18 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				body := extractText(t, result)
-				if len(tc.rows) == 0 && body != "[]" {
-					t.Fatalf("covered empty scope must be a plain empty list: %s", body)
-				}
-				for _, name := range tc.rows {
-					if !containsName(body, name) {
-						t.Fatalf("missing %s: %s", name, body)
+				var rows []map[string]any
+				if tc.partial {
+					var coverage wireCoverage
+					rows, coverage = partialListBody(t, result)
+					if want := partialCoverageReason(class); coverage.Reason != want || !slices.Equal(coverage.Namespaces, []string{"alpha", "gamma"}) {
+						t.Fatalf("coverage = %+v, want %s over alpha and gamma", coverage, want)
 					}
+				} else {
+					rows = bareListBody(t, result)
 				}
-				if containsName(body, "beta-object") {
-					t.Fatalf("uncovered namespace leaked: %s", body)
+				if got := rowNames(rows); !slices.Equal(got, tc.rows) {
+					t.Fatalf("rows = %v, want %v", got, tc.rows)
 				}
 			})
 		}
@@ -729,6 +829,163 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 			t.Fatalf("unscoped denial must not name the pinned namespace: %v", err)
 		}
 	})
+}
+
+// setupListCoverageFixture seeds one object, named "<namespace>-object", in
+// each of objects for a kind of class, and a collector that reads the whole
+// cluster or, when limited, only alpha and gamma.
+func setupListCoverageFixture(t *testing.T, class coverageClass, limited bool, objects ...string) string {
+	t.Helper()
+	if class == coverageTyped {
+		var objs []runtime.Object
+		for _, ns := range objects {
+			objs = append(objs, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: ns + "-object", Namespace: ns}})
+		}
+		client := fake.NewClientset(objs...)
+		err := k8s.InitTestResourceCache(client)
+		if limited {
+			err = k8s.InitScopedTestResourceCacheNamespaces(client, map[string]k8score.ResourceScope{"services": {Enabled: true, Namespace: "alpha"}}, map[string][]string{"services": {"alpha", "gamma"}})
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(k8s.ResetTestState)
+		return "services"
+	}
+	if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(k8s.ResetTestState)
+	t.Cleanup(k8s.SetTestPermissionResult(&k8s.PermissionCheckResult{Perms: &k8s.ResourcePermissions{}, ScopeCandidates: []string{"alpha", "gamma"}}))
+	gvr := schema.GroupVersionResource{Group: "example.test", Version: "v1", Resource: "widgets"}
+	listKind := "Widget"
+	if class == coverageDirect {
+		gvr = schema.GroupVersionResource{Group: "coordination.k8s.io", Version: "v1", Resource: "leases"}
+		listKind = "Lease"
+	}
+	var objs []runtime.Object
+	for _, ns := range objects {
+		objs = append(objs, &unstructured.Unstructured{Object: map[string]any{"apiVersion": gvr.GroupVersion().String(), "kind": listKind, "metadata": map[string]any{"name": ns + "-object", "namespace": ns}}})
+	}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: listKind + "List"}, objs...)
+	if limited {
+		dyn.PrependReactor("list", gvr.Resource, func(action ktesting.Action) (bool, runtime.Object, error) {
+			if ns := action.GetNamespace(); ns != "alpha" && ns != "gamma" {
+				return true, nil, collectorRefusal(gvr.GroupResource(), "list", ns)
+			}
+			return false, nil, nil
+		})
+	}
+	if err := k8s.InitTestDynamicResourceCache(dyn, []k8s.APIResource{{Group: gvr.Group, Version: gvr.Version, Kind: listKind, Name: gvr.Resource, Namespaced: true, Verbs: []string{"list", "watch", "get"}}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(k8s.ResetTestDynamicState)
+	return gvr.Resource
+}
+
+// An unrestricted, unscoped list asks for the whole cluster. When Radar's
+// collector reads the kind only in some namespaces, the rows come with the
+// namespaces actually read, including when they hold nothing; a complete read
+// stays a bare array.
+func TestListResourcesReportsCollectorCoverage(t *testing.T) {
+	for _, class := range []coverageClass{coverageTyped, coverageCRD, coverageDirect} {
+		for _, tc := range []struct {
+			name    string
+			limited bool
+			objects []string
+			rows    []string
+		}{
+			{name: "complete", objects: []string{"alpha", "beta"}, rows: []string{"alpha-object", "beta-object"}},
+			{name: "complete and empty", rows: []string{}},
+			{name: "partial", limited: true, objects: []string{"alpha", "beta"}, rows: []string{"alpha-object"}},
+			{name: "partial and empty", limited: true, objects: []string{"beta"}, rows: []string{}},
+		} {
+			for _, caller := range []string{"auth disabled", "cluster-wide"} {
+				t.Run(fmt.Sprintf("%s/%s/%s", class, tc.name, caller), func(t *testing.T) {
+					kind := setupListCoverageFixture(t, class, tc.limited, tc.objects...)
+					ctx := context.Background()
+					if caller == "cluster-wide" {
+						ctx = withClusterAdmin(t, "coverage-lister")
+					}
+					result, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: kind, Context: "none"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					var rows []map[string]any
+					if tc.limited {
+						var coverage wireCoverage
+						rows, coverage = partialListBody(t, result)
+						if coverage.Reason != partialCoverageReason(class) || !slices.Equal(coverage.Namespaces, []string{"alpha", "gamma"}) {
+							t.Fatalf("coverage = %+v, want %s over alpha and gamma", coverage, partialCoverageReason(class))
+						}
+						if want := fmt.Sprintf(`Radar read %s only in namespaces "alpha,gamma";`, kind); !strings.HasPrefix(coverage.Note, want) {
+							t.Fatalf("note must name the kind and the namespaces read, got %q", coverage.Note)
+						}
+						assertNoCollectorLeak(t, errors.New(extractText(t, result)))
+					} else {
+						rows = bareListBody(t, result)
+					}
+					if got := rowNames(rows); !slices.Equal(got, tc.rows) {
+						t.Fatalf("rows = %v, want %v", got, tc.rows)
+					}
+				})
+			}
+		}
+	}
+}
+
+// The partial-read result as a client receives it over MCP, pinned in the
+// shared fixture that the agent-backend joins (internal/ai) and the Findings
+// projection (web) are tested against.
+const partialListFixturePath = "../../testdata/mcp/list-resources-partial-coverage.json"
+
+type partialListFixture struct {
+	Description string `json:"description"`
+	Cases       []struct {
+		Name      string          `json:"name"`
+		Objects   []string        `json:"objects"`
+		Arguments map[string]any  `json:"arguments"`
+		Result    json.RawMessage `json:"result"`
+	} `json:"cases"`
+}
+
+func TestListResourcesPartialCoverageTransport(t *testing.T) {
+	raw, err := os.ReadFile(partialListFixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture partialListFixture
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if len(fixture.Cases) == 0 {
+		t.Fatal("no cases in the partial-list fixture")
+	}
+	for _, tc := range fixture.Cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			setupListCoverageFixture(t, coverageTyped, true, tc.Objects...)
+			session := connectTo(t, newServer(false))
+			result, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "list_resources", Arguments: tc.Arguments})
+			if err != nil {
+				t.Fatal(err)
+			}
+			partialListBody(t, result)
+			got, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var gotWire, wantWire any
+			if err := json.Unmarshal(got, &gotWire); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(tc.Result, &wantWire); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(gotWire, wantWire) {
+				t.Fatalf("the wire result no longer matches %s; update the fixture's result to:\n%s", partialListFixturePath, got)
+			}
+		})
+	}
 }
 
 // A caller who can read only beta gets the same refusal whether or not the
