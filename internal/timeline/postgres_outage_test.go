@@ -25,6 +25,7 @@ type dbProxy struct {
 	mu      sync.Mutex
 	ln      net.Listener
 	conns   []net.Conn
+	servers []net.Conn // the database side of each link; stall() cuts only these
 	stalled bool
 }
 
@@ -65,6 +66,7 @@ func (p *dbProxy) up(addr string) {
 			}
 			p.mu.Lock()
 			p.conns = append(p.conns, server)
+			p.servers = append(p.servers, server)
 			p.mu.Unlock()
 			go func() { _, _ = io.Copy(server, client); server.Close() }()
 			go func() {
@@ -84,12 +86,11 @@ func (p *dbProxy) up(addr string) {
 func (p *dbProxy) stall() {
 	p.mu.Lock()
 	p.stalled = true
-	conns := p.conns
+	servers := p.servers
+	p.servers = nil
 	p.mu.Unlock()
-	for _, c := range conns {
-		if c.RemoteAddr().String() == p.target {
-			c.Close()
-		}
+	for _, c := range servers {
+		c.Close()
 	}
 }
 
