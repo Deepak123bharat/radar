@@ -442,8 +442,8 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"kind:Pod, ns:foo, label:app=bar, and image:redis narrow a " +
 			"term match; modifier-only queries are enumeration, so use list_resources when " +
 			"you already know the kind/namespace. Returns ranked hits with snippets and " +
-			"summaryContext, partial and unsearched coverage. Broad scans report kind_not_watched CRDs; " +
-			"explicit kind: tries warming. CEL examples: has(object.subjects); \"app\" in labels; " +
+			"summaryContext, partial and unsearched coverage. Broad scans report kind_not_watched; " +
+			"explicit kind: warms them. CEL examples: has(object.subjects); \"app\" in labels; " +
 			"kind == \"Application\" && has(spec.sources) && spec.sources.exists(s, has(s.repoURL)).",
 		Annotations: readOnly,
 	}, logToolCall("search", handleSearch))
