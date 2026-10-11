@@ -613,7 +613,10 @@ Broad queries also collapse `namespace_excluded`, `namespace_scope_limited` and
 namespace selection and Radar's coverage never share an entry. Explicitly requested
 kinds keep per-kind `kind_not_watched`, `collection_not_supported` and namespace
 entries; denied, pending, failed-sync, failed-check and read-error kinds keep
-per-kind entries for all queries.
+per-kind entries for all queries. A broad query names at most 20 kinds per reason,
+the first by kind then group, and folds the rest into that reason's `*` entry: a
+`*` entry beside named entries for the same reason means "these kinds and others".
+Queries with `kind:` terms name every kind.
 Unknown `kind:` terms come back as `unknown_kind` in the caller's spelling.
 Typed informers disabled by collector probes report `collector_access_denied`, never
 `kind_not_watched`. A stalled dynamic sync reports `kind_sync_failed`; incomplete

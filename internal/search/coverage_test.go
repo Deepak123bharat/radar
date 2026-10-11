@@ -3,6 +3,8 @@ package search
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/skyhook-io/radar/internal/filter"
 	"github.com/skyhook-io/radar/pkg/k8score"
+	"github.com/skyhook-io/radar/pkg/readreason"
 )
 
 func TestSearchCoverageAndNewKinds(t *testing.T) {
@@ -161,5 +164,117 @@ func TestSearchObjectClusterNamespaceAndGuardedArgo(t *testing.T) {
 	res, _ = Search(context.Background(), p, Parse("kind:Application"), Options{Filter: f})
 	if res.Partial || len(res.Hits) != 1 || res.Hits[0].Name != "multi" {
 		t.Fatalf("Argo guard: %+v", res)
+	}
+}
+
+// capFixture serves count cluster-scoped kinds named prefix00, prefix01, …
+// Each kind's group sorts in the reverse of its name, so discovery hands
+// them to Search last-kind-first and the cap cannot lean on discovery order.
+func capFixture(p *fakeProvider, prefix string, count int, state k8score.DynamicObservationState) {
+	for i := range count {
+		gvr := schema.GroupVersionResource{Group: fmt.Sprintf("g%02d.%s.example.io", count-1-i, strings.ToLower(prefix)), Version: "v1", Resource: fmt.Sprintf("%s%02ds", strings.ToLower(prefix), i)}
+		p.kinds[gvr] = fmt.Sprintf("%s%02d", prefix, i)
+		p.namespaced[gvr] = false
+		p.observations[gvr] = k8score.DynamicResourceObservation{State: state}
+	}
+}
+
+func newCapProvider() *fakeProvider {
+	return &fakeProvider{kinds: map[schema.GroupVersionResource]string{}, namespaced: map[schema.GroupVersionResource]bool{}, observations: map[schema.GroupVersionResource]k8score.DynamicResourceObservation{}}
+}
+
+// capNamed is the named entries capFixture produces for kinds first..last.
+func capNamed(prefix string, count, first, last int, reason readreason.Code) []UnsearchedKind {
+	var gaps []UnsearchedKind
+	for i := first; i <= last; i++ {
+		gaps = append(gaps, UnsearchedKind{Kind: fmt.Sprintf("%s%02d", prefix, i), Group: fmt.Sprintf("g%02d.%s.example.io", count-1-i, strings.ToLower(prefix)), Reason: reason})
+	}
+	return gaps
+}
+
+func denyDenied(kind, _, _ string) (bool, bool) {
+	return !strings.HasPrefix(kind, "Denied"), true
+}
+
+func TestSearchBroadCoverageCapsNamedKindsPerReason(t *testing.T) {
+	p := newCapProvider()
+	capFixture(p, "Denied", 25, k8score.DynamicObservationSynced)
+
+	res, err := Search(context.Background(), p, Parse("robusta"), Options{CanReadClusterScoped: denyDenied})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append([]UnsearchedKind{{Kind: "*", Group: "", Reason: readreason.RBACDenied}}, capNamed("Denied", 25, 0, 19, readreason.RBACDenied)...)
+	if !res.Partial || len(res.Unsearched) != 21 || !reflect.DeepEqual(res.Unsearched, want) {
+		t.Fatalf("broad coverage (%d entries): %+v\nwant %+v", len(res.Unsearched), res.Unsearched, want)
+	}
+	if first, last := res.Unsearched[1], res.Unsearched[20]; first.Kind != "Denied00" || first.Group != "g24.denied.example.io" || last.Kind != "Denied19" || last.Group != "g05.denied.example.io" {
+		t.Fatalf("kept entries are not the first 20 by kind: first %+v last %+v", first, last)
+	}
+
+	again, _ := Search(context.Background(), p, Parse("robusta"), Options{CanReadClusterScoped: denyDenied})
+	if !reflect.DeepEqual(again.Unsearched, res.Unsearched) {
+		t.Fatalf("repeat search changed coverage: %+v", again.Unsearched)
+	}
+
+	var terms []string
+	for i := range 25 {
+		terms = append(terms, fmt.Sprintf("kind:Denied%02d", i))
+	}
+	res, _ = Search(context.Background(), p, Parse(strings.Join(terms, " ")+" robusta"), Options{CanReadClusterScoped: denyDenied})
+	if want := capNamed("Denied", 25, 0, 24, readreason.RBACDenied); len(res.Unsearched) != 25 || !reflect.DeepEqual(res.Unsearched, want) {
+		t.Fatalf("kind: query must list every named kind, got %d: %+v", len(res.Unsearched), res.Unsearched)
+	}
+}
+
+func TestSearchCoverageCapIsPerReasonAndKeepsCollapsedReasons(t *testing.T) {
+	p := newCapProvider()
+	capFixture(p, "Denied", 25, k8score.DynamicObservationSynced)
+	capFixture(p, "Pending", 22, k8score.DynamicObservationSyncing)
+	capFixture(p, "Blocked", 3, k8score.DynamicObservationDenied)
+	capFixture(p, "Cold", 2, k8score.DynamicObservationUnwatched)
+
+	res, _ := Search(context.Background(), p, Parse("robusta"), Options{CanReadClusterScoped: denyDenied, Namespaces: []string{"team-a"}, ScopedNamespaces: []string{"team-a"}})
+	want := []UnsearchedKind{
+		{Kind: "*", Reason: readreason.KindNotWatched},
+		{Kind: "*", Reason: readreason.KindSyncPending},
+		{Kind: "*", Reason: readreason.NamespaceScopeLimited, Namespaces: []string{"team-a"}},
+		{Kind: "*", Reason: readreason.RBACDenied},
+	}
+	want = append(want, capNamed("Blocked", 3, 0, 2, readreason.CollectorAccessDenied)...)
+	want = append(want, capNamed("Denied", 25, 0, 19, readreason.RBACDenied)...)
+	want = append(want, capNamed("Pending", 22, 0, 19, readreason.KindSyncPending)...)
+	if len(res.Unsearched) != 47 || !reflect.DeepEqual(res.Unsearched, want) {
+		t.Fatalf("per-reason cap (%d entries): %+v\nwant %+v", len(res.Unsearched), res.Unsearched, want)
+	}
+}
+
+func TestCapNamedGapsOrdersByKindThenGroup(t *testing.T) {
+	gaps := func(order []int) []UnsearchedKind {
+		all := []UnsearchedKind{
+			{Kind: "Alpha", Group: "a.example.io", Reason: readreason.RBACDenied},
+			{Kind: "Alpha", Group: "b.example.io", Reason: readreason.RBACDenied},
+			{Kind: "Beta", Group: "", Reason: readreason.RBACDenied},
+			{Kind: "Beta", Group: "a.example.io", Reason: readreason.RBACDenied},
+			{Kind: "Gamma", Group: "a.example.io", Reason: readreason.RBACDenied},
+		}
+		out := make([]UnsearchedKind, 0, len(order))
+		for _, i := range order {
+			out = append(out, all[i])
+		}
+		return out
+	}
+	want := []UnsearchedKind{
+		{Kind: "*", Reason: readreason.RBACDenied},
+		{Kind: "Alpha", Group: "a.example.io", Reason: readreason.RBACDenied},
+		{Kind: "Alpha", Group: "b.example.io", Reason: readreason.RBACDenied},
+		{Kind: "Beta", Group: "", Reason: readreason.RBACDenied},
+	}
+	for _, order := range [][]int{{0, 1, 2, 3, 4}, {4, 3, 2, 1, 0}, {3, 1, 4, 0, 2}} {
+		res := Result{Unsearched: gaps(order)}
+		res.capNamedGaps(3)
+		if !reflect.DeepEqual(res.Unsearched, want) || !res.Partial {
+			t.Fatalf("input order %v: %+v", order, res.Unsearched)
+		}
 	}
 }

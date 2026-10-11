@@ -501,16 +501,11 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 			addGap(requested, "", readreason.UnknownKind)
 		}
 	}
-	sort.Slice(res.Unsearched, func(i, j int) bool {
-		a, b := res.Unsearched[i], res.Unsearched[j]
-		if a.Kind != b.Kind {
-			return a.Kind < b.Kind
-		}
-		if a.Group != b.Group {
-			return a.Group < b.Group
-		}
-		return a.Reason < b.Reason
-	})
+	if len(q.KindFilter) == 0 {
+		res.capNamedGaps(maxNamedGapsPerReason)
+	} else {
+		sortGaps(res.Unsearched)
+	}
 	if res.FilterErrors > 0 {
 		log.Printf("[search] CEL filter eval errors: %d rows; first=%s", res.FilterErrors, res.FilterErrorSample)
 	}

@@ -158,7 +158,7 @@ func TestWaitForSyncContextStopsWaitingWithoutStoppingInformer(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if lists.Add(1) == 1 {
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"kind":"WidgetList","apiVersion":"example.io/v1","metadata":{"resourceVersion":"1"},"items":[]}`))
+			_, _ = w.Write([]byte(`{"kind":"WidgetList","apiVersion":"example.io/v1","metadata":{"resourceVersion":"1"},"items":[]}`))
 			return
 		}
 		<-r.Context().Done()

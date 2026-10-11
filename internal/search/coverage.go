@@ -1,6 +1,7 @@
 package search
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"slices"
@@ -30,6 +31,42 @@ func (r *Result) addGap(kind, group string, reason readreason.Code, namespaces [
 		}
 	}
 	r.Unsearched = append(r.Unsearched, UnsearchedKind{kind, group, reason, mergeNamespaces(nil, namespaces)})
+}
+
+// maxNamedGapsPerReason bounds the per-kind entries a broad query reports for
+// one reason: a cluster with hundreds of denied or syncing CRDs would otherwise
+// return tens of KB of coverage that drowns the hits.
+const maxNamedGapsPerReason = 20
+
+// capNamedGaps keeps the first limit named entries of each reason, by kind
+// then group, and folds the rest into that reason's "*" entry, so "*" beside
+// named entries means "these kinds and others".
+func (r *Result) capNamedGaps(limit int) {
+	sortGaps(r.Unsearched)
+	named := map[readreason.Code]int{}
+	var folded []UnsearchedKind
+	kept := r.Unsearched[:0]
+	for _, gap := range r.Unsearched {
+		if gap.Kind != "*" {
+			named[gap.Reason]++
+			if named[gap.Reason] > limit {
+				folded = append(folded, gap)
+				continue
+			}
+		}
+		kept = append(kept, gap)
+	}
+	r.Unsearched = kept
+	for _, gap := range folded {
+		r.addGap("*", "", gap.Reason, gap.Namespaces)
+	}
+	sortGaps(r.Unsearched)
+}
+
+func sortGaps(gaps []UnsearchedKind) {
+	slices.SortFunc(gaps, func(a, b UnsearchedKind) int {
+		return cmp.Or(strings.Compare(a.Kind, b.Kind), strings.Compare(a.Group, b.Group), strings.Compare(string(a.Reason), string(b.Reason)))
+	})
 }
 
 func mergeNamespaces(into, add []string) []string {

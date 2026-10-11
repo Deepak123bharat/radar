@@ -123,12 +123,12 @@ func TestSearchKindRBACClusterFirstAndFailureReason(t *testing.T) {
 		}
 		attrs := review.Spec.ResourceAttributes
 		if attrs.Resource == "broken" || attrs.Namespace == "b" {
-			http.Error(w, "SAR unavailable", 503)
+			http.Error(w, "SAR unavailable", http.StatusServiceUnavailable)
 			return
 		}
 		review.Status.Allowed = attrs.Resource == "allowed" || attrs.Namespace == "a"
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(review)
+		_ = json.NewEncoder(w).Encode(review)
 	}))
 	t.Cleanup(api.Close)
 	client, err := kubernetes.NewForConfig(&rest.Config{Host: api.URL, ContentConfig: rest.ContentConfig{ContentType: "application/json", AcceptContentTypes: "application/json"}})
@@ -167,7 +167,7 @@ func TestSearchKindRBACDeniedClusterCountsAndCachesNamespaceChecks(t *testing.T)
 		}
 		review.Status.Allowed = review.Spec.ResourceAttributes.Namespace != "" && review.Spec.ResourceAttributes.Namespace != "denied"
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(review)
+		_ = json.NewEncoder(w).Encode(review)
 	}))
 	t.Cleanup(api.Close)
 	client, err := kubernetes.NewForConfig(&rest.Config{Host: api.URL, ContentConfig: rest.ContentConfig{ContentType: "application/json", AcceptContentTypes: "application/json"}})
