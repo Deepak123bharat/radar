@@ -202,12 +202,20 @@ func Unavailable(ctx context.Context) error {
 // so its creation would be dropped. The reconnected store clears these marks.
 func NoteDeletedWhileUnavailable(clusterContext, group, kind, namespace, name string) {
 	deletedWhileUnavailableMu.Lock()
-	defer deletedWhileUnavailableMu.Unlock()
 	if len(deletedWhileUnavailable) >= maxDeletedWhileUnavailable {
 		deletedWhileUnavailableOverflow = true
-		return
+	} else {
+		deletedWhileUnavailable[SeenResourceKey(clusterContext, group, kind, namespace, name)] = struct{}{}
 	}
-	deletedWhileUnavailable[SeenResourceKey(clusterContext, group, kind, namespace, name)] = struct{}{}
+	deletedWhileUnavailableMu.Unlock()
+
+	// The caller saw no store, but one may have been installed since, and its
+	// last pass over this list may already have run. installPostgresStore
+	// publishes the store before that pass, so either the pass sees this entry
+	// or this check sees the store.
+	if pg, ok := GetStore().(*PostgresStore); ok {
+		forgetDeletedWhileUnavailable(pg)
+	}
 }
 
 // DeletedWhileUnavailableCountForTest reports how many deletes are waiting to

@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"os"
 	"testing"
 	"time"
 
@@ -65,5 +66,36 @@ func TestTimelineStoreDownCountsLostChangesOnly(t *testing.T) {
 	// has to be told to clear it.
 	if got := timeline.DeletedWhileUnavailableCountForTest(); got != 1 {
 		t.Fatalf("%d delete(s) noted for the reconnect, want 1", got)
+	}
+}
+
+// A store that is installed but failing, a database that went away after a good
+// start, loses Kubernetes Events the same way it loses resource changes, and
+// the drop counter has to say so.
+func TestTimelineStoreFailureCountsLostKubernetesEvents(t *testing.T) {
+	dsn := os.Getenv("RADAR_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("RADAR_TEST_POSTGRES_DSN not set")
+	}
+	timeline.ResetStore()
+	t.Cleanup(timeline.ResetStore)
+	timeline.ResetMetricsForContextSwitch()
+	t.Cleanup(timeline.ResetMetricsForContextSwitch)
+
+	if err := timeline.InitStore(timeline.StoreConfig{Type: timeline.StoreTypePostgres, DSN: dsn}); err != nil {
+		t.Fatalf("InitStore: %v", err)
+	}
+	store := timeline.GetStore()
+	if store == nil {
+		t.Fatal("no store installed against a reachable database")
+	}
+	// A closed pool fails every write, as a dead database does.
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	recordK8sEventToTimeline("ctx", k8sEventPod("web", "Started"))
+	if got := timeline.GetMetrics().GetSnapshot().Counters.Dropped[timeline.DropReasonStoreFailed]; got != 1 {
+		t.Fatalf("store_failed=%d after a failed K8s Event write, want 1", got)
 	}
 }

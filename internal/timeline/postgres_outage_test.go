@@ -265,6 +265,37 @@ func TestReconnectClearsMarksOfResourcesDeletedDuringTheOutage(t *testing.T) {
 	}
 }
 
+// A delete whose caller saw no store, but that is noted only after the
+// reconnect's last pass over the list, must still clear its mark.
+func TestDeleteNotedAfterTheReconnectStillClearsItsMark(t *testing.T) {
+	ResetStore()
+	t.Cleanup(ResetStore)
+	dsn := testPostgresDSN(t)
+
+	before, err := NewPostgresStore(dsn)
+	if err != nil {
+		t.Fatalf("NewPostgresStore: %v", err)
+	}
+	before.MarkResourceSeen("ctx", "apps", "Deployment", "shop", "late")
+	if err := before.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	reconnected, err := NewPostgresStore(dsn)
+	if err != nil {
+		t.Fatalf("NewPostgresStore: %v", err)
+	}
+	installPostgresStore(reconnected, StoreConfig{})
+	NoteDeletedWhileUnavailable("ctx", "apps", "Deployment", "shop", "late")
+
+	if reconnected.IsResourceSeen("ctx", "apps", "Deployment", "shop", "late") {
+		t.Fatal("a delete noted after the reconnect left its mark; recreating it would not be recorded")
+	}
+	if n := DeletedWhileUnavailableCountForTest(); n != 0 {
+		t.Fatalf("%d delete(s) left waiting for a reconnect that already happened", n)
+	}
+}
+
 // Deletes from a cluster context that has been switched away from must not be
 // applied to the next one's store.
 func TestResetStoreDropsDeletesNotedDuringTheOutage(t *testing.T) {

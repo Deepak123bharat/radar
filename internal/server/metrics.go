@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -15,8 +16,39 @@ import (
 // database that stops answering cannot hold the scrape open.
 const metricsTimelinePingTimeout = 2 * time.Second
 
+// metricsTimelineCheckTTL is how long a scrape reuses the last database check.
+// The endpoint can be reachable without signing in, so without it any client
+// could make Radar ping PostgreSQL as often as it likes. Scrape intervals are
+// 15s or more, so a fresh check still lands on nearly every scrape.
+const metricsTimelineCheckTTL = 5 * time.Second
+
+// timelineAvailability caches the result of the database check for
+// metricsTimelineCheckTTL. Scrapes that arrive while a check is running wait
+// for it instead of starting their own.
+type timelineAvailability struct {
+	mu        sync.Mutex
+	checkedAt time.Time
+	available bool
+}
+
+func (a *timelineAvailability) value() float64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.checkedAt.IsZero() || time.Since(a.checkedAt) >= metricsTimelineCheckTTL {
+		ctx, cancel := context.WithTimeout(context.Background(), metricsTimelinePingTimeout)
+		a.available = timeline.Unavailable(ctx) == nil
+		cancel()
+		a.checkedAt = time.Now()
+	}
+	if a.available {
+		return 1
+	}
+	return 0
+}
+
 func (s *Server) newMetricsHandler() http.Handler {
 	registry := prometheus.NewRegistry()
+	timelineCheck := &timelineAvailability{}
 
 	registry.MustRegister(
 		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
@@ -52,14 +84,7 @@ func (s *Server) newMetricsHandler() http.Handler {
 			Subsystem: "timeline",
 			Name:      "available",
 			Help:      "1 when the timeline can record and serve history, 0 when its storage is unreachable. The reason is in Radar's diagnostics.",
-		}, func() float64 {
-			ctx, cancel := context.WithTimeout(context.Background(), metricsTimelinePingTimeout)
-			defer cancel()
-			if timeline.Unavailable(ctx) != nil {
-				return 0
-			}
-			return 1
-		}),
+		}, timelineCheck.value),
 		timelineDropsCollector{desc: prometheus.NewDesc(
 			"radar_timeline_dropped_events_total",
 			"Changes the timeline did not record, by reason. store_unavailable and store_failed are history lost to a storage outage; the other reasons are routine filtering.",
