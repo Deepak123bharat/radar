@@ -5719,9 +5719,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		}
 
 		// HTTPProxy → Secret edges (via spec.virtualhost.tls.secretName)
-		tlsSecretName, _, _ := unstructured.NestedString(res.Object, "spec", "virtualhost", "tls", "secretName")
-		if tlsSecretName != "" {
-			secretNodeID := fmt.Sprintf("secret/%s/%s", resNs, tlsSecretName)
+		tlsSecretRef, _, _ := unstructured.NestedString(res.Object, "spec", "virtualhost", "tls", "secretName")
+		secretNs, tlsSecretName := configrefs.ContourSecretRef(resNs, tlsSecretRef)
+		// A delegated certificate lives in another namespace, which a filtered view may exclude.
+		if tlsSecretName != "" && opts.MatchesNamespaceFilter(secretNs) {
+			secretNodeID := fmt.Sprintf("secret/%s/%s", secretNs, tlsSecretName)
 			// Create stub Secret node if it doesn't already exist (same pattern as Traefik)
 			if !existingSecretNodes[secretNodeID] {
 				existingSecretNodes[secretNodeID] = true
@@ -5731,7 +5733,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					Name:   tlsSecretName,
 					Status: StatusUnknown,
 					Data: map[string]any{
-						"namespace": resNs,
+						"namespace": secretNs,
 						"labels":    map[string]string{},
 					},
 				})
@@ -5747,7 +5749,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				})
 			}
 			// Also check for cert-manager Certificate edge
-			certID := certBySecret[resNs+"/"+tlsSecretName]
+			certID := certBySecret[secretNs+"/"+tlsSecretName]
 			if certID != "" {
 				dedupeKey2 := resID + "|" + certID
 				if !contourEdgeSeen[dedupeKey2] {
