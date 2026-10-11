@@ -2097,8 +2097,20 @@ func TestBuildIssuesArgoSyncHazardDisarmsRetryAdvice(t *testing.T) {
 				if issue.Remediation != nil {
 					t.Errorf("%s still offers a fix that syncs: %+v", issue.Reason, issue)
 				}
-				if !strings.Contains(issue.Action, tc.want) || strings.Contains(issue.Action, "retry") {
-					t.Errorf("%s action %q, want %q and no retry", issue.Reason, issue.Action, tc.want)
+				// The failure card keeps its next step and states the hazard
+				// apart from it, ahead of the cause's own advice; other rows
+				// replace their sync advice with the hazard.
+				warning := issue.Action
+				if issue.Severity == SeverityCritical && issue.Scope == ScopeOperation {
+					warning = issue.Hazard
+					if issue.Action == "" || strings.Contains(issue.Action, tc.want) {
+						t.Errorf("%s: next step %q must be present and not repeat the hazard", issue.Reason, issue.Action)
+					}
+				} else if issue.Hazard != "" {
+					t.Errorf("%s: hazard belongs in the action of a non-operation row: %+v", issue.Reason, issue)
+				}
+				if !strings.Contains(warning, tc.want) || strings.Contains(issue.Action, "retry") {
+					t.Errorf("%s warning %q, action %q, want %q and no retry", issue.Reason, warning, issue.Action, tc.want)
 				}
 			}
 			if checked == 0 {
@@ -2106,4 +2118,25 @@ func TestBuildIssuesArgoSyncHazardDisarmsRetryAdvice(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A remote failure's next step names the destination cluster; a hazard warns
+// alongside it rather than replacing it.
+func TestBuildIssuesArgoRemoteFailureKeepsNextStepBesideHazard(t *testing.T) {
+	root := argoApp(map[string]any{
+		"sync":           map[string]any{"status": "OutOfSync"},
+		"operationState": map[string]any{"phase": "Failed", "message": `namespaces "demo" not found`},
+		"conditions":     []any{map[string]any{"type": "SharedResourceWarning", "message": "Deployment/web is part of applications argocd/billing and payments"}},
+	})
+	_ = unstructured.SetNestedField(root.Object, "https://remote.example.com", "spec", "destination", "server")
+	for _, issue := range buildIssues(root, nil, "argocd", nil) {
+		if issue.Severity != SeverityCritical || issue.Scope != ScopeOperation {
+			continue
+		}
+		if !strings.Contains(issue.Action, "destination cluster") || !strings.Contains(issue.Hazard, "also tracked by Application payments") || issue.Remediation != nil {
+			t.Fatalf("want the destination-cluster step and the shared-ownership hazard, no fix: %+v", issue)
+		}
+		return
+	}
+	t.Fatal("missing operation failure")
 }

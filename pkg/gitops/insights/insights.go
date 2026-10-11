@@ -168,6 +168,13 @@ type Issue struct {
 	RawMessage string   `json:"rawMessage,omitempty"`
 	Refs       []Ref    `json:"refs,omitempty"`
 	Action     string   `json:"action,omitempty"`
+	// Hazard, set on a failed operation, warns that syncing again is unsafe: it
+	// would prune every managed resource or take resources over from another
+	// Application. It is kept apart from Action because the failure's Cause can
+	// end in its own sync advice ("create it … so Argo creates it on sync"),
+	// which the warning has to precede. Rows whose next step is itself a sync
+	// carry the hazard as their Action instead.
+	Hazard string `json:"hazard,omitempty"`
 	// Remediation, when set, exposes a structured one-click fix for this
 	// Issue. Frontend renders a contextual button on the failure card.
 	// Nil when no automated remedy is appropriate; the Action string still
@@ -559,7 +566,7 @@ func buildIssues(root *unstructured.Unstructured, resourceTree *gitopstree.Resou
 			// The one-click fix retries the sync, which would now prune
 			// everything or take over shared resources.
 			if hazard := argoSyncHazardAction(root); hazard != "" {
-				issue.Action = action + " " + hazard
+				issue.Hazard = hazard
 				issue.Remediation = nil
 			}
 			if parsed.AffectedKind != "" && parsed.AffectedName != "" {

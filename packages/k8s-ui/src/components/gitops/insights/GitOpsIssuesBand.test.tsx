@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { renderToString } from 'react-dom/server'
 import { GitOpsIssuesBand } from './GitOpsInsightViews'
 import type { GitOpsIssue } from '../../../types/gitops-insights'
+import { SEVERITY_BADGE } from '../../../utils/badge-colors'
 
 const guard: GitOpsIssue = {
   severity: 'critical',
@@ -40,5 +41,41 @@ describe('GitOpsIssuesBand headline', () => {
     )
     expect(html).toContain('only a message')
     expect(html.match(/pl-\[22px\]/g)).toBeNull()
+  })
+})
+
+// Argo's namespace-not-found cause ends in its own sync advice.
+const failedSync: GitOpsIssue = {
+  severity: 'critical',
+  scope: 'operation',
+  reason: 'Failed',
+  message: 'one or more objects failed to apply, reason: namespaces demo not found',
+  cause: 'The destination namespace does not exist. Create it, or enable CreateNamespace=true in the syncOptions so Argo creates it on sync.',
+  action: 'Open Activity for operation details.',
+}
+const causeAdvice = 'so Argo creates it on sync'
+
+describe('GitOpsIssuesBand failure card', () => {
+  it('shows the failure’s next step after its cause', () => {
+    const html = renderToString(<GitOpsIssuesBand issues={[failedSync]} />)
+    expect(html).toContain(failedSync.action)
+    expect(html.indexOf(causeAdvice)).toBeLessThan(html.indexOf(failedSync.action!))
+    expect(html).not.toContain(SEVERITY_BADGE.warning)
+  })
+
+  it('warns of a sync hazard before the cause’s own sync advice', () => {
+    const hazard = 'Do not sync yet: every managed resource requires pruning, so a sync with pruning would delete them all.'
+    const html = renderToString(<GitOpsIssuesBand issues={[{ ...failedSync, hazard }]} />)
+    const at = html.indexOf(hazard)
+    expect(at).toBeGreaterThan(-1)
+    expect(at).toBeLessThan(html.indexOf(causeAdvice))
+    expect(html.lastIndexOf(SEVERITY_BADGE.warning, at)).toBeGreaterThan(-1)
+    expect(html).toContain(failedSync.action)
+  })
+
+  it('shows a remote failure’s destination-cluster instruction', () => {
+    const action = 'Create namespace demo on the destination cluster, or add the CreateNamespace=true sync option.'
+    const html = renderToString(<GitOpsIssuesBand issues={[{ ...failedSync, action }]} />)
+    expect(html).toContain(action)
   })
 })

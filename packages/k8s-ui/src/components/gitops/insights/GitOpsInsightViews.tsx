@@ -378,7 +378,7 @@ function GitOpsLifecycleBanner({ issue }: { issue: GitOpsIssue }) {
           </div>
           <p className="mt-1 text-[13px] text-theme-text-secondary">{issue.message}</p>
           {issue.cause && <p className="mt-1 text-[12px] text-orange-300/90">{issue.cause}</p>}
-          {issue.action && <p className="mt-1 text-[11px] text-theme-text-tertiary">{issue.action}</p>}
+          <IssueNextStep action={issue.action} className="mt-1" />
         </div>
       </div>
     </div>
@@ -435,8 +435,9 @@ function GitOpsHistoricalIssuesDisclosure({
 }
 
 // Structured failure card. One unit, owns the failure narrative end-to-end:
-// title (parsed cause when recognized, falls back to raw reason), affected
-// resource, retry posture, raw controller error in a collapsed details.
+// title (parsed cause when recognized, falls back to raw reason), sync
+// hazard, cause, next step, affected resource, retry posture, raw controller
+// error in a collapsed details.
 function GitOpsFailureCard({
   issue,
   onSelect,
@@ -487,7 +488,16 @@ function GitOpsFailureCard({
               <span className="text-[11px] text-theme-text-tertiary">retried {issue.retryCount}×</span>
             )}
           </div>
+          {/* Ahead of the body: a cause can end in its own sync advice
+              ("so Argo creates it on sync"), which the hazard overrides. */}
+          {issue.hazard && (
+            <div className={clsx('mt-2 flex items-start gap-1.5 rounded border px-2 py-1.5 text-[12px] font-medium', SEVERITY_BADGE.warning)}>
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <p className="min-w-0">{issue.hazard}</p>
+            </div>
+          )}
           {body && <p className="mt-1 text-[13px] text-theme-text-secondary">{body}</p>}
+          <IssueNextStep action={issue.action} className="mt-1" />
           {ref && (
             <dl className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-[12px]">
               <div className="flex gap-1.5">
@@ -635,11 +645,7 @@ function GitOpsCompactIssueStack({ issues, onSelectIssue }: { issues: GitOpsIssu
         {headline.cause && (
           <p className="truncate pl-[22px] text-[11px] text-theme-text-tertiary">{headline.cause}</p>
         )}
-        {/* Wrapped, unlike the cause: a next step often ends in the caveat
-            that makes it safe (what not to sync), which truncation would cut. */}
-        {headline.action && (
-          <p className="pl-[22px] text-[11px] text-theme-text-tertiary">{headline.action}</p>
-        )}
+        <IssueNextStep action={headline.action} className="pl-[22px]" />
       </button>
       {canExpand && (
         <Collapse open={expanded}>
@@ -669,7 +675,7 @@ function GitOpsCompactIssueStack({ issues, onSelectIssue }: { issues: GitOpsIssu
                   <p className="mt-0.5 text-theme-text-secondary">{issue.message}</p>
                   {issue.cause && <p className="mt-0.5 text-[11px] text-theme-text-tertiary">{issue.cause}</p>}
                   {rawMessage && <p className="mt-0.5 break-words font-mono text-[11px] text-theme-text-tertiary">{rawMessage}</p>}
-                  {issue.action && <p className="mt-0.5 text-[11px] text-theme-text-tertiary">{issue.action}</p>}
+                  <IssueNextStep action={issue.action} className="mt-0.5" />
                 </div>
                 {actionable && ref && (
                   <span className="shrink-0 self-center text-[11px] font-medium text-theme-text-secondary opacity-70 transition-opacity group-hover:opacity-100">
@@ -684,6 +690,14 @@ function GitOpsCompactIssueStack({ issues, onSelectIssue }: { issues: GitOpsIssu
       )}
     </div>
   )
+}
+
+// IssueNextStep is an issue's next step, styled alike on every surface of the
+// band. Wrapped, never truncated: a next step often ends in the caveat that
+// makes it safe (what not to sync), which truncation would cut.
+function IssueNextStep({ action, className }: { action?: string; className?: string }) {
+  if (!action) return null
+  return <p className={clsx('text-[11px] text-theme-text-tertiary', className)}>{action}</p>
 }
 
 // firstSentence/remainderAfterFirstSentence split a string at the first
