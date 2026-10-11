@@ -12,7 +12,6 @@ vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
 
 // SSR splits interpolated text with <!-- --> markers; strip so assertions read as prose.
 const html = (node: Parameters<typeof renderToString>[0]) => renderToString(node).replace(/<!-- -->/g, '')
-const text = (markup: string) => markup.replace(/<[^>]+>/g, '')
 
 // The attributes of the button labelled `label`.
 function buttonAttrs(markup: string, label: string): string {
@@ -27,6 +26,8 @@ const upgrade: RadarUpgradeRequirement = {
   latestVersion: 'v1.17.0',
 }
 const NOTE = 'Auto-sync controls for Applications with automated.enabled: false need the latest Radar (v1.17) on this cluster. It runs v1.16.3.'
+// RadarUpgradeNote sets the feature in its own <span>.
+const NOTE_MARKUP = 'Auto-sync controls for Applications with automated.enabled: false</span> need the latest Radar (v1.17) on this cluster. It runs v1.16.3.'
 
 function app(automated: Record<string, unknown> | undefined, annotations?: Record<string, string>) {
   return {
@@ -77,7 +78,7 @@ describe('Enable auto-sync on the GitOps detail page', () => {
   it('is disabled with the upgrade note when the Radar cannot clear enabled: false', () => {
     const markup = html(layout(argo({ resumeUpgrade: upgrade })))
     expect(enableAutoSync(markup)).toMatch(/\sdisabled=""/)
-    expect(text(markup)).toContain(NOTE)
+    expect(markup).toContain(NOTE_MARKUP)
   })
 
   it('is enabled, with no note, when the Radar advertises the behavior', () => {

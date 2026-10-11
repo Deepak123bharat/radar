@@ -44,7 +44,8 @@ describe('GitOpsActivityInsightView rollback', () => {
 
     it('disables every Rollback and shows the upgrade note', () => {
       expect(rollbackButtons(insight('Manual'), upgrade)).toEqual([{ disabled: true }, { disabled: true }, { disabled: true }])
-      expect(render(insight('Manual'), upgrade).replace(/<[^>]+>/g, '')).toContain('Argo CD rollbacks need the latest Radar (v1.17) on this cluster. It runs v1.16.3.')
+      // RadarUpgradeNote sets the feature in its own <span>.
+      expect(render(insight('Manual'), upgrade)).toContain('Argo CD rollbacks</span> need the latest Radar (v1.17) on this cluster. It runs v1.16.3.')
     })
 
     it('shows no note when the Radar advertises the behavior', () => {
