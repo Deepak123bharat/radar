@@ -16,6 +16,7 @@ import (
 	"github.com/skyhook-io/radar/internal/k8s"
 
 	"helm.sh/helm/v3/pkg/release"
+	helmtime "helm.sh/helm/v3/pkg/time"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -259,5 +260,33 @@ func TestBatchUpgradeCheckStopsWithItsContext(t *testing.T) {
 	case <-storage.canceled:
 	case <-time.After(2 * time.Second):
 		t.Fatal("the Secret list was not abandoned")
+	}
+}
+
+// The multi-namespace read times stuck uninstalls under the context it
+// started on, like the single-namespace list: a read that started before a
+// context switch must not anchor a release of the cluster now connected.
+func TestListReleasesAcrossNamespacesTimesUninstallsUnderItsOwnContext(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		readContext string
+		wantAnchor  bool
+	}{
+		{name: "current context", readContext: "", wantAnchor: true},
+		{name: "started before a switch", readContext: "previous-context", wantAnchor: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			freshUninstallStarts(t)
+			rel := helmTestRelease("deleting", "demo", 2, release.StatusUninstalling, "Deletion in progress")
+			rel.Info.Deleted = helmtime.Time{Time: time.Now().Add(-25 * time.Minute)}
+			client := fake.NewSimpleClientset(helmReleaseSecret(t, "demo", rel, false))
+			rows, err := listReleasesAcrossNamespacesWithClient(context.Background(), client, tt.readContext, []string{"demo"}, false)
+			if err != nil || len(rows) != 1 {
+				t.Fatalf("rows = %+v, err = %v", rows, err)
+			}
+			if anchored := len(uninstallStarts.entries) > 0; anchored != tt.wantAnchor {
+				t.Fatalf("uninstall start recorded = %v, want %v", anchored, tt.wantAnchor)
+			}
+		})
 	}
 }
