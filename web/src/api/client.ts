@@ -286,6 +286,20 @@ export function isKindSyncFailed(error: unknown): boolean {
   );
 }
 
+// timelineDatabaseError returns the driver's error when a timeline read failed
+// because Radar can't reach its PostgreSQL database, and null for any other
+// failure. The server redacts the password before it sends the error.
+export function timelineDatabaseError(error: unknown): string | null {
+  if (
+    !(error instanceof ApiError) ||
+    error.status !== 503 ||
+    error.data?.error_code !== "timeline_database_unreachable"
+  )
+    return null;
+  const detail = error.data.detail;
+  return typeof detail === "string" ? detail : "";
+}
+
 // SyncKindState / SyncStatusSnapshot mirror k8score's SyncSnapshot — attached
 // to the connection-status payload while the initial informer sync is running.
 export interface SyncKindState {

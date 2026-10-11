@@ -1,6 +1,9 @@
 package timeline
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -10,6 +13,17 @@ import (
 var (
 	postgresReconnectInitialInterval = 5 * time.Second
 	postgresReconnectMaxInterval     = time.Minute
+)
+
+// maxDeletedWhileUnavailable bounds how many deletes an outage remembers. Past
+// it, a resource deleted during the outage and later recreated under the same
+// name may not have its creation recorded.
+const maxDeletedWhileUnavailable = 100_000
+
+var (
+	deletedWhileUnavailableMu       sync.Mutex
+	deletedWhileUnavailable         = map[string]struct{}{}
+	deletedWhileUnavailableOverflow bool
 )
 
 var (
@@ -58,11 +72,16 @@ func recordWorkerUnavailable(err error, quit chan struct{}) {
 // retry go through here, so the retention loop, the observation start and the
 // log line cannot drift between the two paths.
 func installPostgresStore(store *PostgresStore, cfg StoreConfig) {
+	// Clear the marks of resources deleted during the outage before the store
+	// takes events, then once more after: a delete that lands between the two
+	// went to the list, not to the store.
+	forgetDeletedWhileUnavailable(store)
 	// Observation starts when events begin landing. Marking it at process start
 	// would claim coverage for the window the store was down. It is set before
 	// the store is published so no reader sees a store without its epoch.
 	observationStartNanos.Store(time.Now().UnixNano())
 	setGlobalStore(store)
+	forgetDeletedWhileUnavailable(store)
 	postgresUnavailableReason.Store("")
 	if cfg.RetentionAge > 0 {
 		store.StartCleanupLoop(cfg.RetentionAge, time.Hour, 0)
@@ -143,6 +162,7 @@ func stopPostgresReconnect() {
 		postgresReconnectQuit = nil
 	}
 	postgresUnavailableReason.Store("")
+	takeDeletedWhileUnavailable()
 }
 
 // TimelineUnavailableReason reports why no timeline store is installed, or an
@@ -150,4 +170,80 @@ func stopPostgresReconnect() {
 func TimelineUnavailableReason() string {
 	reason, _ := postgresUnavailableReason.Load().(string)
 	return reason
+}
+
+// Unavailable reports why the timeline cannot record or serve history right
+// now, or nil when it can. A PostgreSQL store is pinged: a database that goes
+// away after a good start leaves the store in place, and only a round trip
+// shows the outage. Any ping failure counts, a refused connection or a
+// database that stops answering alike.
+func Unavailable(ctx context.Context) error {
+	store := GetStore()
+	if store == nil {
+		if reason := TimelineUnavailableReason(); reason != "" {
+			return errors.New(reason)
+		}
+		return nil
+	}
+	pg, ok := store.(*PostgresStore)
+	if !ok {
+		return nil
+	}
+	err := pg.Ping(ctx)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("PostgreSQL did not answer in time: %w", err)
+	}
+	return err
+}
+
+// NoteDeletedWhileUnavailable remembers a resource deleted while no store was
+// installed. Its seen mark is still in the database, and once the store comes
+// back the mark would make a new resource with the same name look already seen,
+// so its creation would be dropped. The reconnected store clears these marks.
+func NoteDeletedWhileUnavailable(clusterContext, group, kind, namespace, name string) {
+	deletedWhileUnavailableMu.Lock()
+	defer deletedWhileUnavailableMu.Unlock()
+	if len(deletedWhileUnavailable) >= maxDeletedWhileUnavailable {
+		deletedWhileUnavailableOverflow = true
+		return
+	}
+	deletedWhileUnavailable[SeenResourceKey(clusterContext, group, kind, namespace, name)] = struct{}{}
+}
+
+// DeletedWhileUnavailableCountForTest reports how many deletes are waiting to
+// have their seen marks cleared.
+func DeletedWhileUnavailableCountForTest() int {
+	deletedWhileUnavailableMu.Lock()
+	defer deletedWhileUnavailableMu.Unlock()
+	return len(deletedWhileUnavailable)
+}
+
+// takeDeletedWhileUnavailable empties the list and reports whether it overflowed.
+func takeDeletedWhileUnavailable() ([]string, bool) {
+	deletedWhileUnavailableMu.Lock()
+	defer deletedWhileUnavailableMu.Unlock()
+	keys := make([]string, 0, len(deletedWhileUnavailable))
+	for k := range deletedWhileUnavailable {
+		keys = append(keys, k)
+	}
+	overflow := deletedWhileUnavailableOverflow
+	deletedWhileUnavailable = map[string]struct{}{}
+	deletedWhileUnavailableOverflow = false
+	return keys, overflow
+}
+
+func forgetDeletedWhileUnavailable(store *PostgresStore) {
+	keys, overflow := takeDeletedWhileUnavailable()
+	if overflow {
+		log.Printf("[timeline] more than %d resources were deleted while PostgreSQL was unreachable; "+
+			"one of the others recreated under the same name may not have its creation recorded", maxDeletedWhileUnavailable)
+	}
+	if len(keys) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), postgresOperationTimeout)
+	defer cancel()
+	if err := store.forgetSeen(ctx, keys); err != nil {
+		log.Printf("[timeline] failed to clear seen marks for %d resource(s) deleted while PostgreSQL was unreachable: %v", len(keys), err)
+	}
 }

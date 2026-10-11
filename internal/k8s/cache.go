@@ -867,6 +867,51 @@ func isSyncAdd(obj any) bool {
 	return false
 }
 
+// timelineUpdateDiff returns the diff an update is recorded with, and false when
+// the update carries nothing the timeline records (a heartbeat, a
+// managedFields-only write, a reconcile counter). The no-store path asks the same
+// question, so an outage counts only the changes it actually lost.
+func timelineUpdateDiff(kind string, oldObj, newObj any, precomputedDiff *DiffInfo, diffPrecomputed bool) (*timeline.DiffInfo, bool) {
+	var diff *timeline.DiffInfo
+	// Reuse the cache layer's already-computed diff on the hot path; only
+	// recompute for callers (tests / non-cache) that didn't precompute it.
+	localDiff := precomputedDiff
+	if !diffPrecomputed {
+		localDiff = ComputeDiff(kind, oldObj, newObj)
+	}
+	if localDiff != nil {
+		diff = &timeline.DiffInfo{
+			Fields:  make([]timeline.FieldChange, len(localDiff.Fields)),
+			Summary: localDiff.Summary,
+		}
+		for i, f := range localDiff.Fields {
+			diff.Fields[i] = timeline.FieldChange{
+				Path:     f.Path,
+				OldValue: f.OldValue,
+				NewValue: f.NewValue,
+			}
+		}
+	} else if KindHasDiffer(kind) || isUnstructuredUpdate(oldObj, newObj) {
+		// Diff handling found nothing observable — usually a heartbeat,
+		// managedFields-only update, or reconcile counter.
+		// Before dropping, use metadata.generation to catch spec fields our
+		// audited differ does not yet track.
+		if oldGen, newGen := getGeneration(oldObj), getGeneration(newObj); oldGen != newGen && oldGen > 0 && newGen > 0 && generationBumpSignalsSpecChange(kind, oldObj, newObj) {
+			diff = &timeline.DiffInfo{
+				Fields: []timeline.FieldChange{{
+					Path:     "metadata.generation",
+					OldValue: oldGen,
+					NewValue: newGen,
+				}},
+				Summary: fmt.Sprintf("spec changed (gen %d→%d, fields not specifically tracked)", oldGen, newGen),
+			}
+		} else {
+			return nil, false
+		}
+	}
+	return diff, true
+}
+
 // recordToTimelineStore records a resource change to the timeline.
 // clusterContext is the wiring-time capture (see InitResourceCache), not the
 // live active context — a late callback must stamp the cluster it came from.
@@ -884,18 +929,6 @@ func recordToTimelineStore(clusterContext, kind, namespace, name, uid, op string
 		obj = tombstone.Obj
 	}
 
-	store := timeline.GetStore()
-	if store == nil {
-		// No store means a configured backend could not be opened. Count the
-		// change the same way a failed write is counted, so a timeline that is
-		// quietly losing history still moves the drop counter an operator
-		// watches. Objects listed at startup are not changes, and the store
-		// would not record them as such, so they are not counted.
-		if op != "add" || !isSyncAdd(obj) {
-			timeline.RecordDrop(kind, namespace, name, timeline.DropReasonStoreDown, op, clusterContext)
-		}
-		return
-	}
 	apiVersion := extractAPIVersion(kind, obj)
 	apiGroup := ""
 	if gvr, ok := BuiltinGVRAnyGroup(kind); ok {
@@ -903,6 +936,30 @@ func recordToTimelineStore(clusterContext, kind, namespace, name, uid, op string
 	}
 	if apiVersion != "" {
 		apiGroup = resourceid.GroupFromAPIVersion(apiVersion)
+	}
+
+	store := timeline.GetStore()
+	if store == nil {
+		if op == "delete" {
+			timeline.NoteDeletedWhileUnavailable(clusterContext, apiGroup, kind, namespace, name)
+		}
+		// No store means a configured backend could not be opened. Count the
+		// change the same way a failed write is counted, so a timeline that is
+		// quietly losing history still moves the drop counter an operator
+		// watches. Objects listed at startup and updates with nothing to record
+		// (heartbeats) would not have been recorded either, so they are not
+		// counted as lost.
+		if op == "add" && isSyncAdd(obj) {
+			return
+		}
+		if op == "update" && oldObj != nil && newObj != nil {
+			if _, recordable := timelineUpdateDiff(kind, oldObj, newObj, precomputedDiff, diffPrecomputed); !recordable {
+				timeline.RecordDrop(kind, namespace, name, timeline.DropReasonNoDiff, op, clusterContext)
+				return
+			}
+		}
+		timeline.RecordDrop(kind, namespace, name, timeline.DropReasonStoreDown, op, clusterContext)
+		return
 	}
 
 	if op == "add" {
@@ -952,45 +1009,13 @@ func recordToTimelineStore(clusterContext, kind, namespace, name, uid, op string
 
 	var diff *timeline.DiffInfo
 	if op == "update" && oldObj != nil && newObj != nil {
-		// Reuse the cache layer's already-computed diff on the hot path; only
-		// recompute for callers (tests / non-cache) that didn't precompute it.
-		localDiff := precomputedDiff
-		if !diffPrecomputed {
-			localDiff = ComputeDiff(kind, oldObj, newObj)
-		}
-		if localDiff != nil {
-			diff = &timeline.DiffInfo{
-				Fields:  make([]timeline.FieldChange, len(localDiff.Fields)),
-				Summary: localDiff.Summary,
+		var recordable bool
+		if diff, recordable = timelineUpdateDiff(kind, oldObj, newObj, precomputedDiff, diffPrecomputed); !recordable {
+			timeline.RecordDrop(kind, namespace, name, timeline.DropReasonNoDiff, op, clusterContext)
+			if DebugEvents {
+				log.Printf("[DEBUG] No-diff update, skipping: %s/%s/%s", kind, namespace, name)
 			}
-			for i, f := range localDiff.Fields {
-				diff.Fields[i] = timeline.FieldChange{
-					Path:     f.Path,
-					OldValue: f.OldValue,
-					NewValue: f.NewValue,
-				}
-			}
-		} else if KindHasDiffer(kind) || isUnstructuredUpdate(oldObj, newObj) {
-			// Diff handling found nothing observable — usually a heartbeat,
-			// managedFields-only update, or reconcile counter.
-			// Before dropping, use metadata.generation to catch spec fields our
-			// audited differ does not yet track.
-			if oldGen, newGen := getGeneration(oldObj), getGeneration(newObj); oldGen != newGen && oldGen > 0 && newGen > 0 && generationBumpSignalsSpecChange(kind, oldObj, newObj) {
-				diff = &timeline.DiffInfo{
-					Fields: []timeline.FieldChange{{
-						Path:     "metadata.generation",
-						OldValue: oldGen,
-						NewValue: newGen,
-					}},
-					Summary: fmt.Sprintf("spec changed (gen %d→%d, fields not specifically tracked)", oldGen, newGen),
-				}
-			} else {
-				timeline.RecordDrop(kind, namespace, name, timeline.DropReasonNoDiff, op, clusterContext)
-				if DebugEvents {
-					log.Printf("[DEBUG] No-diff update, skipping: %s/%s/%s", kind, namespace, name)
-				}
-				return
-			}
+			return
 		}
 	}
 

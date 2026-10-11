@@ -3,12 +3,15 @@ package timeline
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/url"
 	"path"
 	"sort"
@@ -19,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/skyhook-io/radar/pkg/resourceid"
@@ -543,6 +547,24 @@ func (s *PostgresStore) ClearResourceSeen(clusterContext, group, kind, namespace
 	case <-ctx.Done():
 		log.Printf("[timeline] timed out waiting for a seen-resource clear to persist")
 	}
+}
+
+// forgetSeen clears many seen marks in one statement, in memory and in the
+// database. The in-memory set is cleared even if the statement fails, so this
+// process records the next creation either way.
+func (s *PostgresStore) forgetSeen(ctx context.Context, keys []string) error {
+	s.seenMu.Lock()
+	for _, k := range keys {
+		delete(s.seenResources, k)
+	}
+	s.seenMu.Unlock()
+
+	byteKeys := make([][]byte, len(keys))
+	for i, k := range keys {
+		byteKeys[i] = []byte(k)
+	}
+	_, err := s.db.ExecContext(ctx, "DELETE FROM radar_timeline_seen_resources WHERE resource_key = ANY($1)", byteKeys)
+	return err
 }
 
 // enqueueSeenWrite hands one mutation to the background writer without
@@ -1394,6 +1416,36 @@ func loadPostgresMigrations() ([]postgresMigration, error) {
 		return migrations[i].version < migrations[j].version
 	})
 	return migrations, nil
+}
+
+// DatabaseUnreachable reports whether err means Radar lost or could not open
+// its connection to PostgreSQL, as opposed to a query the server received and
+// rejected. A database that goes away mid-run first fails pooled connections
+// (EOF, or a shutdown code from the server) and then fails new ones to connect;
+// all of these are the same outage to the person reading the timeline. pgx
+// names the user and database in its connect error, never the password.
+func DatabaseUnreachable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var connectErr *pgconn.ConnectError
+	if errors.As(err, &connectErr) {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		// Class 08 is connection exception; 57P01-57P03 are the server shutting
+		// down, crashing, or not yet accepting connections.
+		return strings.HasPrefix(pgErr.Code, "08") || pgErr.Code == "57P01" || pgErr.Code == "57P02" || pgErr.Code == "57P03"
+	}
+	var opErr *net.OpError
+	return errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, driver.ErrBadConn) || errors.As(err, &opErr)
+}
+
+// Ping reports whether the database answers right now. Stats cannot tell an
+// unreachable database from an empty one, so diagnostics asks this first.
+func (s *PostgresStore) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
 }
 
 func postgresConnectionError(operation string, err error, dsn string) error {
