@@ -586,6 +586,9 @@ namespace can start its own watch even when another namespace is already cached.
 Failed or unfinished warming reports partial coverage and preserves cached hits
 from covered namespaces. Third-party CRDs named Event are searched normally; only
 built-in Events are excluded from broad searches.
+Leases, Endpoints and EndpointSlices, which Radar reads directly instead of
+watching, are never warmed: broad searches omit them and `kind:` reports
+`not_indexed`. Use `list_resources` for them.
 
 Broad queries also collapse `namespace_excluded` and `namespace_scope` into one `*`
 entry each, merging their `namespaces`. Explicitly requested kinds keep per-kind

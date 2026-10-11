@@ -705,7 +705,7 @@ type podLogsInput struct {
 
 type searchInput struct {
 	Query     string `json:"query" jsonschema:"search query for unknown resources or broad content scans. Free tokens AND'd. Matches identity plus searchable object content. Examples: adServiceFailure, kind:NetworkChaos delay, kind:ConfigMap flagd, image:flagd. Modifiers: kind:Pod, kind:NetworkChaos, ns:foo, label:k=v, image:redis"`
-	Namespace string `json:"namespace,omitempty" jsonschema:"optional namespace scope; same as an inline ns: modifier and overrides inline ones. A cluster-scoped kind named with kind: ignores it"`
+	Namespace string `json:"namespace,omitempty" jsonschema:"optional namespace scope, as an inline ns: modifier; overrides inline ones. Skips cluster-scoped kinds unless kind: names one"`
 	Limit     int    `json:"limit,omitempty" jsonschema:"max hits returned (default 50, max 500)"`
 	Include   string `json:"include,omitempty" jsonschema:"per-hit detail: summary (default), raw, or none"`
 	Filter    string `json:"filter,omitempty" jsonschema:"CEL boolean predicate. Bindings: object (sanitized; no Secret data), kind, apiVersion, metadata, spec, status, labels, annotations. Guard fields with has(object.subjects) or has(spec.sources); check map keys with '\"app\" in labels'. Examples: 'kind == \"Pod\" && status.phase == \"Failed\"', 'has(status.readyReplicas) && status.readyReplicas == 0'"`

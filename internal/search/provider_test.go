@@ -79,3 +79,23 @@ func TestCacheProviderWarmWaitsForDiscoveryWithoutBlocking(t *testing.T) {
 		t.Fatalf("discovery wait: %v, %s", err, time.Since(start))
 	}
 }
+
+func TestCacheProviderNeverWarmsDirectReadBuiltins(t *testing.T) {
+	p := &CacheProvider{dynamic: &k8s.DynamicResourceCache{}}
+	for _, gvr := range []schema.GroupVersionResource{
+		{Group: "coordination.k8s.io", Version: "v1", Resource: "leases"},
+		{Group: "discovery.k8s.io", Version: "v1", Resource: "endpointslices"},
+		{Group: "", Version: "v1", Resource: "endpoints"},
+	} {
+		if got := p.DynamicObservation(gvr); got.State != k8score.DynamicObservationUnsupported {
+			t.Errorf("%s observation: %+v", gvr.Resource, got)
+		}
+		if err := p.WarmDynamic(context.Background(), gvr, ""); listErrorReason(err) != "not_indexed" {
+			t.Errorf("%s warm: %v", gvr.Resource, err)
+		}
+	}
+	crd := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	if got := dynamicObservationReason(p.DynamicObservation(crd)); got != "cold" {
+		t.Fatalf("unwatched CRD: %q", got)
+	}
+}

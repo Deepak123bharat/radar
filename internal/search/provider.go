@@ -123,7 +123,13 @@ func (p *CacheProvider) DynamicObservation(gvr schema.GroupVersionResource) k8sc
 	if p.dynamic == nil {
 		return k8score.DynamicResourceObservation{State: k8score.DynamicObservationSyncing}
 	}
-	return p.dynamic.Observation(gvr)
+	observation := p.dynamic.Observation(gvr)
+	// Radar reads these high-churn built-ins directly and never watches them,
+	// so search treats them like list-only APIs instead of warming an informer.
+	if k8s.ShouldBypassDynamicInformer(gvr) && observation.State != k8score.DynamicObservationSynced && observation.State != k8score.DynamicObservationSyncing {
+		return k8score.DynamicResourceObservation{State: k8score.DynamicObservationUnsupported, ReasonCode: "direct_read_only"}
+	}
+	return observation
 }
 
 func (p *CacheProvider) WarmDynamic(ctx context.Context, gvr schema.GroupVersionResource, namespace string) error {
@@ -131,6 +137,9 @@ func (p *CacheProvider) WarmDynamic(ctx context.Context, gvr schema.GroupVersion
 	defer cancel()
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if k8s.ShouldBypassDynamicInformer(gvr) {
+		return fmt.Errorf("%w: %s are read directly, not watched", k8s.ErrUnknownKind, gvr.Resource)
 	}
 	if p.dynamic == nil {
 		return fmt.Errorf("%w: dynamic cache", k8s.ErrDynamicNotReady)
