@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -937,19 +938,28 @@ func hubbleFlowsRequest(opts FlowOptions, follow bool) *observerpb.GetFlowsReque
 		}
 	}
 	// Source OR destination: each filter is AND within itself, filters are OR'd.
-	// A selection narrower than the namespaces replaces them: its pods already
-	// sit in namespaces the caller sees, and the handler filters by namespace
-	// access on the result either way.
-	if match := hubbleMatchWhitelist(opts.Match); match != nil {
-		req.Whitelist = match
-	} else if namespaces := hubbleNamespaces(opts); len(namespaces) > 0 {
+	// A selection is tied to the namespaces in view: a selected endpoint can sit
+	// outside them (a workload the view talks to), and its traffic with the rest
+	// of the cluster would otherwise fill each node's limit before the traffic
+	// the view shows.
+	var nsWhitelist []*flowpb.FlowFilter
+	if namespaces := hubbleNamespaces(opts); len(namespaces) > 0 {
 		prefixes := make([]string, len(namespaces))
 		for i, ns := range namespaces {
 			prefixes[i] = ns + "/"
 		}
-		req.Whitelist = []*flowpb.FlowFilter{
+		nsWhitelist = []*flowpb.FlowFilter{
 			{SourcePod: prefixes},
 			{DestinationPod: prefixes},
+		}
+	}
+	req.Whitelist = nsWhitelist
+	if match := hubbleMatchWhitelist(opts.Match); match != nil {
+		if namespaces := hubbleNamespaces(opts); len(namespaces) > 0 {
+			match = hubbleWithinNamespaces(match, namespaces)
+		}
+		if match != nil {
+			req.Whitelist = match
 		}
 	}
 	req.Blacklist = []*flowpb.FlowFilter{
@@ -1154,6 +1164,55 @@ func hubblePairsWhitelist(pairs []EndpointPair) []*flowpb.FlowFilter {
 	}
 }
 
+// hubbleWithinNamespaces narrows selection filters to flows with at least one
+// end in the namespaces: each filter becomes the variants that pin its source
+// or its destination to them, keeping only named pods inside them. A filter
+// with a side already wholly inside stays as it is; one whose ends are both
+// outside is dropped. Nil when nothing is left.
+func hubbleWithinNamespaces(filters []*flowpb.FlowFilter, namespaces []string) []*flowpb.FlowFilter {
+	prefixes := make([]string, len(namespaces))
+	for i, ns := range namespaces {
+		prefixes[i] = ns + "/"
+	}
+	// within returns the pods inside the namespaces (all of them for an open
+	// side), and whether that is every pod the side named.
+	within := func(pods []string) ([]string, bool) {
+		if len(pods) == 0 {
+			return prefixes, false
+		}
+		var in []string
+		for _, pod := range pods {
+			for _, prefix := range prefixes {
+				if strings.HasPrefix(pod, prefix) {
+					in = append(in, pod)
+					break
+				}
+			}
+		}
+		return in, len(in) == len(pods)
+	}
+	var out []*flowpb.FlowFilter
+	for _, f := range filters {
+		src, srcAll := within(f.GetSourcePod())
+		dst, dstAll := within(f.GetDestinationPod())
+		if srcAll || dstAll {
+			out = append(out, f)
+			continue
+		}
+		if len(src) > 0 {
+			v := proto.Clone(f).(*flowpb.FlowFilter)
+			v.SourcePod = src
+			out = append(out, v)
+		}
+		if len(dst) > 0 {
+			v := proto.Clone(f).(*flowpb.FlowFilter)
+			v.DestinationPod = dst
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // hubbleMaxMatchPairs is the largest selection sent pair by pair.
 const hubbleMaxMatchPairs = 50
 
@@ -1266,7 +1325,15 @@ func (h *HubbleSource) fetchFlowsViaGRPC(ctx context.Context, opts FlowOptions) 
 	}
 
 	req := hubbleFlowsRequest(opts, false)
-	req.Number = hubbleNodeLimit(req.Number, h.connectedNodes(ctx, client))
+	// A view narrowed to some namespaces keeps each node's full limit: the
+	// whitelist already narrows what each node sends, and splitting by every
+	// node in the cluster would cut it short on each busy node while the fetch
+	// stays far below the budget. The receive-time cap still bounds the total.
+	// A selection keeps the split: it shows only its newest records, and a
+	// busy endpoint is on every node.
+	if len(req.Whitelist) == 0 || opts.Match.Size() > 0 {
+		req.Number = hubbleNodeLimit(req.Number, h.connectedNodes(ctx, client))
+	}
 	var windowStart time.Time
 	if opts.Since > 0 {
 		windowStart = time.Now().Add(-opts.Since)
@@ -1601,10 +1668,31 @@ func convertEndpoint(ep *flowpb.Endpoint, ip string) Endpoint {
 		if wl := ep.GetWorkloads(); len(wl) > 0 && wl[0].GetName() != "" {
 			endpoint.Workload = wl[0].GetName()
 			endpoint.WorkloadKind = wl[0].GetKind()
+			if endpoint.WorkloadKind == "ReplicaSet" {
+				if rollout, ok := rolloutOfReplicaSet(endpoint.Workload, ep.GetLabels()); ok {
+					endpoint.Workload, endpoint.WorkloadKind = rollout, "Rollout"
+				}
+			}
 		}
 	}
 
 	return endpoint
+}
+
+// rolloutOfReplicaSet names the Argo Rollout behind a ReplicaSet Cilium
+// reported. Cilium tells a Deployment's ReplicaSet by its pods'
+// pod-template-hash label; a Rollout's pods carry rollouts-pod-template-hash
+// instead, so Cilium stops at the ReplicaSet, which is named after the Rollout
+// plus that hash.
+func rolloutOfReplicaSet(replicaSet string, labels []string) (string, bool) {
+	for _, label := range labels {
+		if hash, ok := strings.CutPrefix(label, "k8s:rollouts-pod-template-hash="); ok && hash != "" {
+			if rollout, ok := strings.CutSuffix(replicaSet, "-"+hash); ok && rollout != "" {
+				return rollout, true
+			}
+		}
+	}
+	return "", false
 }
 
 // StreamFlows returns a channel of flows for real-time updates

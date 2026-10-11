@@ -209,7 +209,6 @@ func (m *Manager) detectSourcesLocked(ctx context.Context) (*SourcesResponse, er
 		log.Printf("[traffic] Warning: failed to detect cluster info: %v", err)
 		clusterInfo = &ClusterInfo{Platform: "generic"}
 	}
-	m.clusterInfo = clusterInfo
 
 	response := &SourcesResponse{
 		Cluster:     *clusterInfo,
@@ -270,6 +269,14 @@ func (m *Manager) detectSourcesLocked(ctx context.Context) (*SourcesResponse, er
 		}
 	}
 
+	// A request cancelled midway reads as every remaining source failing. The
+	// active source and the remembered detection are shared by every user, so
+	// that must not switch traffic off for them.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	m.clusterInfo = clusterInfo
 	m.reconcileActiveSource(available)
 
 	// Set active source name in response

@@ -120,7 +120,7 @@ func TestHubbleMatchWhitelist(t *testing.T) {
 		}
 	})
 
-	t.Run("a selection replaces the namespace whitelist", func(t *testing.T) {
+	t.Run("a selection inside the view replaces the namespace whitelist", func(t *testing.T) {
 		req := hubbleFlowsRequest(FlowOptions{Namespaces: []string{"a"}, Match: &FlowMatch{Pairs: []EndpointPair{{Source: pod("a", "web-1"), Destination: pod("a", "db-0")}}}}, false)
 		if wl := req.GetWhitelist(); len(wl) != 2 || !slices.Equal(wl[0].GetSourcePod(), []string{"a/web-1"}) {
 			t.Errorf("whitelist = %v, want the selection's pods", wl)
@@ -171,6 +171,29 @@ type failingStatusObserver struct {
 
 func (s *failingStatusObserver) ServerStatus(context.Context, *observerpb.ServerStatusRequest) (*observerpb.ServerStatusResponse, error) {
 	return nil, status.Error(codes.DeadlineExceeded, "a node did not answer")
+}
+
+func TestHubbleGetFlows_ANamespaceViewKeepsTheFullNodeLimit(t *testing.T) {
+	cases := []struct {
+		name string
+		opts FlowOptions
+		want uint64
+	}{
+		{"namespaces in view", FlowOptions{Namespaces: []string{"a"}}, hubbleDefaultNodeLimit},
+		{"a selection keeps the split", FlowOptions{Namespaces: []string{"a"}, Match: &FlowMatch{Endpoints: []EndpointRef{{Namespace: "a", Name: "web-1", Kind: EndpointKindPod}}}}, 250},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			obs := &statusObserver{nodes: 200, scriptedObserver: scriptedObserver{responses: []*observerpb.GetFlowsResponse{flowResponse("a", "b")}}}
+			h := connectedHubble(t, obs)
+			if _, err := h.GetFlows(context.Background(), tc.opts); err != nil {
+				t.Fatal(err)
+			}
+			if got := obs.got.GetNumber(); got != tc.want {
+				t.Errorf("Number = %d, want %d", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestHubbleGetFlows_KeepsTheBudgetSplitWhenStatusFails(t *testing.T) {
@@ -307,4 +330,75 @@ func TestConvertEndpointTakesCiliumsWorkload(t *testing.T) {
 	if bare.Workload != "" {
 		t.Errorf("workload = %q, want none: an app label is not an owner, and two Deployments can share one", bare.Workload)
 	}
+}
+
+func TestConvertEndpointNamesARolloutCiliumStoppedAt(t *testing.T) {
+	rs := func(name string, labels ...string) Endpoint {
+		return convertEndpoint(&flowpb.Endpoint{
+			Namespace: "shop", PodName: name + "-x2k4q", Labels: labels,
+			Workloads: []*flowpb.Workload{{Name: name, Kind: "ReplicaSet"}},
+		}, "")
+	}
+	if ep := rs("checkout-6b8f9c", "k8s:app=checkout", "k8s:rollouts-pod-template-hash=6b8f9c"); ep.Workload != "checkout" || ep.WorkloadKind != "Rollout" {
+		t.Errorf("workload = %q/%q, want the Rollout checkout", ep.Workload, ep.WorkloadKind)
+	}
+	if ep := rs("batch-6b8f9c", "k8s:app=batch"); ep.Workload != "batch-6b8f9c" || ep.WorkloadKind != "ReplicaSet" {
+		t.Errorf("workload = %q/%q, want a ReplicaSet without the Rollout label left as Cilium named it", ep.Workload, ep.WorkloadKind)
+	}
+	if ep := rs("other", "k8s:rollouts-pod-template-hash=6b8f9c"); ep.Workload != "other" || ep.WorkloadKind != "ReplicaSet" {
+		t.Errorf("workload = %q/%q, want a name not ending in the hash left alone", ep.Workload, ep.WorkloadKind)
+	}
+}
+
+func TestHubbleFlowsRequest_TiesASelectionToTheNamespacesInView(t *testing.T) {
+	pod := func(ns, name string) EndpointRef {
+		return EndpointRef{Namespace: ns, Name: name, Kind: EndpointKindPod}
+	}
+	view := []string{"shop"}
+
+	t.Run("an endpoint outside the view keeps only its traffic with the view", func(t *testing.T) {
+		req := hubbleFlowsRequest(FlowOptions{Namespaces: view, Match: &FlowMatch{Endpoints: []EndpointRef{pod("kube-system", "coredns-1")}}}, false)
+		wl := req.GetWhitelist()
+		if len(wl) != 2 ||
+			!slices.Equal(wl[0].GetSourcePod(), []string{"kube-system/coredns-1"}) || !slices.Equal(wl[0].GetDestinationPod(), []string{"shop/"}) ||
+			!slices.Equal(wl[1].GetSourcePod(), []string{"shop/"}) || !slices.Equal(wl[1].GetDestinationPod(), []string{"kube-system/coredns-1"}) {
+			t.Errorf("whitelist = %v, want coredns paired with the view's namespace on the other end", wl)
+		}
+	})
+
+	t.Run("an endpoint inside the view is sent as it is", func(t *testing.T) {
+		req := hubbleFlowsRequest(FlowOptions{Namespaces: view, Match: &FlowMatch{Endpoints: []EndpointRef{pod("shop", "web-1")}}}, false)
+		wl := req.GetWhitelist()
+		if len(wl) != 2 || !slices.Equal(wl[0].GetSourcePod(), []string{"shop/web-1"}) || len(wl[0].GetDestinationPod()) != 0 {
+			t.Errorf("whitelist = %v, want the pod on either side, unchanged", wl)
+		}
+	})
+
+	t.Run("a pair keeps its port, and a pair wholly outside is dropped", func(t *testing.T) {
+		req := hubbleFlowsRequest(FlowOptions{Namespaces: view, Match: &FlowMatch{Pairs: []EndpointPair{
+			{Source: pod("shop", "web-1"), Destination: pod("pay", "api-1"), Port: 8080},
+			{Source: pod("pay", "api-1"), Destination: pod("pay", "db-0"), Port: 5432},
+		}}}, false)
+		wl := req.GetWhitelist()
+		if len(wl) != 2 || !slices.Equal(wl[0].GetDestinationPort(), []string{"8080"}) || !slices.Equal(wl[1].GetSourcePort(), []string{"8080"}) {
+			t.Errorf("whitelist = %v, want only the shop pair, both ways, with its port", wl)
+		}
+	})
+
+	t.Run("a selection wholly outside falls back to the namespaces", func(t *testing.T) {
+		req := hubbleFlowsRequest(FlowOptions{Namespaces: view, Match: &FlowMatch{Pairs: []EndpointPair{
+			{Source: pod("pay", "api-1"), Destination: pod("pay", "db-0")},
+		}}}, false)
+		wl := req.GetWhitelist()
+		if len(wl) != 2 || !slices.Equal(wl[0].GetSourcePod(), []string{"shop/"}) || !slices.Equal(wl[1].GetDestinationPod(), []string{"shop/"}) {
+			t.Errorf("whitelist = %v, want the view's namespaces", wl)
+		}
+	})
+
+	t.Run("with every namespace in view the selection is sent as it is", func(t *testing.T) {
+		req := hubbleFlowsRequest(FlowOptions{Match: &FlowMatch{Endpoints: []EndpointRef{pod("kube-system", "coredns-1")}}}, false)
+		if wl := req.GetWhitelist(); len(wl) != 2 || len(wl[0].GetDestinationPod()) != 0 {
+			t.Errorf("whitelist = %v, want coredns on either side, unconstrained", wl)
+		}
+	})
 }
