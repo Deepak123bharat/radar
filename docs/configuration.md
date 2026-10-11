@@ -744,8 +744,10 @@ or volume unevaluated. A gap that still lets a finding fire is stated in that
 finding's message instead.
 
 Unreadable or initially unsynced consumer inventories prevent absence findings
-and passing counts for that namespace (`pvc-consumers` in `missingInputs`); an
-unreadable PVC inventory reports `persistentvolumeclaims`. PVs and
+for that namespace: its claims with no observed consumer are neither findings
+nor passes (`pvc-consumers` in `missingInputs`), while a claim whose consumer
+was observed still passes. An unreadable PVC inventory reports
+`persistentvolumeclaims`. PVs and
 StorageClasses require the caller's exact cluster-scoped list grant, but claim
 findings don't depend on them: without PV access a Bound no-consumer finding
 says **reclaim policy not visible**, and without StorageClass access an
