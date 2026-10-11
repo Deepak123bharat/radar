@@ -7,8 +7,8 @@ import { SEVERITY_TEXT } from '@skyhook-io/k8s-ui/utils/badge-colors'
 import { Tooltip } from '../ui/Tooltip'
 import type { TrafficGraphSelection } from './TrafficGraph'
 import {
-  connectionRows, displayVolume, flowDrops, flowErrors, formatRate, graphEndpointId, hasStatusData, isExternalKind,
-  type TrafficFocus,
+  connectionRows, displayVolume, edgeCarriesPort, flowDrops, flowErrors, formatRate, graphEndpointId, hasStatusData, isExternalKind,
+  type GraphFlow, type TrafficFocus,
 } from './trafficFilters'
 
 interface TrafficConnectionsTableProps {
@@ -36,9 +36,10 @@ function rowSelection(flow: AggregatedFlow): TrafficGraphSelection {
   }
 }
 
-function sameEdge(a: TrafficGraphSelection, b: TrafficGraphSelection | null): boolean {
-  return !!b && b.type === 'edge' && a.sourceId === b.sourceId && a.destId === b.destId &&
-    a.port === b.port && !!a.directionUnknown === !!b.directionUnknown
+function isSelected(flow: GraphFlow, selection: TrafficGraphSelection | null): boolean {
+  return !!selection && selection.type === 'edge' &&
+    graphEndpointId(flow.source) === selection.sourceId && graphEndpointId(flow.destination) === selection.destId &&
+    edgeCarriesPort(flow, selection.port) && !!flow.directionUnknown === !!selection.directionUnknown
 }
 
 /**
@@ -94,7 +95,7 @@ export function TrafficConnectionsTable({ flows, isRateBased, selection, onSelec
         computeItemKey={(_, flow) => `${graphEndpointId(flow.source)}->${graphEndpointId(flow.destination)}:${flow.port}${flow.directionUnknown ? ':u' : ''}`}
         itemContent={(_, flow) => {
           const sel = rowSelection(flow)
-          const selected = sameEdge(sel, selection)
+          const selected = isSelected(flow, selection)
           const errors = flowErrors(flow)
           const drops = flowDrops(flow)
           return (

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { AggregatedFlow, TrafficFlow } from '../../types'
-import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource, keepAvailable, effectiveThreshold, volumeUnit, isExternalKind, isPolicyDropReason, requestRateOf, errorRateOf, formatRate, displayVolume, mergeFlowVolume, dedupeHTTPPairs, coverageLabel, latencyWeightOf, endpointPair, selectionRawPairs, mergeRawPairs, graphEndpoint, graphSize, parseFocus, focusParam, focusId, touchesFocus, focusNeighborhood, endpointSummaries, searchEndpoints, namespaceSummaries, namespaceOverBudget, hasStatusData, connectionRows, selectionMatch, type GraphFlow } from './trafficFilters'
+import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource, keepAvailable, effectiveThreshold, volumeUnit, isExternalKind, isPolicyDropReason, requestRateOf, errorRateOf, formatRate, displayVolume, mergeFlowVolume, dedupeHTTPPairs, coverageLabel, latencyWeightOf, endpointPair, selectionRawPairs, mergeRawPairs, graphEndpoint, graphSize, parseFocus, focusParam, focusId, touchesFocus, focusNeighborhood, endpointSummaries, searchEndpoints, namespaceSummaries, namespaceOverBudget, hasStatusData, connectionRows, selectionMatch, edgeCarriesPort, selectedEdgeMatcher, type GraphFlow } from './trafficFilters'
 
 describe('matchesStatusRanges', () => {
   it('does not filter when nothing is selected', () => {
@@ -566,6 +566,12 @@ describe('selectionMatch', () => {
     expect(m).toEqual({ endpoints: [expect.objectContaining({ namespace: 'edge', name: 'gateway' })] })
   })
 
+  it('sends a node whose edges fit in the request as its edges, so only what the view shows is fetched', () => {
+    const flows = [traced(edge('edge/gateway', 't/svc-1')), traced(edge('edge/gateway', 't/svc-2'))]
+    const node = { type: 'node' as const, nodeId: 'edge/gateway' }
+    expect(selectionMatch(selectionRawPairs(flows, node), node)).toEqual({ pairs: expect.any(Array) })
+  })
+
   it('sends a node the source cannot name, such as an external one, as its edges', () => {
     const flows = [traced(edge('a/web', 'api.stripe.com')), traced(edge('a/job', 'api.stripe.com'))]
     const node = { type: 'node' as const, nodeId: 'api.stripe.com' }
@@ -580,5 +586,47 @@ describe('selectionMatch', () => {
     const merged: GraphFlow = { ...edge('a/web', 'MongoDB'), rawPairs: [endpointPair(edge('a/web', '10.0.0.1')), endpointPair(edge('a/web', '10.0.0.2'))] }
     const mongo = { type: 'node' as const, nodeId: 'MongoDB' }
     expect(selectionMatch(selectionRawPairs([merged], mongo), mongo)).toHaveProperty('pairs')
+  })
+})
+
+describe('edgeCarriesPort', () => {
+  // A merged edge shows the port of whichever server edge came first, which
+  // changes between fetches; a selection made on one port must still find it.
+  it('finds a port merged into the edge, not just the one it shows', () => {
+    const merged: GraphFlow = { ...edge('a/web', 'a/db'), port: 5432, rawPairs: [endpointPair({ ...edge('a/web', 'a/db'), port: 5432 }), endpointPair({ ...edge('a/web', 'a/db'), port: 6379 })] }
+    expect(edgeCarriesPort(merged, 6379)).toBe(true)
+    expect(edgeCarriesPort(merged, 5432)).toBe(true)
+    expect(edgeCarriesPort(merged, 80)).toBe(false)
+    expect(edgeCarriesPort(merged, undefined)).toBe(true)
+  })
+})
+
+describe('selectedEdgeMatcher', () => {
+  const ep = (namespace: string, name: string) => ({ name, namespace, kind: 'Pod' })
+  const record = (src: string, dst: string, port: number): TrafficFlow => ({
+    source: ep('shop', src), destination: ep('shop', dst), protocol: 'tcp', port,
+    connections: 1, bytesSent: 0, bytesRecv: 0, lastSeen: '2025-01-01T00:00:00Z',
+  } as TrafficFlow)
+  const pairs = [{ source: ep('shop', 'web'), destination: ep('shop', 'api'), port: 8080 }]
+  const asDrawn = (e: TrafficFlow['source']) => e
+
+  it('matches the selected edge, by endpoints, direction and port', () => {
+    const on = selectedEdgeMatcher(pairs, true, asDrawn)
+    expect(on(record('web', 'api', 8080))).toBe(true)
+    expect(on(record('web', 'api', 9090))).toBe(false)
+    expect(on(record('api', 'web', 41234))).toBe(false)
+  })
+
+  // A Radar before caller-oriented responses sends a response server to
+  // client on the client's ephemeral port; dropping it left requests looking
+  // unanswered.
+  it('keeps a reversed response from a Radar that does not orient responses', () => {
+    const on = selectedEdgeMatcher(pairs, false, asDrawn)
+    expect(on(record('api', 'web', 41234))).toBe(true)
+    expect(on(record('web', 'db', 5432))).toBe(false)
+  })
+
+  it('matches everything with no selection', () => {
+    expect(selectedEdgeMatcher(null, true, asDrawn)(record('a', 'b', 1))).toBe(true)
   })
 })

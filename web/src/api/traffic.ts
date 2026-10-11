@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import type { TrafficSourcesResponse, TrafficFlowsResponse, TrafficRecordsResponse } from '../types'
 import { fetchJSON as fetchApiJSON, useRadarFeature } from './client'
@@ -158,6 +158,22 @@ const MAX_TRAFFIC_MATCH_CHARS = 6_000
  *  endpoint it is, which every one of its edges has at an end. */
 export type TrafficMatch = { pairs: TrafficEndpointPair[] } | { endpoints: TrafficEndpointRef[] }
 
+// Every entry encodes to more than this many characters, so a selection with
+// more entries than the request can hold is rejected without serializing it.
+const MIN_MATCH_ENTRY_CHARS = 40
+
+function encodedMatch(match: TrafficMatch): string | null {
+  const entries = 'pairs' in match ? match.pairs.length : match.endpoints.length
+  if (entries * MIN_MATCH_ENTRY_CHARS > MAX_TRAFFIC_MATCH_CHARS) return null
+  const json = JSON.stringify(match)
+  return encodeURIComponent(json).length > MAX_TRAFFIC_MATCH_CHARS ? null : json
+}
+
+/** Whether a selection is small enough to send. */
+export function trafficMatchFits(match: TrafficMatch): boolean {
+  return encodedMatch(match) !== null
+}
+
 export interface UseTrafficRecordsOptions extends TrafficScope {
   /** The selection, or null for no selection. */
   match: TrafficMatch | null
@@ -170,10 +186,12 @@ export interface UseTrafficRecordsOptions extends TrafficScope {
 export function useTrafficRecords(options: UseTrafficRecordsOptions) {
   const { enabled = true } = options
   const { guard, gatedKey, support } = useRadarFeature('trafficRecords')
-  const match = options.match ? JSON.stringify(options.match) : null
-  const tooLarge = match !== null && encodeURIComponent(match).length > MAX_TRAFFIC_MATCH_CHARS
+  // Serialized once per selection, not per render: a merged edge can carry
+  // tens of thousands of pairs.
+  const match = useMemo(() => (options.match ? encodedMatch(options.match) : null), [options.match])
+  const tooLarge = options.match !== null && match === null
   const params = trafficScopeParams(options)
-  if (match && !tooLarge) params.set('match', match)
+  if (match) params.set('match', match)
 
   const query = useQuery<TrafficRecordsResponse>({
     queryKey: ['traffic-flows', 'records', ...trafficScopeKey(options), match, ...gatedKey],

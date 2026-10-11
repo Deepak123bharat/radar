@@ -23,7 +23,7 @@ import { isClusterAddon, type AddonMode } from './TrafficView'
 import { SEVERITY_BADGE, SEVERITY_DOT, SEVERITY_TEXT } from '@skyhook-io/k8s-ui/utils/badge-colors'
 import { getNamespaceColor } from '../../utils/traffic-colors'
 import { Tooltip } from '../ui/Tooltip'
-import { isRateBasedSource, isExternalKind, requestRateOf, errorRateOf, formatRate, displayVolume, latencyWeightOf, type TrafficFocus } from './trafficFilters'
+import { isRateBasedSource, isExternalKind, requestRateOf, errorRateOf, formatRate, displayVolume, latencyWeightOf, edgeCarriesPort, type TrafficFocus } from './trafficFilters'
 
 const elk = new ELK()
 
@@ -1681,7 +1681,7 @@ export function TrafficGraph({ flows, hotPathThreshold = 0, showNamespaceGroups 
     const edge = layoutedEdges.find(e => {
       const flow = flowByEdgeId.get(e.id)
       return e.source === viewSelection.sourceId && e.target === viewSelection.destId &&
-        (viewSelection.port === undefined || flow?.port === viewSelection.port) &&
+        (viewSelection.port === undefined || (!!flow && edgeCarriesPort(flow, viewSelection.port))) &&
         !!flow?.directionUnknown === !!viewSelection.directionUnknown
     })
     setSelection(edge ? edgeSelection(edge, flowByEdgeId.get(edge.id)) : null)

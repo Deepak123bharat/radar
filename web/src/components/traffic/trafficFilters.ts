@@ -1,5 +1,5 @@
 import type { AggregatedFlow, TrafficFlow } from '../../types'
-import type { TrafficEndpointPair, TrafficEndpointRef, TrafficMatch } from '../../api/traffic'
+import { trafficMatchFits, type TrafficEndpointPair, type TrafficEndpointRef, type TrafficMatch } from '../../api/traffic'
 import type { TrafficGraphSelection } from './TrafficGraph'
 
 /**
@@ -311,6 +311,15 @@ export function dedupeHTTPPairs(flows: TrafficFlow[], callerOriented: boolean): 
  */
 export type GraphFlow = AggregatedFlow & { rawPairs?: TrafficEndpointPair[] }
 
+/**
+ * Whether an edge carries a port: its own, or one of the edges merged into it.
+ * A merged edge shows the port of whichever of its edges arrived first, which
+ * changes between fetches, so a selection made on one port must still find it.
+ */
+export function edgeCarriesPort(flow: GraphFlow, port: number | undefined): boolean {
+  return port === undefined || flow.port === port || !!flow.rawPairs?.some(p => p.port === port)
+}
+
 export function endpointPair(flow: AggregatedFlow): TrafficEndpointPair {
   const ref = (e: AggregatedFlow['source']) => ({
     namespace: e.namespace || undefined,
@@ -361,6 +370,33 @@ export function pairKey(source: { namespace?: string; name: string }, destinatio
 }
 
 /**
+ * Whether a record belongs to the selected edges, in the grouping the graph
+ * draws (`drawn`). A Radar from before caller-oriented responses
+ * (`responsesCallerOriented` unset) sends an HTTP response from server to
+ * client, on the client's port, so there an edge is also matched by its
+ * endpoints in either direction, whatever the port.
+ */
+export function selectedEdgeMatcher(
+  pairs: TrafficEndpointPair[] | null,
+  responsesCallerOriented: boolean,
+  drawn: (e: TrafficFlow['source']) => { namespace?: string; name: string },
+): (f: TrafficFlow) => boolean {
+  if (!pairs) return () => true
+  const keys = new Set(pairs.map(p => pairKey(p.source, p.destination, p.port, p.directionUnknown)))
+  const endpoints = responsesCallerOriented ? null : new Set(pairs.flatMap(p => {
+    const src = graphEndpointId(p.source)
+    const dst = graphEndpointId(p.destination)
+    return [`${src}->${dst}`, `${dst}->${src}`]
+  }))
+  return f => {
+    const src = drawn(f.source)
+    const dst = drawn(f.destination)
+    return keys.has(pairKey(src, dst, f.port, f.directionUnknown)) ||
+      !!endpoints?.has(`${graphEndpointId(src)}->${graphEndpointId(dst)}`)
+  }
+}
+
+/**
  * The server edges behind the selected node or edge, deduplicated and in a
  * stable order — the server returns its aggregation in no particular order,
  * and the result keys the records query. Null when the selection traces back
@@ -405,12 +441,20 @@ export function selectionRawPairs(
  * to narrow it. Anything else — an edge, a node merged from several
  * endpoints — is sent as its edges.
  */
+/** The most edges a node's records are looked up by; the server sends at
+ *  most this many to the source one by one. */
+const MAX_PAIR_LOOKUP = 50
+
 export function selectionMatch(
   pairs: TrafficEndpointPair[] | null,
   selection: TrafficGraphSelection | null,
 ): TrafficMatch | null {
   if (!pairs) return null
   if (selection?.type !== 'node') return { pairs }
+  // A node whose edges fit in one request is sent as them: they are exactly
+  // the traffic the view shows. A busy node is sent as its endpoint, one entry
+  // however many edges it has, and the list then drops the edges the view hides.
+  if (pairs.length <= MAX_PAIR_LOOKUP && trafficMatchFits({ pairs })) return { pairs }
   const refKey = (r: TrafficEndpointRef) => `${graphEndpointId(r)}|${r.kind ?? ''}`
   // Only pods can be named to the source; any other endpoint sent alone would
   // fetch everything, while its edges still name the pods at their far ends.
