@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { AggregatedFlow, TrafficFlow } from '../../types'
-import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource, keepAvailable, effectiveThreshold, volumeUnit, isExternalKind, isPolicyDropReason, requestRateOf, errorRateOf, formatRate, displayVolume, mergeFlowVolume, dedupeHTTPPairs, coverageLabel, latencyWeightOf, endpointPair, selectionRawPairs, mergeRawPairs, graphEndpoint, graphSize, parseFocus, focusParam, focusId, touchesFocus, focusNeighborhood, endpointSummaries, searchEndpoints, namespaceSummaries, namespaceOverBudget, hasStatusData, connectionRows, selectionMatch, edgeCarriesPort, selectedEdgeMatcher, type GraphFlow } from './trafficFilters'
+import { matchesStatusRanges, bucketsFromCounts, bucketsFromStatus, isRateBasedSource, keepAvailable, effectiveThreshold, volumeUnit, isExternalKind, isPolicyDropReason, requestRateOf, errorRateOf, formatRate, displayVolume, mergeFlowVolume, dedupeHTTPPairs, coverageLabel, latencyWeightOf, endpointPair, selectionRawPairs, mergeRawPairs, graphEndpoint, graphSize, parseFocus, focusParam, focusId, touchesFocus, focusNeighborhood, endpointSummaries, searchEndpoints, namespaceSummaries, namespaceOverBudget, hasStatusData, connectionRows, selectionMatch, edgeCarriesPort, edgesOnPort, selectedEdgeMatcher, type GraphFlow } from './trafficFilters'
 
 describe('matchesStatusRanges', () => {
   it('does not filter when nothing is selected', () => {
@@ -566,12 +566,6 @@ describe('selectionMatch', () => {
     expect(m).toEqual({ endpoints: [expect.objectContaining({ namespace: 'edge', name: 'gateway' })] })
   })
 
-  it('sends a node whose edges fit in the request as its edges, so only what the view shows is fetched', () => {
-    const flows = [traced(edge('edge/gateway', 't/svc-1')), traced(edge('edge/gateway', 't/svc-2'))]
-    const node = { type: 'node' as const, nodeId: 'edge/gateway' }
-    expect(selectionMatch(selectionRawPairs(flows, node), node)).toEqual({ pairs: expect.any(Array) })
-  })
-
   it('sends a node the source cannot name, such as an external one, as its edges', () => {
     const flows = [traced(edge('a/web', 'api.stripe.com')), traced(edge('a/job', 'api.stripe.com'))]
     const node = { type: 'node' as const, nodeId: 'api.stripe.com' }
@@ -622,11 +616,43 @@ describe('selectedEdgeMatcher', () => {
   // unanswered.
   it('keeps a reversed response from a Radar that does not orient responses', () => {
     const on = selectedEdgeMatcher(pairs, false, asDrawn)
-    expect(on(record('api', 'web', 41234))).toBe(true)
+    const response = { ...record('api', 'web', 41234), l7Protocol: 'HTTP', l7Type: 'RESPONSE' }
+    expect(on(response)).toBe(true)
     expect(on(record('web', 'db', 5432))).toBe(false)
+  })
+
+  it('does not take other traffic between the endpoints, which is on edges of its own', () => {
+    const on = selectedEdgeMatcher(pairs, false, asDrawn)
+    expect(on(record('web', 'api', 9090))).toBe(false) // a request on another port
+    expect(on(record('api', 'web', 5432))).toBe(false) // TCP the other way
+    expect(on({ ...record('api', 'web', 41234), l7Protocol: 'HTTP', l7Type: 'REQUEST' })).toBe(false) // the callee calling back
+    expect(selectedEdgeMatcher(pairs, true, asDrawn)({ ...record('api', 'web', 41234), l7Protocol: 'HTTP', l7Type: 'RESPONSE' })).toBe(false)
   })
 
   it('matches everything with no selection', () => {
     expect(selectedEdgeMatcher(null, true, asDrawn)(record('a', 'b', 1))).toBe(true)
+  })
+})
+
+describe('edgesOnPort', () => {
+  // Default view: one client calling 80 and 443 merges into one edge shown on
+  // :80, while the Internet node keeps another client's :443 apart, so two
+  // edges join the same endpoints.
+  const merged: GraphFlow = { ...edge('internet', 'web/ingress'), port: 80, rawPairs: [endpointPair({ ...edge('internet', 'web/ingress'), port: 80 }), endpointPair({ ...edge('internet', 'web/ingress'), port: 443 })] }
+  const tls: GraphFlow = { ...edge('internet', 'web/ingress'), port: 443, rawPairs: [endpointPair({ ...edge('internet', 'web/ingress'), port: 443 })] }
+
+  it('prefers the edge shown on the port over one that only carries it', () => {
+    expect(edgesOnPort([merged, tls], f => f, 443)).toEqual([tls])
+    expect(edgesOnPort([merged, tls], f => f, 80)).toEqual([merged])
+  })
+
+  it('falls back to an edge the port was merged into', () => {
+    expect(edgesOnPort([merged], f => f, 443)).toEqual([merged])
+    expect(edgesOnPort([merged, tls], f => f, 8443)).toEqual([])
+  })
+
+  it('keeps a selection on the :443 edge to that edge\'s records', () => {
+    const sel = { type: 'edge' as const, sourceId: 'internet', destId: 'web/ingress', port: 443 }
+    expect(selectionRawPairs([merged, tls], sel)).toEqual(tls.rawPairs)
   })
 })

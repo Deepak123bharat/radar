@@ -1,5 +1,5 @@
 import type { AggregatedFlow, TrafficFlow } from '../../types'
-import { trafficMatchFits, type TrafficEndpointPair, type TrafficEndpointRef, type TrafficMatch } from '../../api/traffic'
+import type { TrafficEndpointPair, TrafficEndpointRef, TrafficMatch } from '../../api/traffic'
 import type { TrafficGraphSelection } from './TrafficGraph'
 
 /**
@@ -320,6 +320,22 @@ export function edgeCarriesPort(flow: GraphFlow, port: number | undefined): bool
   return port === undefined || flow.port === port || !!flow.rawPairs?.some(p => p.port === port)
 }
 
+/**
+ * Of the edges between a selection's endpoints, the ones it means: those on
+ * its exact port when any are, else those with the port merged in. Two edges
+ * can join the same endpoints (the Internet node keeps ports apart), and the
+ * one shown on a port must win over one that merely carries it.
+ */
+export function edgesOnPort<T>(candidates: T[], flowOf: (c: T) => GraphFlow | undefined, port: number | undefined): T[] {
+  if (port === undefined) return candidates
+  const exact = candidates.filter(c => flowOf(c)?.port === port)
+  if (exact.length > 0) return exact
+  return candidates.filter(c => {
+    const flow = flowOf(c)
+    return !!flow && edgeCarriesPort(flow, port)
+  })
+}
+
 export function endpointPair(flow: AggregatedFlow): TrafficEndpointPair {
   const ref = (e: AggregatedFlow['source']) => ({
     namespace: e.namespace || undefined,
@@ -373,8 +389,9 @@ export function pairKey(source: { namespace?: string; name: string }, destinatio
  * Whether a record belongs to the selected edges, in the grouping the graph
  * draws (`drawn`). A Radar from before caller-oriented responses
  * (`responsesCallerOriented` unset) sends an HTTP response from server to
- * client, on the client's port, so there an edge is also matched by its
- * endpoints in either direction, whatever the port.
+ * client, on the client's port, so there a response is also matched to an
+ * edge running the other way, whatever its port. Nothing else is: other
+ * traffic between the same endpoints is on edges of its own.
  */
 export function selectedEdgeMatcher(
   pairs: TrafficEndpointPair[] | null,
@@ -383,16 +400,14 @@ export function selectedEdgeMatcher(
 ): (f: TrafficFlow) => boolean {
   if (!pairs) return () => true
   const keys = new Set(pairs.map(p => pairKey(p.source, p.destination, p.port, p.directionUnknown)))
-  const endpoints = responsesCallerOriented ? null : new Set(pairs.flatMap(p => {
-    const src = graphEndpointId(p.source)
-    const dst = graphEndpointId(p.destination)
-    return [`${src}->${dst}`, `${dst}->${src}`]
-  }))
+  const callers = responsesCallerOriented ? null : new Set(pairs.map(p => `${graphEndpointId(p.source)}->${graphEndpointId(p.destination)}`))
   return f => {
     const src = drawn(f.source)
     const dst = drawn(f.destination)
-    return keys.has(pairKey(src, dst, f.port, f.directionUnknown)) ||
-      !!endpoints?.has(`${graphEndpointId(src)}->${graphEndpointId(dst)}`)
+    if (keys.has(pairKey(src, dst, f.port, f.directionUnknown))) return true
+    // The response travels callee to caller: reversed, it is the edge's.
+    return !!callers && f.l7Protocol === 'HTTP' && f.l7Type === 'RESPONSE' &&
+      callers.has(`${graphEndpointId(dst)}->${graphEndpointId(src)}`)
   }
 }
 
@@ -412,19 +427,18 @@ export function selectionRawPairs(
   const pairs = new Map<string, TrafficEndpointPair>()
   const groupId = (e: GraphFlow['source']) =>
     inAddonGroup && selection.nodeId === 'addon-group' && inAddonGroup(e) ? 'addon-group' : selectableId(e)
-  for (const flow of flows) {
+  const touching = flows.filter(flow => {
     const sourceId = groupId(flow.source)
     const destId = groupId(flow.destination)
-    // An edge is drawn per port, so a selected edge stands for its own port.
-    // An edge merged from several ports carries one of them, and which one can
-    // change between refreshes, so any port merged into it identifies it.
-    const selected = selection.type === 'node'
+    return selection.type === 'node'
       ? sourceId === selection.nodeId || destId === selection.nodeId
       : sourceId === selection.sourceId && destId === selection.destId &&
-        (selection.port === undefined || flow.port === selection.port ||
-          (flow.rawPairs ?? []).some(p => p.port === selection.port)) &&
         !!flow.directionUnknown === !!selection.directionUnknown
-    if (!selected) continue
+  })
+  // An edge stands for its port; an edge merged from several ports shows one
+  // of them, which can change between refreshes (edgesOnPort).
+  const selected = selection.type === 'node' ? touching : edgesOnPort(touching, f => f, selection.port)
+  for (const flow of selected) {
     for (const pair of flow.rawPairs ?? []) {
       pairs.set(pairKey(pair.source, pair.destination, pair.port, pair.directionUnknown), pair)
     }
@@ -441,20 +455,12 @@ export function selectionRawPairs(
  * to narrow it. Anything else — an edge, a node merged from several
  * endpoints — is sent as its edges.
  */
-/** The most edges a node's records are looked up by; the server sends at
- *  most this many to the source one by one. */
-const MAX_PAIR_LOOKUP = 50
-
 export function selectionMatch(
   pairs: TrafficEndpointPair[] | null,
   selection: TrafficGraphSelection | null,
 ): TrafficMatch | null {
   if (!pairs) return null
   if (selection?.type !== 'node') return { pairs }
-  // A node whose edges fit in one request is sent as them: they are exactly
-  // the traffic the view shows. A busy node is sent as its endpoint, one entry
-  // however many edges it has, and the list then drops the edges the view hides.
-  if (pairs.length <= MAX_PAIR_LOOKUP && trafficMatchFits({ pairs })) return { pairs }
   const refKey = (r: TrafficEndpointRef) => `${graphEndpointId(r)}|${r.kind ?? ''}`
   // Only pods can be named to the source; any other endpoint sent alone would
   // fetch everything, while its edges still name the pods at their far ends.

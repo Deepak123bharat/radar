@@ -390,8 +390,9 @@ export function TrafficView({ namespaces, onSetNamespaces }: TrafficViewProps) {
   const [aggregateExternal, setAggregateExternal] = useState(true)
   const [detectServices, setDetectServices] = useState(true)
   const [collapseInternet, setCollapseInternet] = useState(true)
-  // Focus and grouping live in the URL, so Back leaves a focus and a link
-  // carries both: a pod focus matches only while pods are drawn.
+  // Focus and grouping live in the URL so a link carries both: a pod focus
+  // matches only while pods are drawn. A focus is a history entry; switching
+  // the grouping replaces the current one.
   const [searchParams, setSearchParams] = useSearchParams()
   const groupByWorkload = searchParams.get('groupBy') !== 'pod'
   const setGroupByWorkload = useCallback((on: boolean) => {

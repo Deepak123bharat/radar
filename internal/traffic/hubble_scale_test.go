@@ -173,14 +173,16 @@ func (s *failingStatusObserver) ServerStatus(context.Context, *observerpb.Server
 	return nil, status.Error(codes.DeadlineExceeded, "a node did not answer")
 }
 
-func TestHubbleGetFlows_ANamespaceViewKeepsTheFullNodeLimit(t *testing.T) {
+func TestHubbleGetFlows_SplitsANamespaceViewOverItsNodes(t *testing.T) {
 	cases := []struct {
 		name string
 		opts FlowOptions
 		want uint64
 	}{
-		{"namespaces in view", FlowOptions{Namespaces: []string{"a"}}, hubbleDefaultNodeLimit},
-		{"a selection keeps the split", FlowOptions{Namespaces: []string{"a"}, Match: &FlowMatch{Endpoints: []EndpointRef{{Namespace: "a", Name: "web-1", Kind: EndpointKindPod}}}}, 250},
+		{"a namespace on a few nodes gets their full limit", FlowOptions{Namespaces: []string{"a"}, NamespaceNodes: 3}, hubbleDefaultNodeLimit},
+		{"a namespace across the cluster keeps the split", FlowOptions{Namespaces: []string{"a"}, NamespaceNodes: 200}, 250},
+		{"an unknown node count keeps the cluster split", FlowOptions{Namespaces: []string{"a"}}, 250},
+		{"a selection keeps the cluster split", FlowOptions{Namespaces: []string{"a"}, NamespaceNodes: 3, Match: &FlowMatch{Endpoints: []EndpointRef{{Namespace: "a", Name: "web-1", Kind: EndpointKindPod}}}}, 250},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -392,6 +394,21 @@ func TestHubbleFlowsRequest_TiesASelectionToTheNamespacesInView(t *testing.T) {
 		wl := req.GetWhitelist()
 		if len(wl) != 2 || !slices.Equal(wl[0].GetSourcePod(), []string{"shop/"}) || !slices.Equal(wl[1].GetDestinationPod(), []string{"shop/"}) {
 			t.Errorf("whitelist = %v, want the view's namespaces", wl)
+		}
+	})
+
+	t.Run("a long namespace list falls back to the namespaces", func(t *testing.T) {
+		many := make([]string, 300)
+		for i := range many {
+			many[i] = fmt.Sprintf("team-%d", i)
+		}
+		var outside []EndpointRef
+		for i := range 20 {
+			outside = append(outside, pod("kube-system", fmt.Sprintf("agent-%d", i)))
+		}
+		req := hubbleFlowsRequest(FlowOptions{Namespaces: many, Match: &FlowMatch{Endpoints: outside}}, false)
+		if wl := req.GetWhitelist(); len(wl) != 2 || len(wl[0].GetSourcePod()) != 300 || len(wl[0].GetDestinationPod()) != 0 {
+			t.Errorf("whitelist has %d filters, want the 300 namespaces on either side instead of 40 filters with 300 prefixes each", len(wl))
 		}
 	})
 

@@ -228,6 +228,9 @@ func (m *Manager) detectSourcesLocked(ctx context.Context) (*SourcesResponse, er
 			continue
 		}
 		result, err := source.Detect(ctx)
+		if err != nil && ctx.Err() != nil {
+			break // the request ended; nothing below is kept
+		}
 		if err != nil {
 			log.Printf("[traffic] Error detecting %s: %v", name, err)
 			errorlog.Record("traffic", "warning", "error detecting %s: %v", name, err)

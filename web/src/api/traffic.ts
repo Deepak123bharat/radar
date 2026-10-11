@@ -158,20 +158,18 @@ const MAX_TRAFFIC_MATCH_CHARS = 6_000
  *  endpoint it is, which every one of its edges has at an end. */
 export type TrafficMatch = { pairs: TrafficEndpointPair[] } | { endpoints: TrafficEndpointRef[] }
 
-// Every entry encodes to more than this many characters, so a selection with
-// more entries than the request can hold is rejected without serializing it.
-const MIN_MATCH_ENTRY_CHARS = 40
+// Every pair encodes to more than this many characters, so a selection with
+// more pairs than the request can hold is rejected without serializing it.
+const MIN_MATCH_PAIR_CHARS = 40
+
+/** The whole query string's limit: the selection plus the scope beside it,
+ *  under the 8 KiB request line proxies commonly allow. */
+const MAX_TRAFFIC_QUERY_CHARS = 7_000
 
 function encodedMatch(match: TrafficMatch): string | null {
-  const entries = 'pairs' in match ? match.pairs.length : match.endpoints.length
-  if (entries * MIN_MATCH_ENTRY_CHARS > MAX_TRAFFIC_MATCH_CHARS) return null
+  if ('pairs' in match && match.pairs.length * MIN_MATCH_PAIR_CHARS > MAX_TRAFFIC_MATCH_CHARS) return null
   const json = JSON.stringify(match)
   return encodeURIComponent(json).length > MAX_TRAFFIC_MATCH_CHARS ? null : json
-}
-
-/** Whether a selection is small enough to send. */
-export function trafficMatchFits(match: TrafficMatch): boolean {
-  return encodedMatch(match) !== null
 }
 
 export interface UseTrafficRecordsOptions extends TrafficScope {
@@ -189,9 +187,9 @@ export function useTrafficRecords(options: UseTrafficRecordsOptions) {
   // Serialized once per selection, not per render: a merged edge can carry
   // tens of thousands of pairs.
   const match = useMemo(() => (options.match ? encodedMatch(options.match) : null), [options.match])
-  const tooLarge = options.match !== null && match === null
   const params = trafficScopeParams(options)
   if (match) params.set('match', match)
+  const tooLarge = options.match !== null && (match === null || params.toString().length > MAX_TRAFFIC_QUERY_CHARS)
 
   const query = useQuery<TrafficRecordsResponse>({
     queryKey: ['traffic-flows', 'records', ...trafficScopeKey(options), match, ...gatedKey],

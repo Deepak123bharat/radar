@@ -1168,8 +1168,13 @@ func hubblePairsWhitelist(pairs []EndpointPair) []*flowpb.FlowFilter {
 // end in the namespaces: each filter becomes the variants that pin its source
 // or its destination to them, keeping only named pods inside them. A filter
 // with a side already wholly inside stays as it is; one whose ends are both
-// outside is dropped. Nil when nothing is left.
+// outside is dropped. Nil when nothing is left, or when pinning would send
+// more prefixes than hubbleMaxTiedPrefixes (a long namespace list on many
+// filters): every node checks each one against each flow.
 func hubbleWithinNamespaces(filters []*flowpb.FlowFilter, namespaces []string) []*flowpb.FlowFilter {
+	if len(filters)*len(namespaces) > hubbleMaxTiedPrefixes {
+		return nil
+	}
 	prefixes := make([]string, len(namespaces))
 	for i, ns := range namespaces {
 		prefixes[i] = ns + "/"
@@ -1212,6 +1217,10 @@ func hubbleWithinNamespaces(filters []*flowpb.FlowFilter, namespaces []string) [
 	}
 	return out
 }
+
+// hubbleMaxTiedPrefixes bounds the namespace prefixes a selection tied to the
+// view's namespaces may add; past it the view's namespaces are sent alone.
+const hubbleMaxTiedPrefixes = 2000
 
 // hubbleMaxMatchPairs is the largest selection sent pair by pair.
 const hubbleMaxMatchPairs = 50
@@ -1325,15 +1334,16 @@ func (h *HubbleSource) fetchFlowsViaGRPC(ctx context.Context, opts FlowOptions) 
 	}
 
 	req := hubbleFlowsRequest(opts, false)
-	// A view narrowed to some namespaces keeps each node's full limit: the
-	// whitelist already narrows what each node sends, and splitting by every
-	// node in the cluster would cut it short on each busy node while the fetch
-	// stays far below the budget. The receive-time cap still bounds the total.
-	// A selection keeps the split: it shows only its newest records, and a
-	// busy endpoint is on every node.
-	if len(req.Whitelist) == 0 || opts.Match.Size() > 0 {
-		req.Number = hubbleNodeLimit(req.Number, h.connectedNodes(ctx, client))
+	// A view narrowed to some namespaces splits the budget over the nodes
+	// running their pods: split over every node in the cluster, each busy node
+	// would be cut short while the fetch stays far below the budget. Otherwise,
+	// and for a selection (it shows only its newest records, and a busy
+	// endpoint is on every node), the budget is split over every node.
+	nodes := opts.NamespaceNodes
+	if nodes <= 0 || len(hubbleNamespaces(opts)) == 0 || opts.Match.Size() > 0 {
+		nodes = h.connectedNodes(ctx, client)
 	}
+	req.Number = hubbleNodeLimit(req.Number, nodes)
 	var windowStart time.Time
 	if opts.Since > 0 {
 		windowStart = time.Now().Add(-opts.Since)

@@ -138,6 +138,10 @@ type FlowOptions struct {
 	// it in place of Namespace, so a multi-namespace view stops spending the
 	// source's limits on traffic it is about to discard.
 	Namespaces []string
+	// NamespaceNodes is how many nodes run pods in Namespaces, 0 when unknown.
+	// A source with a per-node limit splits its budget over these nodes, where
+	// the view's traffic is, instead of over every node in the cluster.
+	NamespaceNodes int
 	// ExcludeNamespaces drops flows with either endpoint in one of these
 	// namespaces, and ExcludeHost flows to or from a node or the host network.
 	// Both are what the view hides anyway; pushing them to the source keeps

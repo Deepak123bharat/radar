@@ -53,3 +53,27 @@ func TestResolveFlowWorkloads(t *testing.T) {
 		t.Error("records keep their pod names")
 	}
 }
+
+func TestNamespaceNodeCount(t *testing.T) {
+	pod := func(ns, name, node string) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name}, Spec: corev1.PodSpec{NodeName: node}}
+	}
+	useTestResourceCache(t, fake.NewSimpleClientset(
+		pod("shop", "web-1", "node-1"),
+		pod("shop", "web-2", "node-1"),
+		pod("shop", "db-0", "node-2"),
+		pod("shop", "pending", ""),
+		pod("pay", "api-1", "node-3"),
+		pod("other", "x", "node-4"),
+	))
+	cache := k8s.GetResourceCache()
+	if got := namespaceNodeCount(cache, []string{"shop"}); got != 2 {
+		t.Errorf("shop = %d nodes, want 2 (a pending pod runs nowhere)", got)
+	}
+	if got := namespaceNodeCount(cache, []string{"shop", "pay"}); got != 3 {
+		t.Errorf("shop+pay = %d nodes, want 3", got)
+	}
+	if got := namespaceNodeCount(cache, nil); got != 0 {
+		t.Errorf("all namespaces = %d, want 0 (unknown: the cluster split applies)", got)
+	}
+}
