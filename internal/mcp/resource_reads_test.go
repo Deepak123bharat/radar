@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -313,7 +314,7 @@ func TestResourceReadsDynamicPendingAndCollectorDenial(t *testing.T) {
 			dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds)
 			dyn.PrependReactor("list", "*", func(action ktesting.Action) (bool, runtime.Object, error) {
 				if denied {
-					return true, nil, apierrors.NewForbidden(action.GetResource().GroupResource(), "", fmt.Errorf("collector denied"))
+					return true, nil, collectorRefusal(action.GetResource().GroupResource(), action.GetVerb(), action.GetNamespace())
 				}
 				if action.(interface{ GetListOptions() metav1.ListOptions }).GetListOptions().Limit == 1 {
 					return false, nil, nil
@@ -322,7 +323,7 @@ func TestResourceReadsDynamicPendingAndCollectorDenial(t *testing.T) {
 			})
 			dyn.PrependReactor("get", "*", func(action ktesting.Action) (bool, runtime.Object, error) {
 				if denied {
-					return true, nil, apierrors.NewForbidden(action.GetResource().GroupResource(), "", fmt.Errorf("collector denied"))
+					return true, nil, collectorRefusal(action.GetResource().GroupResource(), action.GetVerb(), action.GetNamespace())
 				}
 				return false, nil, nil
 			})
@@ -355,6 +356,7 @@ func TestResourceReadsDynamicPendingAndCollectorDenial(t *testing.T) {
 						if denied && (!strings.Contains(err.Error(), "Radar's") || !strings.Contains(err.Error(), "can't ")) {
 							t.Fatalf("denial must identify collector, got %v", err)
 						}
+						assertNoCollectorLeak(t, err)
 					}
 				})
 			}
@@ -464,11 +466,49 @@ func TestResourceReadsNamespacesIgnoreNamespacePin(t *testing.T) {
 	}
 }
 
-// The collector covers alpha and gamma (gamma is empty); beta holds an object
-// it cannot read. Typed and dynamic kinds must answer every scope alike.
-func setupCoverageRuleFixture(t *testing.T, typed bool) (kind string, prewarm func()) {
+// coverageClass is how Radar's collector reads a kind: a typed informer whose
+// coverage the startup probe fixed, a custom-resource informer started per
+// namespace on demand, or a direct API read with no informer.
+type coverageClass string
+
+const (
+	coverageTyped  coverageClass = "typed"
+	coverageCRD    coverageClass = "crd"
+	coverageDirect coverageClass = "direct"
+)
+
+// collectorIdentity appears in every fake collector refusal; no caller-facing
+// error may repeat it, or the namespace Radar runs in.
+const (
+	collectorInstallNamespace = "radar-install"
+	collectorIdentity         = "system:serviceaccount:" + collectorInstallNamespace + ":radar-collector"
+)
+
+func collectorRefusal(gr schema.GroupResource, verb, namespace string) error {
+	scope := fmt.Sprintf("in the namespace %q", namespace)
+	if namespace == "" {
+		scope = "at the cluster scope"
+	}
+	return apierrors.NewForbidden(gr, "", fmt.Errorf("User %q cannot %s resource %q in API group %q %s", collectorIdentity, verb, gr.Resource, gr.Group, scope))
+}
+
+func assertNoCollectorLeak(t *testing.T, err error, hidden ...string) {
 	t.Helper()
-	if typed {
+	if err == nil {
+		return
+	}
+	for _, text := range append([]string{"system:serviceaccount:", collectorInstallNamespace, "is forbidden", "cannot list resource", "cannot get resource"}, hidden...) {
+		if strings.Contains(err.Error(), text) {
+			t.Fatalf("caller-facing error contains %q: %v", text, err)
+		}
+	}
+}
+
+// The collector covers alpha and gamma (gamma is empty); beta holds an object
+// it cannot read. Every class must answer every scope by the same rule.
+func setupCoverageRuleFixture(t *testing.T, class coverageClass) (kind string, prewarm func()) {
+	t.Helper()
+	if class == coverageTyped {
 		client := fake.NewClientset(
 			&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "alpha-object", Namespace: "alpha"}},
 			&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "beta-object", Namespace: "beta"}},
@@ -485,26 +525,47 @@ func setupCoverageRuleFixture(t *testing.T, typed bool) (kind string, prewarm fu
 	t.Cleanup(k8s.ResetTestState)
 	t.Cleanup(k8s.SetTestPermissionResult(&k8s.PermissionCheckResult{Perms: &k8s.ResourcePermissions{}, NamespaceScoped: true, Namespace: "alpha", ScopeCandidates: []string{"alpha", "gamma"}}))
 	gvr := schema.GroupVersionResource{Group: "example.test", Version: "v1", Resource: "widgets"}
-	objs := []runtime.Object{
-		&unstructured.Unstructured{Object: map[string]any{"apiVersion": "example.test/v1", "kind": "Widget", "metadata": map[string]any{"name": "alpha-object", "namespace": "alpha"}}},
-		&unstructured.Unstructured{Object: map[string]any{"apiVersion": "example.test/v1", "kind": "Widget", "metadata": map[string]any{"name": "beta-object", "namespace": "beta"}}},
+	listKind := "Widget"
+	if class == coverageDirect {
+		gvr = schema.GroupVersionResource{Group: "coordination.k8s.io", Version: "v1", Resource: "leases"}
+		listKind = "Lease"
 	}
-	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "WidgetList"}, objs...)
-	dyn.PrependReactor("list", "widgets", func(action ktesting.Action) (bool, runtime.Object, error) {
-		if ns := action.GetNamespace(); ns != "alpha" && ns != "gamma" {
-			return true, nil, apierrors.NewForbidden(gvr.GroupResource(), "", fmt.Errorf("collector denied"))
-		}
-		return false, nil, nil
-	})
-	if err := k8s.InitTestDynamicResourceCache(dyn, []k8s.APIResource{{Group: gvr.Group, Version: gvr.Version, Kind: "Widget", Name: gvr.Resource, Namespaced: true, Verbs: []string{"list", "watch", "get"}}}); err != nil {
+	objs := []runtime.Object{
+		&unstructured.Unstructured{Object: map[string]any{"apiVersion": gvr.GroupVersion().String(), "kind": listKind, "metadata": map[string]any{"name": "alpha-object", "namespace": "alpha"}}},
+		&unstructured.Unstructured{Object: map[string]any{"apiVersion": gvr.GroupVersion().String(), "kind": listKind, "metadata": map[string]any{"name": "beta-object", "namespace": "beta"}}},
+	}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: listKind + "List"}, objs...)
+	for _, verb := range []string{"list", "get"} {
+		dyn.PrependReactor(verb, gvr.Resource, func(action ktesting.Action) (bool, runtime.Object, error) {
+			if ns := action.GetNamespace(); ns != "alpha" && ns != "gamma" {
+				return true, nil, collectorRefusal(gvr.GroupResource(), verb, ns)
+			}
+			return false, nil, nil
+		})
+	}
+	if err := k8s.InitTestDynamicResourceCache(dyn, []k8s.APIResource{{Group: gvr.Group, Version: gvr.Version, Kind: listKind, Name: gvr.Resource, Namespaced: true, Verbs: []string{"list", "watch", "get"}}}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(k8s.ResetTestDynamicState)
+	if class == coverageDirect {
+		return "leases", func() {}
+	}
 	return "widgets", func() {
 		if err := k8s.GetDynamicResourceCache().EnsureWatching(gvr); err != nil {
 			t.Fatal(err)
 		}
 	}
+}
+
+// Typed kinds never read outside the coverage the startup probe fixed, so an
+// uncovered namespace is kind_not_watched. Custom resources and direct kinds
+// read every requested namespace, so the same namespace is collector_forbidden:
+// Radar tried and was refused.
+func coverageReason(class coverageClass) string {
+	if class == coverageTyped {
+		return "kind_not_watched:"
+	}
+	return "collector_forbidden:"
 }
 
 func TestResourceReadsCollectorCoverageRule(t *testing.T) {
@@ -516,24 +577,29 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 		namespace string
 		rows      []string
 		wantErr   []string
-		hidden    []string
+		// coverage is the coverage text every class with known coverage
+		// reports. A direct kind knows only the namespaces this request read,
+		// so it reports coverage only when directCoverage is set.
+		coverage       []string
+		directCoverage bool
+		hidden         []string
 	}{
 		{name: "auth disabled reads the covered namespaces", rows: []string{"alpha-object"}},
 		{name: "cluster-wide caller reads the covered namespaces", caller: "admin", rows: []string{"alpha-object"}},
 		{name: "restricted caller fully covered", caller: "restricted", allowed: []string{"alpha", "gamma"}, rows: []string{"alpha-object"}},
 		{name: "restricted caller covered and empty", caller: "restricted", allowed: []string{"gamma"}, rows: []string{}},
 		{name: "explicit covered and empty", namespace: "gamma", rows: []string{}},
-		{name: "restricted partial overlap", caller: "restricted", allowed: []string{"alpha", "beta"}, wantErr: []string{`namespace "beta"`, `covered namespaces you can read: "alpha"`, "retry with one of them as the namespace"}, hidden: []string{"gamma"}},
-		{name: "restricted partial overlap with an empty covered namespace", caller: "restricted", allowed: []string{"gamma", "beta"}, wantErr: []string{`namespace "beta"`, `covered namespaces you can read: "gamma"`}, hidden: []string{"alpha"}},
-		{name: "no overlap", caller: "restricted", allowed: []string{"beta"}, wantErr: []string{`namespace "beta"`, anyHidden}, hidden: []string{"alpha", "gamma"}},
-		{name: "no overlap across namespaces", caller: "restricted", allowed: []string{"beta", "delta"}, wantErr: []string{`namespaces "beta,delta"`, anyHidden}, hidden: []string{"alpha", "gamma"}},
-		{name: "explicit uncovered", namespace: "beta", wantErr: []string{`namespace "beta"`, `covered namespaces you can read: "alpha,gamma"`}},
-		{name: "restricted explicit uncovered", caller: "restricted", allowed: []string{"alpha", "beta"}, namespace: "beta", wantErr: []string{`namespace "beta"`, `covered namespaces you can read: "alpha"`}, hidden: []string{"gamma"}},
+		{name: "restricted partial overlap", caller: "restricted", allowed: []string{"alpha", "beta"}, wantErr: []string{`namespace "beta"`}, coverage: []string{`covered namespaces you can read: "alpha"`, "retry with one of them as the namespace"}, directCoverage: true, hidden: []string{"gamma"}},
+		{name: "restricted partial overlap with an empty covered namespace", caller: "restricted", allowed: []string{"gamma", "beta"}, wantErr: []string{`namespace "beta"`}, coverage: []string{`covered namespaces you can read: "gamma"`}, directCoverage: true, hidden: []string{"alpha"}},
+		{name: "no overlap", caller: "restricted", allowed: []string{"beta"}, wantErr: []string{`namespace "beta"`}, coverage: []string{anyHidden}, hidden: []string{"alpha", "gamma"}},
+		{name: "no overlap across namespaces", caller: "restricted", allowed: []string{"beta", "delta"}, wantErr: []string{`namespaces "beta,delta"`}, coverage: []string{anyHidden}, hidden: []string{"alpha", "gamma"}},
+		{name: "explicit uncovered", namespace: "beta", wantErr: []string{`namespace "beta"`}, coverage: []string{`covered namespaces you can read: "alpha,gamma"`}},
+		{name: "restricted explicit uncovered", caller: "restricted", allowed: []string{"alpha", "beta"}, namespace: "beta", wantErr: []string{`namespace "beta"`}, coverage: []string{`covered namespaces you can read: "alpha"`}, hidden: []string{"gamma"}},
 	}
-	for _, typed := range []bool{true, false} {
+	for _, class := range []coverageClass{coverageTyped, coverageCRD, coverageDirect} {
 		for _, tc := range cases {
-			t.Run(fmt.Sprintf("typed=%v/%s", typed, tc.name), func(t *testing.T) {
-				kind, prewarm := setupCoverageRuleFixture(t, typed)
+			t.Run(fmt.Sprintf("%s/%s", class, tc.name), func(t *testing.T) {
+				kind, prewarm := setupCoverageRuleFixture(t, class)
 				prewarm()
 				ctx := context.Background()
 				switch tc.caller {
@@ -544,19 +610,21 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 				}
 				result, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: kind, Namespace: tc.namespace, Context: "none"})
 				if tc.wantErr != nil {
-					if err == nil || !strings.HasPrefix(err.Error(), "kind_not_watched:") {
-						t.Fatalf("uncovered scope must fail with kind_not_watched, got %v", err)
+					if err == nil || !strings.HasPrefix(err.Error(), coverageReason(class)) {
+						t.Fatalf("uncovered scope must fail with %s, got %v", coverageReason(class), err)
 					}
-					for _, text := range tc.wantErr {
+					want := tc.wantErr
+					if class != coverageDirect || tc.directCoverage {
+						want = append(slices.Clone(want), tc.coverage...)
+					} else if strings.Contains(err.Error(), "covered namespaces") || strings.Contains(err.Error(), anyHidden) {
+						t.Fatalf("a direct kind cannot claim coverage it did not read: %v", err)
+					}
+					for _, text := range want {
 						if !strings.Contains(err.Error(), text) {
 							t.Fatalf("missing %s: %v", text, err)
 						}
 					}
-					for _, ns := range tc.hidden {
-						if strings.Contains(err.Error(), ns) {
-							t.Fatalf("error names namespace %q the caller cannot read: %v", ns, err)
-						}
-					}
+					assertNoCollectorLeak(t, err, tc.hidden...)
 					return
 				}
 				if err != nil {
@@ -577,25 +645,32 @@ func TestResourceReadsCollectorCoverageRule(t *testing.T) {
 			})
 		}
 	}
-	for _, typed := range []bool{true, false} {
-		t.Run(fmt.Sprintf("typed=%v/get uncovered", typed), func(t *testing.T) {
-			kind, prewarm := setupCoverageRuleFixture(t, typed)
+	for _, class := range []coverageClass{coverageTyped, coverageCRD, coverageDirect} {
+		t.Run(fmt.Sprintf("%s/get uncovered", class), func(t *testing.T) {
+			kind, prewarm := setupCoverageRuleFixture(t, class)
 			prewarm()
 			ctx := withRestrictedUser(t, "coverage-getter", []string{"alpha", "beta"})
 			_, _, err := handleGetResource(ctx, nil, getResourceInput{Kind: kind, Namespace: "beta", Name: "beta-object"})
-			if err == nil || !strings.HasPrefix(err.Error(), "kind_not_watched:") || !strings.Contains(err.Error(), `covered namespaces you can read: "alpha"`) || strings.Contains(err.Error(), "gamma") {
+			if err == nil || !strings.HasPrefix(err.Error(), coverageReason(class)) || !strings.Contains(err.Error(), `namespace "beta"`) {
 				t.Fatalf("uncovered get: %v", err)
 			}
+			if class != coverageDirect && !strings.Contains(err.Error(), `covered namespaces you can read: "alpha"`) {
+				t.Fatalf("uncovered get must offer the caller's covered namespaces: %v", err)
+			}
+			assertNoCollectorLeak(t, err, "gamma")
 		})
 	}
-	t.Run("typed=false/no overlap before any namespace is collected", func(t *testing.T) {
-		kind, _ := setupCoverageRuleFixture(t, false)
-		ctx := withRestrictedUser(t, "cold-coverage-reader", []string{"beta"})
-		_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: kind, Context: "none"})
-		if err == nil || !strings.HasPrefix(err.Error(), "collector_forbidden:") || !strings.Contains(err.Error(), `"beta"`) {
-			t.Fatalf("uncovered cold scope must name the collector denial, got %v", err)
-		}
-	})
+	for _, class := range []coverageClass{coverageCRD, coverageDirect} {
+		t.Run(fmt.Sprintf("%s/no overlap before any namespace is collected", class), func(t *testing.T) {
+			kind, _ := setupCoverageRuleFixture(t, class)
+			ctx := withRestrictedUser(t, "cold-coverage-reader", []string{"beta"})
+			_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: kind, Context: "none"})
+			if err == nil || !strings.HasPrefix(err.Error(), "collector_forbidden:") || !strings.Contains(err.Error(), `namespace "beta"`) {
+				t.Fatalf("uncovered cold scope must name the collector denial, got %v", err)
+			}
+			assertNoCollectorLeak(t, err, "alpha", "gamma")
+		})
+	}
 	t.Run("pinned scope is not named to a caller who cannot read it", func(t *testing.T) {
 		setupFakeCacheForFilterTests(t)
 		oldPin, oldTarget := k8s.ForceNamespaceScope, k8s.GetNamespaceScopeTarget()
@@ -742,7 +817,7 @@ func TestResourceReadsDynamicCollectorIntersection(t *testing.T) {
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "WidgetList"}, obj)
 	dyn.PrependReactor("list", "widgets", func(action ktesting.Action) (bool, runtime.Object, error) {
 		if action.GetNamespace() != "alpha" {
-			return true, nil, apierrors.NewForbidden(gvr.GroupResource(), "", fmt.Errorf("collector denied"))
+			return true, nil, collectorRefusal(gvr.GroupResource(), "list", action.GetNamespace())
 		}
 		return false, nil, nil
 	})
@@ -763,9 +838,10 @@ func TestResourceReadsDynamicCollectorIntersection(t *testing.T) {
 	}
 	ctx := withRestrictedUser(t, "uncovered-reader", []string{"beta"})
 	_, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "widgets", Context: "none"})
-	if err == nil || !strings.HasPrefix(err.Error(), "kind_not_watched:") {
+	if err == nil || !strings.HasPrefix(err.Error(), "collector_forbidden:") {
 		t.Fatalf("caller namespace denied by collector must not return empty success: %v", err)
 	}
+	assertNoCollectorLeak(t, err, "alpha")
 	for _, verb := range []string{"list", "get"} {
 		var err error
 		if verb == "list" {
@@ -773,9 +849,10 @@ func TestResourceReadsDynamicCollectorIntersection(t *testing.T) {
 		} else {
 			_, _, err = handleGetResource(context.Background(), nil, getResourceInput{Kind: "widgets", Namespace: "beta", Name: "x"})
 		}
-		if err == nil || !strings.HasPrefix(err.Error(), "kind_not_watched:") || !strings.Contains(err.Error(), `covered namespaces you can read: "alpha"`) {
+		if err == nil || !strings.HasPrefix(err.Error(), "collector_forbidden:") || !strings.Contains(err.Error(), `covered namespaces you can read: "alpha"`) {
 			t.Fatalf("%s explicit uncovered scope: %v", verb, err)
 		}
+		assertNoCollectorLeak(t, err)
 	}
 }
 
@@ -800,8 +877,11 @@ func TestResourceReadsDynamicUnauthorizedPrefix(t *testing.T) {
 		} else {
 			_, _, err = handleGetResource(context.Background(), nil, getResourceInput{Kind: "widgets", Namespace: "alpha", Name: "x"})
 		}
-		if err == nil || !strings.HasPrefix(err.Error(), "collector_unauthorized:") || !strings.Contains(err.Error(), "expired token") {
+		if err == nil || !strings.HasPrefix(err.Error(), "collector_unauthorized:") || strings.Contains(err.Error(), "expired token") {
 			t.Fatalf("%s credentials rejection: %v", verb, err)
+		}
+		if cause := collectorCause(err); cause == nil || !strings.Contains(cause.Error(), "expired token") {
+			t.Fatalf("%s: API server response must stay available to the log: %v", verb, cause)
 		}
 	}
 }
@@ -896,6 +976,160 @@ func TestResourceReadsRestrictedDirectLists(t *testing.T) {
 	}
 }
 
+// An unrestricted caller's unscoped read of a direct kind returns the
+// namespaces the collector can read when it is refused cluster-wide, the same
+// answer a custom resource gives from its fallback informers.
+func TestResourceReadsUnrestrictedDirectListsFallBackToCandidates(t *testing.T) {
+	for _, b := range []resourceid.Builtin{
+		{Kind: "Lease", Resource: "leases", Group: "coordination.k8s.io", Version: "v1"},
+		{Kind: "EndpointSlice", Resource: "endpointslices", Group: "discovery.k8s.io", Version: "v1"},
+		{Kind: "Endpoints", Resource: "endpoints", Version: "v1"},
+	} {
+		for _, tc := range []struct {
+			name       string
+			candidates []string
+			readable   []string // namespaces the collector may list; "" = cluster scope
+			rows       []string
+			wantErr    []string
+		}{
+			{name: "cluster scope readable", candidates: []string{"alpha"}, readable: []string{"", "alpha", "beta", "gamma"}, rows: []string{"alpha-object", "beta-object", "gamma-object"}},
+			{name: "refused cluster-wide reads the candidates", candidates: []string{"alpha", "beta", "gamma"}, readable: []string{"alpha", "gamma"}, rows: []string{"alpha-object", "gamma-object"}},
+			{name: "refused everywhere", candidates: []string{"alpha", "beta"}, wantErr: []string{`namespaces "alpha,beta"`}},
+			{name: "refused cluster-wide with no candidates", wantErr: []string{"at cluster scope"}},
+		} {
+			for _, caller := range []string{"auth disabled", "cluster-wide"} {
+				t.Run(b.Kind+"/"+tc.name+"/"+caller, func(t *testing.T) {
+					if err := k8s.InitTestResourceCache(fake.NewClientset()); err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(k8s.ResetTestState)
+					t.Cleanup(k8s.SetTestPermissionResult(&k8s.PermissionCheckResult{Perms: &k8s.ResourcePermissions{}, ScopeCandidates: tc.candidates}))
+					gvr := schema.GroupVersionResource{Group: b.Group, Version: b.Version, Resource: b.Resource}
+					var objs []runtime.Object
+					for _, ns := range []string{"alpha", "beta", "gamma"} {
+						objs = append(objs, &unstructured.Unstructured{Object: map[string]any{"apiVersion": gvr.GroupVersion().String(), "kind": b.Kind, "metadata": map[string]any{"name": ns + "-object", "namespace": ns}}})
+					}
+					dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: b.Kind + "List"}, objs...)
+					dyn.PrependReactor("list", b.Resource, func(action ktesting.Action) (bool, runtime.Object, error) {
+						if !slices.Contains(tc.readable, action.GetNamespace()) {
+							return true, nil, collectorRefusal(gvr.GroupResource(), "list", action.GetNamespace())
+						}
+						return false, nil, nil
+					})
+					if err := k8s.InitTestDynamicResourceCache(dyn, []k8s.APIResource{{Group: b.Group, Version: b.Version, Name: b.Resource, Kind: b.Kind, Namespaced: true, Verbs: []string{"list", "watch", "get"}}}); err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(k8s.ResetTestDynamicState)
+					ctx := context.Background()
+					if caller == "cluster-wide" {
+						ctx = withClusterAdmin(t, "direct-admin")
+					}
+					result, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: b.Resource, Context: "none"})
+					if tc.wantErr != nil {
+						if err == nil || !strings.HasPrefix(err.Error(), "collector_forbidden:") {
+							t.Fatalf("a read that covered nothing must fail, got %v", err)
+						}
+						for _, text := range tc.wantErr {
+							if !strings.Contains(err.Error(), text) {
+								t.Fatalf("missing %s: %v", text, err)
+							}
+						}
+						assertNoCollectorLeak(t, err)
+						return
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					body := extractText(t, result)
+					for _, ns := range []string{"alpha", "beta", "gamma"} {
+						if want := slices.Contains(tc.rows, ns+"-object"); containsName(body, ns+"-object") != want {
+							t.Fatalf("%s-object present=%v, want %v: %s", ns, !want, want, body)
+						}
+					}
+					if len(k8s.GetDynamicResourceCache().GetWatchedResources()) != 0 {
+						t.Fatal("direct reads must not start informers")
+					}
+					if slices.Contains(tc.readable, "") && len(dyn.Actions()) != 1 {
+						t.Fatalf("a readable cluster scope must be read once, got %d requests", len(dyn.Actions()))
+					}
+				})
+			}
+		}
+	}
+}
+
+// Every collector refusal a caller can reach keeps the API server's response,
+// which names Radar's identity, out of the tool error.
+func TestCollectorRefusalsNeverEchoTheAPIServerResponse(t *testing.T) {
+	t.Run("typed credential rejection", func(t *testing.T) {
+		if err := k8s.InitScopedTestResourceCache(fake.NewClientset(), map[string]k8score.ResourceScope{"nodes": {}, "pods": {Enabled: true, Namespace: "beta"}}); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(k8s.ResetTestState)
+		rejected := apierrors.NewUnauthorized(collectorIdentity + " token expired")
+		t.Cleanup(k8s.SetTestPermissionResult(&k8s.PermissionCheckResult{
+			Perms:                &k8s.ResourcePermissions{Pods: true},
+			Scopes:               map[string]k8score.ResourceScope{"nodes": {}, "pods": {Enabled: true, Namespace: "beta"}},
+			ProbeErrors:          map[string]error{"nodes": rejected},
+			NamespaceProbeErrors: map[string]map[string]error{"pods": {"alpha": rejected}},
+		}))
+		for _, input := range []listResourcesInput{{Kind: "nodes"}, {Kind: "pods", Namespace: "alpha"}} {
+			_, _, err := handleListResources(context.Background(), nil, input)
+			if err == nil || !strings.HasPrefix(err.Error(), "collector_unauthorized:") {
+				t.Fatalf("%s: %v", input.Kind, err)
+			}
+			assertNoCollectorLeak(t, err)
+		}
+	})
+	t.Run("diagnose", func(t *testing.T) {
+		setupFakeCacheForFilterTests(t)
+		var resources []k8s.APIResource
+		listKinds := map[schema.GroupVersionResource]string{}
+		for _, b := range []resourceid.Builtin{
+			{Kind: "Rollout", Resource: "rollouts", Group: "argoproj.io", Version: "v1alpha1"},
+			{Kind: "Application", Resource: "applications", Group: "argoproj.io", Version: "v1alpha1"},
+		} {
+			gvr := schema.GroupVersionResource{Group: b.Group, Version: b.Version, Resource: b.Resource}
+			listKinds[gvr] = b.Kind + "List"
+			resources = append(resources, k8s.APIResource{Group: b.Group, Version: b.Version, Name: b.Resource, Kind: b.Kind, Namespaced: true, Verbs: []string{"list", "watch", "get"}})
+		}
+		dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds)
+		for _, verb := range []string{"list", "get"} {
+			dyn.PrependReactor(verb, "*", func(action ktesting.Action) (bool, runtime.Object, error) {
+				return true, nil, collectorRefusal(action.GetResource().GroupResource(), verb, action.GetNamespace())
+			})
+		}
+		if err := k8s.InitTestDynamicResourceCache(dyn, resources); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(k8s.ResetTestDynamicState)
+		for _, kind := range []string{"rollout", "application"} {
+			_, _, err := handleDiagnose(context.Background(), nil, diagnoseInput{diagnoseCommonInput: diagnoseCommonInput{Kind: kind, Namespace: "alpha", Name: "web"}})
+			if err == nil || !strings.HasPrefix(err.Error(), "collector_forbidden:") || strings.Contains(err.Error(), "resource not found") {
+				t.Fatalf("%s: a collector refusal is not an absent object: %v", kind, err)
+			}
+			assertNoCollectorLeak(t, err)
+		}
+	})
+	t.Run("collector auth errors", func(t *testing.T) {
+		setupFakeCacheForFilterTests(t)
+		target := collectorTarget{resource: "pods", group: "metrics.k8s.io", action: "get"}
+		for _, cause := range []error{
+			fmt.Errorf("failed to get pod metrics: %w", collectorRefusal(schema.GroupResource{Group: "metrics.k8s.io", Resource: "pods"}, "get", "alpha")),
+			apierrors.NewUnauthorized(collectorIdentity + " token expired"),
+		} {
+			err := collectorAuthError(context.Background(), cause, target, "alpha")
+			if err == nil || !strings.HasPrefix(err.Error(), "collector_") {
+				t.Fatalf("auth refusal not recognised: %v", err)
+			}
+			assertNoCollectorLeak(t, err)
+		}
+		if err := collectorAuthError(context.Background(), fmt.Errorf("metrics API unavailable"), target, "alpha"); err != nil {
+			t.Fatalf("a non-auth failure is not a collector refusal: %v", err)
+		}
+	})
+}
+
 func TestResourceReadsDynamicCallerNamespaceOutsideCandidates(t *testing.T) {
 	for _, prewarm := range []bool{false, true} {
 		t.Run(fmt.Sprintf("prewarm=%v", prewarm), func(t *testing.T) {
@@ -948,8 +1182,11 @@ func TestResourceReadsNamespaceCollectorUnauthorized(t *testing.T) {
 		} else {
 			_, _, err = handleGetResource(ctx, nil, getResourceInput{Kind: "pods", Namespace: "alpha", Name: "present"})
 		}
-		if err == nil || !strings.HasPrefix(err.Error(), "collector_unauthorized:") || !strings.Contains(err.Error(), "alpha rejected token") {
+		if err == nil || !strings.HasPrefix(err.Error(), "collector_unauthorized:") || strings.Contains(err.Error(), "alpha rejected token") {
 			t.Fatalf("%s: namespace credential rejection lost: %v", verb, err)
+		}
+		if cause := collectorCause(err); cause == nil || !strings.Contains(cause.Error(), "alpha rejected token") {
+			t.Fatalf("%s: API server response must stay available to the log: %v", verb, cause)
 		}
 	}
 	result, _, err := handleListResources(ctx, nil, listResourcesInput{Kind: "pods", Namespace: "beta", Context: "none"})

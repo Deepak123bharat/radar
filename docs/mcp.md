@@ -469,20 +469,26 @@ Errors distinguish the calling user's permissions from Radar's collection access
   `--namespace-scope` selection. Changing caller permissions does not remove this
   scope limit. The browser's namespace picker does not scope MCP requests;
   specify `namespace` to narrow a tool call.
-- `collector_forbidden`: Radar's service account (or local kubeconfig identity)
-  cannot collect or directly read the resource. Granting the caller access alone does not repair
-  collection.
+- `collector_forbidden`: Radar tried to read the resource with its own identity
+  (its service account, or the local kubeconfig identity) and Kubernetes refused
+  it: for this request, or, for a kind Radar caches at startup, in every scope
+  the startup probe tried. Granting the caller access does not repair this.
 - `collector_unauthorized`: Kubernetes rejected Radar's credentials; refresh its
   service-account credentials or local kubeconfig token. This is distinct from
   RBAC denial.
+
+Neither collector reason repeats the API server's response, which names Radar's
+identity (for a service account, the namespace Radar runs in); Radar logs it
+instead.
 - `namespace_required`: a known namespaced kind needs an explicit namespace for
   `get_resource`.
 - `kind_sync_pending`: initial cache synchronization is still in progress; retry
   shortly. `kind_sync_failed` means the typed sync deadline elapsed or a dynamic
   sync stalled; inspect Radar's connection and collector list/watch permissions.
 - `kind_not_watched`: collection is unavailable, or a requested namespace is
-  outside the collector's coverage (see the coverage rule below); the error names
-  the uncovered namespaces and the covered namespaces you can read. `unknown_kind`
+  outside the coverage the collector established at startup, so Radar did not
+  read it (see the coverage rule below); the error names the uncovered
+  namespaces and the covered namespaces you can read. `unknown_kind`
   means neither the built-in catalog nor discovery recognizes the kind.
   Unavailable discovery reports `kind_sync_pending` rather than claiming a kind is unknown.
 - `list_error` / `get_error`: an unexpected resource-read failure; the error
@@ -507,31 +513,49 @@ is disabled or the caller has cluster-wide namespace access, and no namespace is
 named or pinned.
 
 - A restricted request needs every namespace in its list covered. If any is
-  not, the read fails with `kind_not_watched`, even when other namespaces have
-  objects; a partial answer would read as the caller's whole scope. The error
-  names the uncovered namespaces and the covered namespaces the caller can read,
-  and suggests retrying with one of the covered namespaces as `namespace`.
+  not, the read fails, even when other namespaces have objects; a partial answer
+  would read as the caller's whole scope. The error names the uncovered
+  namespaces and, where Radar knows them, the covered namespaces the caller can
+  read, and suggests retrying with one of the covered namespaces as `namespace`.
 - An unrestricted request reads the namespaces the collector covers and omits
   the rest, so unscoped lists keep working on a namespace-scoped collector. The
   success shape has no field naming what was omitted.
 - A covered namespace with no objects returns `[]` either way.
 
+The reason for an uncovered namespace depends on how Radar learns coverage, not
+on the kind's name:
+
+- Kinds Radar caches at startup (Pods, ConfigMaps, Services, Deployments, …)
+  know their coverage from the startup probe and never read outside it, so an
+  uncovered namespace is `kind_not_watched`. The namespace may simply not have
+  been among the probe's candidates; Radar cannot tell whether its identity is
+  refused there.
+- Custom resources read each requested namespace on demand, starting an
+  informer there and verifying its sync, including grants outside the
+  collector's initial fallback candidates. Endpoints, EndpointSlices and Leases
+  are read straight from the API server with no informer. Radar tries each
+  requested namespace for these kinds, so an uncovered namespace is one where
+  Kubernetes refused it: `collector_forbidden`. A custom resource offers the
+  namespaces its informers already cover. A direct kind knows only the
+  namespaces read for this request, so it offers covered namespaces only on an
+  unscoped read.
+
 For example, on a collector that covers `alpha` and `gamma`, a caller allowed in
-`alpha` and `beta` gets `kind_not_watched` naming `beta` and offering `alpha`; a
-caller allowed only in `gamma`, covered but empty, gets `[]`; a cluster-wide
-caller gets `alpha`'s objects.
+`alpha` and `beta` gets an error naming `beta` and offering `alpha`
+(`kind_not_watched` for ConfigMaps, `collector_forbidden` for a custom resource
+or Leases); a caller allowed only in `gamma`, covered but empty, gets `[]`; a
+cluster-wide caller gets `alpha`'s objects.
 
 Tool errors name only namespaces the caller may read or named in the request.
 Covered namespaces outside the caller's access are left out; when none remain,
 the error says the collector's coverage does not include any namespace the
-caller can read. Kinds Radar caches at startup know their coverage from the startup probe. Kinds watched
-on demand (custom resources) find theirs by reading: each requested namespace is
-read directly, including grants outside the collector's initial fallback
-candidates, and its informer sync is verified. Such a kind that the collector has
-not read in any namespace yet reports `collector_forbidden` for the denied
-namespace, since there is no covered namespace to name.
-Endpoints, EndpointSlices and Leases use direct API reads in the caller's allowed
-namespaces without an extra cluster-wide list or an informer. Rejected collector
+caller can read.
+
+An unrestricted, unscoped read of Endpoints, EndpointSlices or Leases lists the
+cluster scope first. When Radar's identity is refused there, it reads each of
+the collector's fallback namespaces, the same candidates custom resource
+informers fall back to, and returns those that succeed; a restricted read lists
+only the caller's namespaces, with no cluster-wide list. Rejected collector
 credentials are never treated as missing coverage: `collector_unauthorized` fails
 the read even when collection succeeds in a different namespace.
 Secret lists additionally omit

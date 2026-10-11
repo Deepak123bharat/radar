@@ -942,7 +942,28 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 	// (the pin and explicit requests always arrive as namespaces): the
 	// readable scope is whatever the collector covers.
 	unrestrictedAll := !clusterScoped && namespaces == nil
-	if unrestrictedAll && found && dynamicCache != nil && !k8s.ShouldBypassDynamicInformer(gvr) {
+	listAt := func(ns string) func() ([]*unstructured.Unstructured, error) {
+		return func() ([]*unstructured.Unstructured, error) {
+			return cache.ListDynamicWithGroup(ctx, kind, ns, group)
+		}
+	}
+
+	var rawItems []*unstructured.Unstructured
+	listed := false
+	if directGVR, ok := dynamicReadGVR(kind, group); unrestrictedAll && ok && k8s.ShouldBypassDynamicInformer(directGVR) {
+		// A direct kind has no informer to establish its coverage. When the
+		// collector is refused cluster-wide, read the namespaces custom
+		// resource informers fall back to, under the same coverage rule.
+		items, err := readDynamicScope(ctx, kind, group, "", "list", listAt(""))
+		switch {
+		case err == nil:
+			rawItems, listed = items, true
+		case apierrors.IsForbidden(err) && dynamicCache != nil && len(dynamicCache.FallbackNamespaces()) > 0:
+			namespaces = dynamicCache.FallbackNamespaces()
+		default:
+			return nil, nil, err
+		}
+	} else if unrestrictedAll && found && dynamicCache != nil {
 		if err := dynamicCache.EnsureWatching(gvr); err != nil {
 			_, err = checkDynamicResourceRead(ctx, kind, group, "", "list", err)
 			return nil, nil, err
@@ -952,18 +973,17 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 		}
 	}
 
-	var rawItems []*unstructured.Unstructured
-	if len(namespaces) > 0 {
+	switch {
+	case listed:
+	case len(namespaces) > 0:
 		var read, uncovered []string
-		var firstUncoveredErr error
+		var refusal error
 		for _, ns := range namespaces {
-			items, err := readDynamicScope(ctx, kind, group, ns, "list", func() ([]*unstructured.Unstructured, error) {
-				return cache.ListDynamicWithGroup(ctx, kind, ns, group)
-			})
+			items, err := readDynamicScope(ctx, kind, group, ns, "list", listAt(ns))
 			if apierrors.IsForbidden(err) {
 				uncovered = append(uncovered, ns)
-				if firstUncoveredErr == nil {
-					firstUncoveredErr = err
+				if refusal == nil {
+					refusal = err
 				}
 				continue
 			}
@@ -983,14 +1003,12 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 				}
 			}
 		}
-		if err := namespaceCoverageError(ctx, kind, unrestrictedAll, len(read), uncovered, covered, firstUncoveredErr); err != nil {
+		if err := namespaceCoverageError(ctx, dynamicCollectorTarget(kind, group, "list"), unrestrictedAll, len(read), uncovered, covered, refusal); err != nil {
 			return nil, nil, err
 		}
 		namespaces = read
-	} else {
-		items, err := readDynamicScope(ctx, kind, group, "", "list", func() ([]*unstructured.Unstructured, error) {
-			return cache.ListDynamicWithGroup(ctx, kind, "", group)
-		})
+	default:
+		items, err := readDynamicScope(ctx, kind, group, "", "list", listAt(""))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1351,6 +1369,9 @@ func attachResourceExtras(ctx context.Context, cache *k8s.ResourceCache, result 
 				result["metrics"] = metrics
 			} else {
 				log.Printf("[mcp] Failed to get pod metrics for %s/%s: %v", namespace, name, err)
+				if authErr := collectorAuthError(ctx, err, collectorTarget{resource: "pods", group: "metrics.k8s.io", action: "get"}, namespace); authErr != nil {
+					err = authErr
+				}
 				result["metricsError"] = err.Error()
 			}
 		}

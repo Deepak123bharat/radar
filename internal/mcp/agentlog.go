@@ -131,6 +131,9 @@ func logToolCall[In any](
 
 		if err != nil {
 			log.Printf("\033[1;35m[MCP]\033[0m \033[1m%s\033[0m \033[31mERROR\033[0m (%s) %v", name, dur.Round(time.Millisecond), err)
+			if cause := collectorCause(err); cause != nil {
+				log.Printf("\033[1;35m[MCP]\033[0m \033[1m%s\033[0m collector response: %v", name, cause)
+			}
 		} else {
 			log.Printf("\033[1;35m[MCP]\033[0m \033[1m%s\033[0m \033[32mOK\033[0m (%s)", name, dur.Round(time.Millisecond))
 		}

@@ -515,6 +515,15 @@ func (d *DynamicResourceCache) fallbackNamespaces() []string {
 	return nil
 }
 
+// FallbackNamespaces returns the namespaces the cache walks when its identity
+// cannot list a namespaced resource cluster-wide.
+func (d *DynamicResourceCache) FallbackNamespaces() []string {
+	if d == nil {
+		return nil
+	}
+	return append([]string(nil), d.fallbackNamespaces()...)
+}
+
 // probeScopes decides which scopes to watch for gvr via limit=1 list probes.
 // It returns the scope namespaces to start informers for — [""] means one
 // cluster-wide informer — or a forbidden error when the identity can list

@@ -302,6 +302,9 @@ func handleDiagnose(ctx context.Context, _ *mcp.CallToolRequest, input diagnoseI
 	if input.Group != "" && !k8s.TypedKindOwnsGroup(kindNorm, input.Group) {
 		u, err := cache.GetDynamicWithGroup(ctx, kindNorm, input.Namespace, input.Name, input.Group)
 		if err != nil {
+			if authErr := collectorAuthError(ctx, err, dynamicCollectorTarget(kindNorm, input.Group, "get"), input.Namespace); authErr != nil {
+				return nil, nil, authErr
+			}
 			return nil, nil, notFoundError(ctx, err, kindNorm, input.Namespace, input.Name)
 		}
 		obj = u
@@ -588,6 +591,9 @@ func handleGitOpsDiagnose(ctx context.Context, input diagnoseInput, canonicalKin
 		// wrong thing.
 		if errors.Is(err, k8s.ErrUnknownDynamicKind) {
 			return nil, nil, fmt.Errorf("%s (%s) is not installed or not yet discovered in this cluster — is %s running?", canonicalKind, group, tool)
+		}
+		if authErr := collectorAuthError(ctx, err, dynamicCollectorTarget(canonicalKind, group, "get"), input.Namespace); authErr != nil {
+			return nil, nil, authErr
 		}
 		return nil, nil, notFoundError(ctx, err, canonicalKind, input.Namespace, input.Name)
 	}

@@ -102,7 +102,7 @@ func resourceReadCache(ctx context.Context, kind, group string, namespaces []str
 				if apierrors.IsUnauthorized(result.ProbeErrors[gvr.Resource]) {
 					return nil, nil, collectorUnauthorizedError(gvr.Resource, result.ProbeErrors[gvr.Resource])
 				}
-				return nil, nil, fmt.Errorf("collector_forbidden: Radar's service account / kubeconfig identity can't list/watch %s in API group %q", gvr.Resource, gvr.Group)
+				return nil, nil, fmt.Errorf("collector_forbidden: %s can't list/watch %s in API group %q", collectorName(), gvr.Resource, gvr.Group)
 			}
 		}
 		return nil, nil, fmt.Errorf("kind_not_watched: Radar is not watching resource %q in API group %q; check Radar's collector list/watch permissions and collection configuration", gvr.Resource, gvr.Group)
@@ -120,54 +120,146 @@ func resourceReadCache(ctx context.Context, kind, group string, namespaces []str
 			uncovered = append(uncovered, ns)
 		}
 	}
-	if err := namespaceCoverageError(ctx, gvr.Resource, false, 0, uncovered, covered, nil); err != nil {
+	if err := namespaceCoverageError(ctx, collectorTarget{resource: gvr.Resource, group: gvr.Group}, false, 0, uncovered, covered, nil); err != nil {
 		return nil, nil, err
 	}
 	return cache, namespaces, nil
 }
 
-// namespaceCoverageError is the one coverage rule typed and dynamic reads
-// share. A restricted caller (a finite namespace list — Radar's namespace
-// access for the caller, an explicit namespace, or the --namespace-scope pin)
-// needs every requested namespace covered: a partial answer would read as the
-// whole of its scope. An unrestricted caller's unscoped read asks for whatever
-// the collector covers (unrestrictedAll), so a namespace missing from that is
-// omitted, and only a read that covered nothing fails. firstErr, the read
-// error of the first uncovered namespace when reads were attempted, is kept
-// for a read that got nothing when it is the only uncovered namespace or no
-// covered namespace is known.
-func namespaceCoverageError(ctx context.Context, resource string, unrestrictedAll bool, read int, uncovered, covered []string, firstErr error) error {
+// namespaceCoverageError is the one coverage rule typed, dynamic and direct
+// reads share. A restricted caller (a finite namespace list — Radar's
+// namespace access for the caller, an explicit namespace, or the
+// --namespace-scope pin) needs every requested namespace covered: a partial
+// answer would read as the whole of its scope. An unrestricted caller's
+// unscoped read asks for whatever the collector covers (unrestrictedAll), so a
+// namespace missing from that is omitted, and only a read that covered nothing
+// fails. refusal is the API server's denial of the first uncovered namespace
+// when Radar read them for this request; nil means they lie outside the
+// coverage the collector established.
+func namespaceCoverageError(ctx context.Context, target collectorTarget, unrestrictedAll bool, read int, uncovered, covered []string, refusal error) error {
 	if len(uncovered) == 0 || (unrestrictedAll && read > 0) {
 		return nil
 	}
-	if firstErr != nil && read == 0 && (len(uncovered) == 1 || len(covered) == 0) {
-		return firstErr
-	}
-	return outsideCoverageError(ctx, resource, uncovered, covered, nil)
+	return coverageError(ctx, target, uncovered, covered, refusal)
 }
 
-// outsideCoverageError names only namespaces the caller may read, so the
+// collectorTarget is what Radar's collector reads for a kind: the resource,
+// its API group, and the action it performs (list/watch for a cache, or the
+// verb of a direct read).
+type collectorTarget struct {
+	resource, group, action string
+}
+
+func dynamicCollectorTarget(kind, group, verb string) collectorTarget {
+	gvr, ok := dynamicReadGVR(kind, group)
+	if !ok {
+		return collectorTarget{resource: kind, group: group, action: "list/watch"}
+	}
+	action := "list/watch"
+	if directRead(gvr, verb) {
+		action = verb
+	}
+	return collectorTarget{resource: gvr.Resource, group: gvr.Group, action: action}
+}
+
+// directRead reports a read that goes straight to the API server instead of an
+// informer.
+func directRead(gvr schema.GroupVersionResource, verb string) bool {
+	return k8s.ShouldBypassDynamicInformer(gvr) ||
+		(verb == "get" && ((gvr.Group == "apiextensions.k8s.io" && gvr.Resource == "customresourcedefinitions") ||
+			(gvr.Group == "apiregistration.k8s.io" && gvr.Resource == "apiservices")))
+}
+
+// coverageError reports requested namespaces Radar's collector could not
+// serve. With a refusal — Radar read them for this request and the API server
+// denied its identity — the reason is collector_forbidden; without one they
+// lie outside the coverage the collector established, Radar did not read them,
+// and the reason is kind_not_watched. No uncovered namespaces means the
+// cluster scope. Only namespaces the caller may read are named, so the
 // collector's coverage never discloses other tenants' namespaces.
-func outsideCoverageError(ctx context.Context, resource string, uncovered, covered []string, cause error) error {
-	uncovered = callerVisibleNamespaces(ctx, uncovered)
+func coverageError(ctx context.Context, target collectorTarget, uncovered, covered []string, refusal error) error {
+	knownCoverage := refusal == nil || len(covered) > 0
+	covered = slices.DeleteFunc(slices.Clone(covered), func(ns string) bool { return slices.Contains(uncovered, ns) })
 	covered = callerVisibleNamespaces(ctx, covered)
-	where := "the requested namespaces, which are"
-	switch len(uncovered) {
-	case 0:
-	case 1:
-		where = fmt.Sprintf("namespace %q, which is", uncovered[0])
-	default:
-		where = fmt.Sprintf("namespaces %q, which are", namespaceForError(uncovered))
+	where := "at cluster scope"
+	if len(uncovered) > 0 {
+		uncovered = callerVisibleNamespaces(ctx, uncovered)
+		switch len(uncovered) {
+		case 0:
+			where = "in the requested namespaces"
+		case 1:
+			where = fmt.Sprintf("in namespace %q", uncovered[0])
+		default:
+			where = fmt.Sprintf("in namespaces %q", namespaceForError(uncovered))
+		}
 	}
-	coverage := "the collector's coverage does not include any namespace you can read"
-	if len(covered) > 0 {
-		coverage = fmt.Sprintf("covered namespaces you can read: %q; retry with one of them as the namespace", namespaceForError(covered))
+	var coverage string
+	switch {
+	case len(covered) > 0:
+		coverage = fmt.Sprintf("; covered namespaces you can read: %q; retry with one of them as the namespace", namespaceForError(covered))
+	case knownCoverage:
+		coverage = "; the collector's coverage does not include any namespace you can read"
 	}
-	msg := fmt.Sprintf("kind_not_watched: Radar does not watch %s in %s outside the collector's scope; %s", resource, where, coverage)
-	if cause != nil {
-		return fmt.Errorf("%s: %w", msg, cause)
+	if refusal != nil {
+		return &collectorError{
+			msg:   fmt.Sprintf("collector_forbidden: %s can't %s %s in API group %q %s; granting your role access does not change this%s", collectorName(), target.action, target.resource, target.group, where, coverage),
+			cause: refusal,
+		}
 	}
-	return errors.New(msg)
+	verb := "is"
+	if len(uncovered) != 1 {
+		verb = "are"
+	}
+	return fmt.Errorf("kind_not_watched: Radar does not watch %s %s, which %s outside the collector's scope%s", target.resource, where, verb, coverage)
+}
+
+// collectorError is a caller-facing error about a read Radar made with its own
+// identity. Its message never includes the API server's response, which names
+// that identity (for a service account, the namespace Radar runs in) and the
+// scope it was refused in. The response stays reachable through Unwrap, for
+// classification and for collectorCause to log.
+type collectorError struct {
+	msg   string
+	cause error
+}
+
+func (e *collectorError) Error() string { return e.msg }
+func (e *collectorError) Unwrap() error { return e.cause }
+
+// collectorCause returns the API server response behind a collector error, or
+// nil when err carries none.
+func collectorCause(err error) error {
+	var cause error
+	for {
+		var ce *collectorError
+		if !errors.As(err, &ce) || ce.cause == nil {
+			return cause
+		}
+		cause, err = ce.cause, ce.cause
+	}
+}
+
+func collectorName() string {
+	if k8s.IsInCluster() {
+		return "Radar's service account"
+	}
+	return "Radar's kubeconfig identity"
+}
+
+// collectorAuthError is the caller-facing error for the API server refusing a
+// read Radar made with its own identity, or nil when err is not a refusal.
+func collectorAuthError(ctx context.Context, err error, target collectorTarget, namespace string) error {
+	switch {
+	case apierrors.IsUnauthorized(err):
+		return collectorUnauthorizedError(target.resource, err)
+	case apierrors.IsForbidden(err):
+		var uncovered []string
+		if namespace != "" {
+			uncovered = []string{namespace}
+		}
+		return coverageError(ctx, target, uncovered, nil, err)
+	}
+	return nil
 }
 
 // callerVisibleNamespaces keeps the namespaces the caller may read. It fails
@@ -206,33 +298,16 @@ func checkDynamicResourceRead(ctx context.Context, kind, group, namespace, verb 
 	}
 	dynamicCache := k8s.GetDynamicResourceCache()
 	gvr, ok := dynamicReadGVR(kind, group)
-	direct := ok && (k8s.ShouldBypassDynamicInformer(gvr) ||
-		(verb == "get" && ((gvr.Group == "apiextensions.k8s.io" && gvr.Resource == "customresourcedefinitions") ||
-			(gvr.Group == "apiregistration.k8s.io" && gvr.Resource == "apiservices"))))
-	if apierrors.IsUnauthorized(readErr) {
-		return false, collectorUnauthorizedError(kind, readErr)
+	direct := ok && directRead(gvr, verb)
+	if apierrors.IsForbidden(readErr) && ok && dynamicCache != nil && !direct && namespace != "" {
+		var covered []string
+		if observation := dynamicCache.Observation(gvr); observation.Scope == k8score.DynamicObservationScopeExplicitNamespaces {
+			covered = observation.Namespaces
+		}
+		return false, coverageError(ctx, dynamicCollectorTarget(kind, group, verb), []string{namespace}, covered, readErr)
 	}
-	if apierrors.IsForbidden(readErr) {
-		if ok && dynamicCache != nil && !direct && namespace != "" {
-			observation := dynamicCache.Observation(gvr)
-			if observation.Scope == k8score.DynamicObservationScopeExplicitNamespaces && !slices.Contains(observation.Namespaces, namespace) {
-				return false, outsideCoverageError(ctx, kind, []string{namespace}, observation.Namespaces, readErr)
-			}
-		}
-
-		collector := "Radar's service account"
-		if !k8s.IsInCluster() {
-			collector = "Radar's kubeconfig identity"
-		}
-		action := "watch"
-		if direct {
-			action = verb
-		}
-		if ok {
-			group = gvr.Group
-			kind = gvr.Resource
-		}
-		return false, fmt.Errorf("collector_forbidden: %s can't %s %s in API group %q (namespace %q): %w", collector, action, kind, group, namespace, readErr)
+	if err := collectorAuthError(ctx, readErr, dynamicCollectorTarget(kind, group, verb), namespace); err != nil {
+		return false, err
 	}
 	if readErr != nil && !isObjectNotFound(readErr) {
 		return false, fmt.Errorf("%s_error: failed to %s %s: %w", verb, verb, kind, readErr)
@@ -364,5 +439,8 @@ func collectorUnauthorizedError(kind string, err error) error {
 	if k8s.IsInCluster() {
 		credentials = "service-account credentials"
 	}
-	return fmt.Errorf("collector_unauthorized: Radar's %s were rejected while reading %s; refresh them and retry: %w", credentials, kind, err)
+	return &collectorError{
+		msg:   fmt.Sprintf("collector_unauthorized: Radar's %s were rejected while reading %s; refresh them and retry", credentials, kind),
+		cause: err,
+	}
 }
