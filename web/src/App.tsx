@@ -1399,9 +1399,10 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
   const setActiveNamespace = useSetActiveNamespace()
   // Defer the state flip to onSuccess. Setting namespaces to [] before the
   // server-side pref has actually been cleared makes React Query refetch
-  // under the new empty key while an older Radar (one that still applies the
-  // stored pick to reads naming no namespace) returns the previous pick's
-  // scope, caching stale data under the new key with no later invalidation.
+  // under the new empty key while a Radar that applies the stored pick to
+  // reads naming no namespace (Hub embeds this UI against such Radars) returns
+  // the previous pick's scope, caching stale data under the new key with no
+  // later invalidation.
   // onSettled would do the same on errors, leaving the UI showing "All
   // namespaces" while data is still namespace-scoped — onSuccess keeps state
   // aligned with the server.

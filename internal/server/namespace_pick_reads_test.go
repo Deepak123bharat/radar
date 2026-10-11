@@ -54,10 +54,10 @@ func decodeInto[T any](t *testing.T, body []byte) T {
 }
 
 // A pick made in the UI must not narrow a read that names no namespaces — the
-// read Radar Hub's fan-outs make as the same user. Every surface that used to
-// fall back to the pick answers for the caller's whole RBAC ceiling; an
-// explicit filter still narrows, RBAC still bounds, and the preference read
-// still echoes the pick for the UI.
+// read Radar Hub's fan-outs make as the same user. Each of these surfaces
+// answers for the caller's whole RBAC ceiling; an explicit filter still
+// narrows, RBAC still bounds, and the preference read still echoes the pick
+// for the UI.
 func TestProxyAuth_PlainReadsIgnoreSavedPick(t *testing.T) {
 	prevCtx := k8s.SetTestContextName("test-ctx")
 	t.Cleanup(func() { k8s.SetTestContextName(prevCtx) })
