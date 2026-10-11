@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -12,12 +13,65 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// integrationActionRoutePrefixes are the route families that act on
-// integration custom resources. Helm and node operations have their own chart
-// switches; core workload writes are covered by the built-in roles.
-var integrationActionRoutePrefixes = []string{
-	"/api/argo/", "/api/flux/", "/api/rollouts/", "/api/velero/",
-	"/api/gitops/", "/api/cnpg/", "/api/policy/",
+// Every /api route family that serves a write method is classified here, so a
+// new family can't skip the table. Integration families act on integration
+// custom resources; workload routes also accept Argo Rollouts.
+var (
+	integrationRouteFamilies = []string{"argo", "flux", "rollouts", "velero", "gitops", "cnpg", "policy"}
+	// Built-in kinds (cronjobs, nodes, pods), generic edits of any object as
+	// the caller (resources), Helm, Radar's own settings, sessions and
+	// connections, and read-only queries sent as POST.
+	// capi's connect reads a kubeconfig Secret and switches Radar's context; it
+	// writes no Cluster API object.
+	nonIntegrationRouteFamilies = []string{
+		"agent", "capi", "cloud", "cluster", "config", "connection", "contexts", "cronjobs", "curl",
+		"desktop", "diagnose", "github", "helm", "integrations", "nodes", "opencost", "pods",
+		"portforwards", "prometheus", "resources", "settings", "trace", "traffic", "usage-data",
+		"version-check", "whats-new",
+	}
+)
+
+// integrationWriteActions returns the table actions a write route needs.
+func integrationWriteActions(method, route string) ([]string, error) {
+	if !strings.HasPrefix(route, "/api/") {
+		// The SPA, static assets and MCP mounts; MCP tools have their own test.
+		return nil, nil
+	}
+	family, _, _ := strings.Cut(strings.TrimPrefix(route, "/api/"), "/")
+	action := method + " " + route
+	switch {
+	case family == "workloads":
+		return []string{action + " kind=rollouts"}, nil
+	case slices.Contains(nonIntegrationRouteFamilies, family):
+		return nil, nil
+	case !slices.Contains(integrationRouteFamilies, family):
+		return nil, fmt.Errorf("%s: classify /api/%s as an integration or non-integration route family", action, family)
+	case strings.Contains(route, "{action}"):
+		if family != "rollouts" {
+			return nil, fmt.Errorf("%s dispatches on {action}; enumerate its actions here", action)
+		}
+		var actions []string
+		for name := range rolloutOperations {
+			actions = append(actions, action+" action="+name)
+		}
+		return actions, nil
+	default:
+		return []string{action}, nil
+	}
+}
+
+func TestIntegrationWriteActionClassification(t *testing.T) {
+	for route, want := range map[string]bool{
+		"/api/crossplane/managedresources/{namespace}/{name}/pause": false,
+		"/api/argo/applications/{namespace}/{name}/sync":            true,
+		"/api/workloads/{kind}/{namespace}/{name}/restart":          true,
+		"/api/helm/releases/{namespace}/{name}/rollback":            true,
+		"/assets/*": true,
+	} {
+		if _, err := integrationWriteActions(http.MethodPost, route); (err == nil) != want {
+			t.Errorf("%s: classified = %v, want %v (err %v)", route, err == nil, want, err)
+		}
+	}
 }
 
 // TestIntegrationWriteActionsHaveReviewedRows makes a new integration action
@@ -52,22 +106,11 @@ func TestIntegrationWriteActionsHaveReviewedRows(t *testing.T) {
 		if slices.Contains([]string{http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace, http.MethodConnect}, method) {
 			return nil
 		}
-		action := method + " " + route
-		switch {
-		case strings.HasPrefix(route, "/api/workloads/"):
-			// Workload routes accept Argo Rollouts alongside the built-in kinds.
-			required = append(required, action+" kind=rollouts")
-		case !slices.ContainsFunc(integrationActionRoutePrefixes, func(prefix string) bool { return strings.HasPrefix(route, prefix) }):
-		case strings.Contains(route, "{action}"):
-			if !strings.HasPrefix(route, "/api/rollouts/") {
-				t.Errorf("%s dispatches on {action}; enumerate its actions here", action)
-			}
-			for name := range rolloutOperations {
-				required = append(required, action+" action="+name)
-			}
-		default:
-			required = append(required, action)
+		actions, err := integrationWriteActions(method, route)
+		if err != nil {
+			t.Error(err)
 		}
+		required = append(required, actions...)
 		return nil
 	})
 	if err != nil {
