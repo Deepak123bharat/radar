@@ -23,6 +23,7 @@ import {
   getGitOpsTool,
   isDestinationRef,
   isArgoAutoSyncEnabled,
+  isArgoAutoSyncSwitchedOff,
   isArgoOperationInProgress,
   isArgoSuspendedByRadar,
   gitOpsInsightChangeKey,
@@ -33,6 +34,7 @@ import {
   normalizeFluxHelmRelease,
   normalizeFluxKustomization,
   parseArgoRollbackID,
+  radarUpgradeNoteText,
   toggleSet,
   type APIResource,
   type ArgoActionHandlers,
@@ -71,6 +73,7 @@ import {
   useFluxSyncWithSource,
   useGitOpsInsights,
   useGitOpsTree,
+  useRadarFeature,
   useResource,
 } from '../../api/client'
 import { useAPIResources } from '../../api/apiResources'
@@ -146,6 +149,7 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
   const fluxSyncWithSource = useFluxSyncWithSource()
   const fluxSuspend = useFluxSuspend()
   const fluxResume = useFluxResume()
+  const { upgrade: argoResumeUpgrade } = useRadarFeature('argoAutoSyncEnable')
 
   const [syncDialogRow, setSyncDialogRow] = useState<GitOpsRow | null>(null)
   const [pendingActions, setPendingActions] = useState<Map<string, Set<GitOpsRowAction>>>(new Map())
@@ -332,6 +336,7 @@ function GitOpsTableView({ namespaces, onClearNamespaces }: { namespaces: string
         }}
         onRowAction={handleRowAction}
         pendingRowActions={pendingActions}
+        argoResumeUpgrade={argoResumeUpgrade}
         searchHotkey
         globalNamespaces={namespaces}
         onClearNamespaces={onClearNamespaces}
@@ -447,6 +452,8 @@ function GitOpsDetailView({ namespaces, onOpenResource, onOpenSettings }: GitOps
   const argoSuspend = useArgoSuspend()
   const argoResume = useArgoResume()
   const argoRollback = useArgoRollback()
+  const { upgrade: argoRollbackUpgrade } = useRadarFeature('argoRollback')
+  const { upgrade: argoResumeUpgrade } = useRadarFeature('argoAutoSyncEnable')
   const applyResource = useApplyResource()
   const fluxReconcile = useFluxReconcile()
   const fluxSyncWithSource = useFluxSyncWithSource()
@@ -648,6 +655,7 @@ function GitOpsDetailView({ namespaces, onOpenResource, onOpenSettings }: GitOps
     autoSyncEnabled: argoAutoSyncEnabled,
     isRunning,
     operationInProgress,
+    resumeUpgrade: isArgoAutoSyncSwitchedOff(resourceQ.data) ? argoResumeUpgrade : null,
   } : undefined
 
   const fluxHandlers: FluxActionHandlers | undefined = isFlux ? {
@@ -797,6 +805,7 @@ function GitOpsDetailView({ namespaces, onOpenResource, onOpenSettings }: GitOps
                 if (parseArgoRollbackID(item.id) == null) return
                 setRollbackTarget(item)
               } : undefined}
+              rollbackUpgrade={argoRollbackUpgrade}
             />
           )
         }
@@ -902,6 +911,12 @@ function GitOpsDetailView({ namespaces, onOpenResource, onOpenSettings }: GitOps
             pending={argoRollback.isPending}
             onCancel={() => setRollbackTarget(null)}
             onConfirm={(opts) => {
+              // The dialog may have opened before /api/capabilities answered.
+              if (argoRollbackUpgrade) {
+                showError('Rollback unavailable', radarUpgradeNoteText(argoRollbackUpgrade))
+                setRollbackTarget(null)
+                return
+              }
               const id = parseArgoRollbackID(rollbackTarget?.id)
               if (id == null) {
                 showError('Rollback target became invalid', 'The history entry changed while the dialog was open. Reselect a target and try again.')

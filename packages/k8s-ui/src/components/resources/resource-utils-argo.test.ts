@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getArgoApplicationStatus, isArgoAutoSyncEnabled, isArgoOperationInProgress } from './resource-utils-argo'
+import { getArgoApplicationStatus, isArgoAutoSyncEnabled, isArgoAutoSyncSwitchedOff, isArgoOperationInProgress } from './resource-utils-argo'
 
 describe('getArgoApplicationStatus', () => {
   // A Suspended Argo app is intentionally paused — neutral (sky), matching the
@@ -68,5 +68,23 @@ describe('isArgoAutoSyncEnabled', () => {
 
   it('tolerates a missing resource', () => {
     expect(isArgoAutoSyncEnabled(undefined)).toBe(false)
+  })
+})
+
+describe('isArgoAutoSyncSwitchedOff', () => {
+  const app = (syncPolicy: unknown) => ({ spec: { syncPolicy } })
+  // Only an automated block kept with enabled: false; a Manual app has none.
+  it.each([
+    ['no automated block', {}, false],
+    ['automated: null', { automated: null }, false],
+    ['automated on', { automated: { prune: true } }, false],
+    ['enabled: true', { automated: { enabled: true } }, false],
+    ['enabled: false', { automated: { enabled: false, prune: true } }, true],
+  ])('%s', (_label, syncPolicy, expected) => {
+    expect(isArgoAutoSyncSwitchedOff(app(syncPolicy))).toBe(expected)
+  })
+
+  it('tolerates a missing resource', () => {
+    expect(isArgoAutoSyncSwitchedOff(undefined)).toBe(false)
   })
 })

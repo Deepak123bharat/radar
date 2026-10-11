@@ -80,5 +80,6 @@ export {
   RadarUpgradeContext,
   radarUpgradeDetail,
   radarUpgradeHeadline,
+  radarUpgradeNoteText,
 } from "./RadarUpgradeNote";
 export type { RadarUpgradeActions } from "./RadarUpgradeNote";

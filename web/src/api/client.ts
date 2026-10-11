@@ -64,7 +64,9 @@ import { httpStatusMessage, markShownInline, readErrorBody, readErrorResponse } 
 import {
   RadarFeatureUnsupportedError,
   guardRadarFeature,
+  radarControlBlocked,
   radarFeatureSupport,
+  radarUpgradeRequirement,
   shouldRetryRadarQuery,
   type RadarFeature,
 } from './radarFeatures'
@@ -1816,9 +1818,13 @@ export function useVersionCheck() {
  * (a host-supplied version before /capabilities answers) can lift later, and
  * the key change is what makes the query fetch for real; ungated keys are
  * unchanged.
+ *
+ * `upgrade` is set when a control the feature backs must render disabled with
+ * RadarUpgradeNote's copy: the Radar is known to be too old, or failed to
+ * answer /api/capabilities (see radarControlBlocked).
  */
 export function useRadarFeature(feature: RadarFeature) {
-  const { data: capabilities } = useCapabilities()
+  const { data: capabilities, isError: capabilitiesFailed } = useCapabilities()
   const { data: versionInfo } = useQuery<VersionInfo>(versionCheckQueryOptions(getApiBase()))
   const { radarVersion } = useRadarUpgradeHost()
   const currentVersion = versionInfo?.currentVersion || radarVersion
@@ -1827,6 +1833,9 @@ export function useRadarFeature(feature: RadarFeature) {
 
   return {
     support,
+    upgrade: radarControlBlocked(support, capabilitiesFailed)
+      ? radarUpgradeRequirement(feature, { currentVersion, latestVersion })
+      : null,
     gatedKey: support === 'unsupported' ? ['radar-feature-unsupported'] : [],
     guard: <T,>(request: () => Promise<T>): Promise<T> =>
       guardRadarFeature(feature, support, { currentVersion, latestVersion }, request),

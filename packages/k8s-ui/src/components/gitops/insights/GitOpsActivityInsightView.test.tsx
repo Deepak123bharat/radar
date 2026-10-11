@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { renderToString } from 'react-dom/server'
 import type { GitOpsInsight } from '../../../types'
+import type { RadarUpgradeRequirement } from '../../../types/fetch-error'
 import { GitOpsActivityInsightView } from './GitOpsInsightViews'
 
-function rollbackButtons(insight: GitOpsInsight): { disabled: boolean }[] {
-  const html = renderToString(<GitOpsActivityInsightView insight={insight} onRollback={() => {}} />)
+function render(insight: GitOpsInsight, rollbackUpgrade?: RadarUpgradeRequirement | null): string {
+  return renderToString(<GitOpsActivityInsightView insight={insight} onRollback={() => {}} rollbackUpgrade={rollbackUpgrade} />).replace(/<!-- -->/g, '')
+}
+
+function rollbackButtons(insight: GitOpsInsight, rollbackUpgrade?: RadarUpgradeRequirement | null): { disabled: boolean }[] {
+  const html = render(insight, rollbackUpgrade)
   return [...html.matchAll(/<button([^>]*)>Rollback<\/button>/g)].map((m) => ({ disabled: /\sdisabled=""/.test(m[1]) }))
 }
 
@@ -30,5 +35,20 @@ describe('GitOpsActivityInsightView rollback', () => {
 
   it('disables every Rollback while auto-sync is on', () => {
     expect(rollbackButtons(insight('Auto · prune'))).toEqual([{ disabled: true }, { disabled: true }, { disabled: true }])
+  })
+
+  // An older Radar writes a rollback the API server drops (and refuses id 0),
+  // so a newer UI disables every entry and says which Radar it needs.
+  describe('on a Radar without argoRollbackSync', () => {
+    const upgrade = { feature: 'Argo CD rollbacks', currentVersion: 'v1.16.3', latestVersion: 'v1.17.0' }
+
+    it('disables every Rollback and shows the upgrade note', () => {
+      expect(rollbackButtons(insight('Manual'), upgrade)).toEqual([{ disabled: true }, { disabled: true }, { disabled: true }])
+      expect(render(insight('Manual'), upgrade).replace(/<[^>]+>/g, '')).toContain('Argo CD rollbacks need the latest Radar (v1.17) on this cluster. It runs v1.16.3.')
+    })
+
+    it('shows no note when the Radar advertises the behavior', () => {
+      expect(render(insight('Manual'), null)).not.toContain('Argo CD rollbacks need')
+    })
   })
 })

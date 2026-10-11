@@ -75,6 +75,14 @@ export function isArgoAutoSyncEnabled(app: any): boolean {
   return automated.enabled !== false
 }
 
+// isArgoAutoSyncSwitchedOff reports an automated block kept with
+// `enabled: false`. Only a Radar advertising `argoRollbackSync` turns such an
+// app's auto-sync back on; an older one's resume leaves `enabled: false` set.
+export function isArgoAutoSyncSwitchedOff(app: any): boolean {
+  const automated = app?.spec?.syncPolicy?.automated
+  return automated != null && typeof automated === 'object' && automated.enabled === false
+}
+
 export function isArgoOperationInProgress(app: any): boolean {
   const phase = app?.status?.operationState?.phase
   return app?.operation != null || phase === 'Running' || phase === 'Terminating'

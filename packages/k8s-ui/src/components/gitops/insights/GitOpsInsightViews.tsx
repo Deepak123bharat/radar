@@ -8,6 +8,8 @@ import { radarHealthNote } from '../health-provenance'
 import { SEVERITY_BADGE, SEVERITY_TEXT } from '../../../utils/badge-colors'
 import { formatRelativeAgeTime } from '../../../utils/format'
 import { Tooltip } from '../../ui/Tooltip'
+import { RadarUpgradeNote, radarUpgradeNoteText } from '../../ui/RadarUpgradeNote'
+import type { RadarUpgradeRequirement } from '../../../types/fetch-error'
 import { SearchBox } from '../../ui/SearchBox'
 import { FilterPill, type FilterPillTone } from '../../ui/FilterPill'
 import { Collapse, CollapseChevron } from '../../ui/Collapse'
@@ -1648,12 +1650,16 @@ interface GitOpsActivityInsightViewProps {
   // with the target entry. The consumer is responsible for the confirmation
   // dialog + the actual mutation.
   onRollback?: (item: GitOpsHistoryItem) => void
+  // Set when the connected Radar is too old to roll back: every Rollback
+  // renders disabled, with the upgrade note above the history.
+  rollbackUpgrade?: RadarUpgradeRequirement | null
 }
 
-export function GitOpsActivityInsightView({ insight, error, onRollback }: GitOpsActivityInsightViewProps) {
+export function GitOpsActivityInsightView({ insight, error, onRollback, rollbackUpgrade }: GitOpsActivityInsightViewProps) {
   if (error && !insight) return <InsightErrorState error={error} />
   if (!insight) return <PaneLoader label="Loading GitOps activity…" className="h-full" />
   const canRollback = !!insight.capabilities?.rollback && !!onRollback
+  const upgrade = canRollback ? rollbackUpgrade ?? null : null
   // Auto-sync makes rollback futile — the controller would re-sync to HEAD
   // immediately. Argo's own Web UI disables the button in this state. Detect
   // by autoSyncMode prefix so "Auto · prune", "Auto · self-heal", etc. all match.
@@ -1667,12 +1673,17 @@ export function GitOpsActivityInsightView({ insight, error, onRollback }: GitOps
         <SectionHeader
           icon={Clock3}
           title="History"
-          hint={canRollback ? 'Each revision can be rolled back to.' : undefined}
+          hint={canRollback && !upgrade ? 'Each revision can be rolled back to.' : undefined}
         />
+        {upgrade && <RadarUpgradeNote requirement={upgrade} className="border-b border-theme-border px-4 py-2.5" />}
         <HistoryRows
           items={insight.history ?? []}
           canRollback={canRollback}
-          rollbackBlockedReason={autoSyncBlocksRollback ? 'Auto-sync is enabled. Disable it to enable rollback — otherwise the controller will sync forward to HEAD again.' : undefined}
+          rollbackBlockedReason={upgrade
+            ? radarUpgradeNoteText(upgrade)
+            : autoSyncBlocksRollback
+              ? 'Auto-sync is enabled. Disable it to enable rollback — otherwise the controller will sync forward to HEAD again.'
+              : undefined}
           onRollback={onRollback}
         />
       </section>
