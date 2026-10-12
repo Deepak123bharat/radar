@@ -218,7 +218,7 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 		"or traffic not reaching a service, route, or ingress. For Pod, Deployment, StatefulSet, DaemonSet, or Argo Rollout it " +
 		"bundles resource context, selected/capped current and previous logs, Warning events, startup blockers, " +
 		"related issues, and recent workload/ConfigMap changes. " +
-		"Warning events are a capped sample; use get_events for a broader, dedicated event read. " +
+		"Warning events are a capped sample for the observed resource and Pods; UID-less evidence cannot prove an incarnation. Use get_events for a broader, dedicated event read, including history. " +
 		"`crashCause` is evidence, not a root-cause verdict. `logLineSelection` ranks " +
 		"`" + crashLineFatalPattern + "`, `" + crashLineHeaderOnly + "`, `" +
 		crashLineLastMatchedLine + "`, then `" + crashLineLogTail + "`. Inspect source logs for low-confidence " +
@@ -1209,7 +1209,7 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to read resource metadata: %w", err)
 		}
-		attachResourceExtras(ctx, cache, result, includes, canonicalKind, canonicalGroup, namespace, name, objectMeta.GetUID())
+		attachResourceExtras(ctx, cache, result, includes, canonicalKind, canonicalGroup, namespace, name, objectMeta.GetUID(), types.UID(objectMeta.GetAnnotations()[corev1.MirrorPodAnnotationKey]))
 	}
 	return toJSONResult(result)
 }
@@ -1307,7 +1307,7 @@ func buildMCPResourceContextWithStaleChecks(ctx context.Context, obj runtime.Obj
 // attachResourceExtras populates optional extras (events, metrics, logs) on
 // the result map based on the includes set. relationship synthesis moved to
 // resourceContext via Build and is no longer routed through this function.
-func attachResourceExtras(ctx context.Context, cache *k8s.ResourceCache, result map[string]any, includes map[string]bool, kind, group, namespace, name string, uid types.UID) {
+func attachResourceExtras(ctx context.Context, cache *k8s.ResourceCache, result map[string]any, includes map[string]bool, kind, group, namespace, name string, uid, mirrorUID types.UID) {
 	if includes["drain-plan"] {
 		if normalizeDisplayKind(kind) != "Node" || group != "" {
 			result["drainPlanError"] = "drain-plan is available only for core Nodes"
@@ -1357,7 +1357,7 @@ func attachResourceExtras(ctx context.Context, cache *k8s.ResourceCache, result 
 				// resolving the pod set; that's the diagnose tool's job, not
 				// this include's. nil podUIDs intentionally restricts to
 				// InvolvedObject == this kind+name.
-				matched := filterEventsByInvolvedObject(events, normalizeDisplayKind(kind), group, name, uid, nil)
+				matched := filterEventsByInvolvedObject(events, normalizeDisplayKind(kind), group, name, uid, mirrorUID, nil)
 				if len(matched) > 0 {
 					deduplicated, totalGroups := aicontext.DeduplicateEventsN(matched, 10)
 					result["events"] = deduplicated

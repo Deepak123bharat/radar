@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
+
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/prom"
 )
@@ -62,14 +64,19 @@ func ResolvePodScope(cache *k8s.ResourceCache, kind, namespace, name string, max
 	if err != nil {
 		return PodScope{}, err
 	}
-	scope.CurrentTotal = len(current)
-	if maxPods > 0 && len(current) > maxPods {
-		current = current[:maxPods]
+	return PodScopeFromPods(kind, namespace, name, current, maxPods), nil
+}
+
+// Callers supply name-sorted Pods so caps select a stable population across readers.
+func PodScopeFromPods(kind, namespace, name string, pods []*corev1.Pod, maxPods int) PodScope {
+	scope := PodScope{Kind: kind, Namespace: namespace, Name: name, CurrentTotal: len(pods)}
+	if maxPods > 0 && len(pods) > maxPods {
+		pods = pods[:maxPods]
 	}
-	for _, pod := range current {
+	for _, pod := range pods {
 		scope.CurrentPods = append(scope.CurrentPods, pod.Name)
 		scope.Identities = append(scope.Identities, prom.WorkloadPodIdentity{Name: pod.Name, UID: string(pod.UID)})
 	}
 	scope.Selection = prom.SelectPods(namespace, scope.CurrentPods)
-	return scope, nil
+	return scope
 }

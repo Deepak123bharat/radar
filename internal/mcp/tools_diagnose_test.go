@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -640,5 +641,13 @@ func TestIssueNamespacesForResourcePreservesClusterScope(t *testing.T) {
 	got := issueNamespacesForResource("team-a")
 	if len(got) != 1 || got[0] != "team-a" {
 		t.Fatalf("namespaced namespaces = %#v, want [team-a]", got)
+	}
+}
+
+func TestResolveDiagnosePodsKeepsMembershipErrorCause(t *testing.T) {
+	root := &appsv1.Deployment{TypeMeta: metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"}, ObjectMeta: metav1.ObjectMeta{Name: "fleet", Namespace: "shop", UID: "current-root"}}
+	_, err := resolveDiagnosePods(nil, "deployments", "shop", "fleet", root)
+	if !errors.Is(err, errPodsNotListable) || !strings.Contains(err.Error(), "list pods") {
+		t.Fatalf("membership error cause lost: %v", err)
 	}
 }
