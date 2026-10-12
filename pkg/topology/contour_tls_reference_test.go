@@ -37,7 +37,7 @@ func TestContourDelegatedTLSUsesSecretNamespace(t *testing.T) {
 					for _, target := range []string{"secret/" + ns + "/wildcard", "certificate/" + ns + "/certificate"} {
 						found := false
 						for _, e := range topo.Edges {
-							found = found || e.Source == "httpproxy/app/web" && e.Target == target && e.Type == EdgeConfigures
+							found = found || e.Source == target && e.Target == "httpproxy/app/web" && e.Type == EdgeConfigures
 						}
 						if !found {
 							t.Errorf("missing TLS edge to %s", target)

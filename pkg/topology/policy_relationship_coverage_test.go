@@ -109,3 +109,37 @@ func TestPDBDoesNotClaimNetworkPolicySelection(t *testing.T) {
 		}
 	}
 }
+
+func TestCachedCalicoCoverageKeepsStagedPoliciesSeparate(t *testing.T) {
+	for _, definition := range calicoPolicyDefinitions {
+		for _, group := range calicoPolicyGroups {
+			t.Run(group+"/"+definition.kind, func(t *testing.T) {
+				workloadID := "deployment/app/web"
+				policy := Node{ID: "policy/selected", Kind: definition.nodeKind, Name: "selected", Data: map[string]any{
+					"apiVersion": group + "/v3", "policyCoverageWorkloads": []string{workloadID},
+				}}
+				if definition.namespaced {
+					policy.Data["namespace"] = "app"
+				}
+				graph := &Topology{Nodes: []Node{{ID: workloadID, Kind: KindDeployment, Name: "web", Data: map[string]any{"namespace": "app"}}, policy}}
+				for _, indexed := range []bool{false, true} {
+					var idx *RelationshipsIndex
+					if indexed {
+						idx = IndexByResource(graph)
+					}
+					rel := GetRelationshipsWithIndex("deployments", "app", "web", graph, nil, nil, idx)
+					if rel == nil {
+						t.Fatal("lost cached selection")
+					}
+					selected, other := rel.NetworkPolicies, rel.StagedPolicies
+					if definition.staged {
+						selected, other = rel.StagedPolicies, rel.NetworkPolicies
+					}
+					if len(selected) != 1 || len(other) != 0 || selected[0].Kind != definition.kind || selected[0].Group != group {
+						t.Fatalf("indexed=%v: wrong policy projection: %+v", indexed, rel)
+					}
+				}
+			})
+		}
+	}
+}

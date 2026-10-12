@@ -39,7 +39,7 @@ func TestConfigSecretMetadataWithoutWorkloadSecretNodes(t *testing.T) {
 				kinds := map[schema.GroupVersionResource]string{}
 				resources := map[schema.GroupVersionResource][]*unstructured.Unstructured{}
 				var watched []schema.GroupVersionResource
-				references := []struct{ source, namespace, name string }{
+				references := []struct{ consumer, namespace, name string }{
 					{"serverstransport/app/transport", "app", "st-ca"},
 					{"serverstransport/app/transport", "app", "st-client"},
 					{"tlsoption/app/options", "app", "opt-ca"},
@@ -119,12 +119,12 @@ func TestConfigSecretMetadataWithoutWorkloadSecretNodes(t *testing.T) {
 					}
 					found := false
 					for _, edge := range topo.Edges {
-						if edge.Source == ref.source && edge.Target == id {
+						if edge.Source == id && edge.Target == ref.consumer {
 							found = true
 						}
 					}
 					if !found {
-						t.Errorf("missing reference edge %s -> %s", ref.source, id)
+						t.Errorf("missing configuration edge %s -> %s", id, ref.consumer)
 					}
 				}
 				if node := nodeByID(topo.Nodes, "secret/app/missing"); node == nil || node.Status != StatusUnknown {
