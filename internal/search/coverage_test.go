@@ -343,9 +343,9 @@ func TestIncompleteDiscoveryQualifiesUnknownKinds(t *testing.T) {
 	}
 }
 
-// Deferring a kind on purpose is setup; deferring it because a probe or watch
-// start failed is a failure, reported on every search, and a kind: term still
-// retries the watch.
+// A kind Radar doesn't watch yet is setup, whether it was too large to watch
+// eagerly or its access or size probe went unanswered; only a granted watch
+// that couldn't start is a failure. A kind: term warms every one of them.
 func TestDeferredKindsSeparateSetupFromFailure(t *testing.T) {
 	for _, tc := range []struct {
 		code, broad string
@@ -354,8 +354,8 @@ func TestDeferredKindsSeparateSetupFromFailure(t *testing.T) {
 		{"legacy_api_deferred", ""},
 		{"eager_watch_pending", "kind_sync_pending"},
 		{"watch_start_failed", "kind_sync_failed"},
-		{"scope_probe_failed", "read_error"},
-		{"resource_count_probe_failed", "read_error"},
+		{"scope_probe_failed", ""},
+		{"resource_count_probe_failed", ""},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
 			gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
@@ -389,4 +389,13 @@ func nonEmpty(s string) []string {
 		return nil
 	}
 	return []string{s}
+}
+
+// A probe the client-side rate limiter refused never reached the API server:
+// warming a named kind that hit it is still loading, not a read failure.
+func TestRateLimitedWarmIsPending(t *testing.T) {
+	err := fmt.Errorf("no access to widgets.example.io/v1: %w", fmt.Errorf("client rate limiter Wait returned an error: %w", fmt.Errorf("rate: Wait(n=1) would exceed context deadline")))
+	if got := listErrorReason(err); got != readreason.KindSyncPending {
+		t.Fatalf("rate-limited warm = %q, want kind_sync_pending", got)
+	}
 }

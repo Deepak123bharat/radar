@@ -556,6 +556,21 @@ func nsCtxExpired(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
+// IsClientRateLimited reports an error from client-go's client-side rate
+// limiter: the request was never sent because its wait would have run past
+// the context deadline. client-go wraps the limiter's own error, which is not
+// a context error, in this fixed message.
+func IsClientRateLimited(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "client rate limiter Wait returned an error")
+}
+
+// probeUnanswered reports a probe the API server never answered: it ran out
+// of time or the client-side rate limiter refused to send it. Either says
+// nothing about access, so it is neither a grant nor a denial.
+func probeUnanswered(err error) bool {
+	return nsCtxExpired(err) || IsClientRateLimited(err)
+}
+
 // fallbackNamespaces returns the configured namespace-fallback candidates,
 // preferring the multi-namespace form.
 // fanoutSettled reports whether the all-namespaces scope for gvr is fully
@@ -619,7 +634,7 @@ func (d *DynamicResourceCache) probeScopes(gvr schema.GroupVersionResource, pref
 
 	// Cluster-wide first — one informer then serves every namespace.
 	err = d.listProbe(ctx, gvr, "")
-	if nsCtxExpired(err) {
+	if probeUnanswered(err) {
 		return nil, false, err
 	}
 	if err == nil {
@@ -662,6 +677,12 @@ func (d *DynamicResourceCache) probeScopes(gvr schema.GroupVersionResource, pref
 		nsCtx, nsCancel := context.WithTimeout(ctx, 2*time.Second)
 		probeErr := d.listProbe(nsCtx, gvr, ns)
 		nsCancel()
+		if IsClientRateLimited(probeErr) {
+			// The client-side limiter refused to queue past the candidate's
+			// own deadline, which says nothing about this namespace. Queue
+			// within the walk's budget instead.
+			probeErr = d.listProbe(ctx, gvr, ns)
+		}
 		scoped, nsErr := d.classifyScope(gvr, ns, probeErr)
 		if ctx.Err() != nil {
 			// The probe ran into the shared deadline — classifyScope's
@@ -671,7 +692,7 @@ func (d *DynamicResourceCache) probeScopes(gvr schema.GroupVersionResource, pref
 			complete = false
 			break
 		}
-		if nsCtxExpired(probeErr) {
+		if probeUnanswered(probeErr) {
 			complete = false
 			continue
 		}
@@ -702,13 +723,14 @@ func (d *DynamicResourceCache) listProbe(ctx context.Context, gvr schema.GroupVe
 }
 
 // classifyScope maps a namespace probe result to (scope, err): success → watch
-// ns; auth error → forbidden (no scope); non-auth error → fail open and watch
-// ns anyway, matching the cluster-wide fail-open path.
+// ns; auth error or no answer at all → no scope; any other error from the API
+// server → fail open and watch ns anyway, matching the cluster-wide fail-open
+// path.
 func (d *DynamicResourceCache) classifyScope(gvr schema.GroupVersionResource, ns string, err error) (string, error) {
 	if err == nil {
 		return ns, nil
 	}
-	if isAuthProbeError(err) || nsCtxExpired(err) {
+	if isAuthProbeError(err) || probeUnanswered(err) {
 		return "", err
 	}
 	log.Printf("[dynamic cache] Probe for %s.%s/%s in namespace %q returned non-auth error (allowing): %v", gvr.Resource, gvr.Group, gvr.Version, ns, err)

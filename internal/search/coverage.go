@@ -249,15 +249,17 @@ func listErrorReason(err error) readreason.Code {
 	if errors.Is(err, k8s.ErrUnknownKind) {
 		return readreason.CollectionNotSupported
 	}
-	if errors.Is(err, k8s.ErrDynamicNotReady) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+	if errors.Is(err, k8s.ErrDynamicNotReady) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || k8score.IsClientRateLimited(err) {
 		return readreason.KindSyncPending
 	}
 	return readreason.ReadError
 }
 
 // dynamicObservationReason maps a kind's observation to a coverage reason.
-// Deferring a kind on purpose (too many objects to watch eagerly) is Radar's
-// setup; deferring it because a probe or watch start failed is a failure.
+// A deferred kind is one Radar doesn't watch yet: whether it was too large to
+// watch eagerly or its access or size probe went unanswered, that is Radar's
+// collection (setup), and a kind: term warms it and reports what happens. Only
+// a watch that was granted but couldn't start is a failure.
 func dynamicObservationReason(observation k8score.DynamicResourceObservation) readreason.Code {
 	switch observation.State {
 	case k8score.DynamicObservationSynced:
@@ -275,8 +277,6 @@ func dynamicObservationReason(observation k8score.DynamicResourceObservation) re
 			return readreason.KindSyncPending
 		case "watch_start_failed":
 			return readreason.KindSyncFailed
-		case "scope_probe_failed", "resource_count_probe_failed":
-			return readreason.ReadError
 		}
 		return readreason.KindNotWatched
 	case k8score.DynamicObservationUnsupported:

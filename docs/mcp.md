@@ -592,9 +592,12 @@ What gets reported follows from that:
   discovery failed for some groups, an unmatched `kind:` term is still
   `unknown_kind`, beside a `*` `read_error` without a `count`: the kind may live in
   a group Radar couldn't discover. Broad searches don't report failed groups.
-- **A kind Radar deferred on purpose** (too many objects to watch eagerly) is setup.
-  One deferred because a probe or its watch start failed reports `read_error` or
-  `kind_sync_failed` on every search, and a `kind:` term retries its watch.
+- **A kind Radar doesn't watch yet is setup**, whether it was too large to watch
+  eagerly or its access or size probe went unanswered; a `kind:` term warms it and
+  reports what happens. Only a watch that was granted but couldn't start reports
+  `kind_sync_failed` on every search. A probe the client-side rate limiter refused
+  never reached the API server, so it is neither a grant nor a denial: Radar never
+  watches a namespace on its strength.
 - **When your namespace access couldn't be determined**, namespaced kinds are not
   searched (fail closed) and the result reports `permission_check_failed` (per named
   kind, or one `*` entry), never `namespace_excluded`.
