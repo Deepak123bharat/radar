@@ -582,9 +582,19 @@ What gets reported follows from that:
   loading or failed state is reported, so a kind you can't list never shows up as
   loading for you. Radar's setup states need no permission check and are reported
   directly for a named kind.
-- **While discovery is loading**, the response carries a `*` `kind_sync_pending`
+- **While discovery is loading** (API discovery, or the CRD discovery that decides
+  which custom kinds Radar watches), the response carries a `*` `kind_sync_pending`
   entry without a `count` (the set of kinds isn't known yet) and no `unknown_kind`:
-  a `kind:` term that matched nothing may simply not be discovered yet.
+  a `kind:` term that matched nothing may simply not be discovered yet. When API
+  discovery failed for some groups, an unmatched `kind:` term is still
+  `unknown_kind`, beside a `*` `read_error` without a `count`: the kind may live in
+  a group Radar couldn't discover. Broad searches don't report failed groups.
+- **A kind Radar deferred on purpose** (too many objects to watch eagerly) is setup.
+  One deferred because a probe or its watch start failed reports `read_error` or
+  `kind_sync_failed` on every search, and a `kind:` term retries its watch.
+- **When your namespace access couldn't be determined**, namespaced kinds are not
+  searched (fail closed) and the result reports `permission_check_failed` (per named
+  kind, or one `*` entry), never `namespace_excluded`.
 
 | Reason | Reported | Meaning | Next step |
 |---|---|---|---|
@@ -597,7 +607,7 @@ What gets reported follows from that:
 | `collection_not_supported` | named `kind:` | The kind cannot be watched, or Radar reads it directly instead of watching. | Use `list_resources`; warming will not help. |
 | `unknown_kind` | named `kind:` | A `kind:` term matched no kind in the discovered catalog. Reported in your spelling. | Check the spelling, and that the API is installed. |
 | `namespace_excluded` | named `ns:` | Your RBAC doesn't include the namespace (or it doesn't exist). | Do not infer that it doesn't exist. |
-| `namespace_scope_limited` | named `ns:` | REST only: your saved namespace pick or Radar's `--namespace-scope` pin leaves the namespace out. | Pass `globalNs=1` to drop the pick, or widen the pin. |
+| `namespace_scope_limited` | named `ns:` | Radar's `--namespace-scope` pin leaves the namespace out, or on REST without `globalNs=1`, your saved namespace pick does. | Widen the pin, or pass `globalNs=1` to drop the pick. |
 | `collector_scope_limited` | named `ns:` | Radar's cache doesn't cover the namespace for at least one kind searched. | Widen Radar's collection. |
 
 The three namespace reasons use `kind: "*"`, one entry per reason, and `namespaces`
@@ -616,7 +626,7 @@ true, whether or not the hit limit added a `narrowHint`, and REST never carries 
 {"partial": true, "unsearched": [{"kind": "*", "group": "", "reason": "kind_sync_pending", "count": 37}],
  "coverageHint": "37 kinds were still loading; retry in a few seconds before concluding absence.", …}
 {"partial": true, "unsearched": [{"kind": "Secret", "group": "", "reason": "rbac_denied"}],
- "coverageHint": "You can't list Secrets in some or all namespaces; this result says nothing about those.", …}
+ "coverageHint": "Your access doesn't include all Secrets; this result says nothing about the rest.", …}
 {"partial": true, "unsearched": [{"kind": "*", "group": "", "reason": "namespace_excluded", "namespaces": ["payments-prd"]}],
  "coverageHint": "Namespace payments-prd wasn't searched: it isn't among the namespaces you can see, or doesn't exist.", …}
 ```

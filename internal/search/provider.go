@@ -70,6 +70,15 @@ func (p *CacheProvider) DynamicResources() ([]schema.GroupVersionResource, error
 	if err != nil {
 		return nil, err
 	}
+	// Until CRD discovery completes, kinds Radar is about to watch still look
+	// unwatched; until API discovery answers for every group, a kind may be
+	// missing from the catalog.
+	switch {
+	case p.dynamic.GetDiscoveryStatus() != k8score.CRDDiscoveryComplete:
+		err = fmt.Errorf("%w: CRD discovery", k8s.ErrDynamicNotReady)
+	case p.discovery.HasPartialDiscovery():
+		err = errIncompleteDiscovery
+	}
 	seen := map[schema.GroupVersionResource]bool{}
 	watched := map[schema.GroupResource]bool{}
 	for _, gvr := range p.dynamic.GetWatchedResources() {
@@ -87,7 +96,7 @@ func (p *CacheProvider) DynamicResources() ([]schema.GroupVersionResource, error
 		out = append(out, gvr)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
-	return out, nil
+	return out, err
 }
 
 func (p *CacheProvider) TypedCoverage(kind string, namespaces []string) readreason.Code {

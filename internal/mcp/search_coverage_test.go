@@ -15,6 +15,7 @@ import (
 
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/search"
+	pkgauth "github.com/skyhook-io/radar/pkg/auth"
 	"github.com/skyhook-io/radar/pkg/readreason"
 )
 
@@ -277,9 +278,13 @@ func TestCoverageHintTemplates(t *testing.T) {
 			{Kind: "*", Reason: readreason.ReadError, Count: 1}, gap("Certificate", "cert-manager.io", readreason.KindSyncFailed), gap("Issuer", "cert-manager.io", readreason.ReadError),
 		}}, "Couldn't read 3 kinds (Certificate, Issuer, …); matches of those kinds may be missing."},
 		{"rbac", search.Result{Unsearched: []search.UnsearchedKind{gap("Secret", "", readreason.RBACDenied)}},
-			"You can't list Secrets in some or all namespaces; this result says nothing about those."},
+			"Your access doesn't include all Secrets; this result says nothing about the rest."},
+		{"rbac cluster-scoped", search.Result{Unsearched: []search.UnsearchedKind{gap("Node", "", readreason.RBACDenied), gap("ClusterRole", "rbac.authorization.k8s.io", readreason.RBACDenied)}},
+			"Your access doesn't include all Nodes or ClusterRoles; this result says nothing about the rest."},
 		{"unknown", search.Result{Unsearched: []search.UnsearchedKind{gap("Deploymnet", "", readreason.UnknownKind)}},
 			"No kind named Deploymnet on this cluster; check the spelling."},
+		{"unknown with undiscovered groups", search.Result{Unsearched: []search.UnsearchedKind{{Kind: "*", Reason: readreason.ReadError}, gap("Certificate", "", readreason.UnknownKind)}},
+			"No kind named Certificate was found, but some API groups couldn't be discovered; check the spelling, then retry."},
 		{"unsupported", search.Result{Unsearched: []search.UnsearchedKind{gap("Lease", "coordination.k8s.io", readreason.CollectionNotSupported)}},
 			"Leases aren't searchable; use list_resources kind=Lease."},
 		{"rbac namespace", search.Result{Unsearched: []search.UnsearchedKind{{Kind: "*", Reason: readreason.NamespaceExcluded, Namespaces: []string{"payments-prd"}}}},
@@ -318,5 +323,44 @@ func TestCoverageHintCoversEveryReason(t *testing.T) {
 		if hint := coverageHint(res); hint == "" || strings.Contains(hint, "%!") {
 			t.Fatalf("%s: hint %q", reason, hint)
 		}
+	}
+}
+
+// Without a Kubernetes client the caller's namespaces can't be discovered: the
+// search fails closed and says the check failed rather than blaming the
+// caller's RBAC.
+func TestHandleSearchReportsFailedNamespaceDiscovery(t *testing.T) {
+	setupFakeCacheForFilterTests(t)
+	getPermCache().Invalidate()
+	t.Cleanup(func() { getPermCache().Invalidate() })
+	ctx := pkgauth.ContextWithUser(context.Background(), &pkgauth.User{Username: "search-undiscovered"})
+	body := mcpSearch(t, ctx, searchInput{Query: "kind:Pod", Namespace: "alpha"})
+	failed := slices.ContainsFunc(body.Unsearched, func(gap search.UnsearchedKind) bool {
+		return gap.Kind == "Pod" && gap.Reason == "permission_check_failed"
+	})
+	excluded := slices.ContainsFunc(body.Unsearched, func(gap search.UnsearchedKind) bool { return gap.Reason == "namespace_excluded" })
+	if !body.Partial || !failed || excluded || len(body.Hits) != 0 {
+		t.Fatalf("failed namespace discovery: %+v", body)
+	}
+}
+
+// The --namespace-scope pin is Radar's setup, so a namespace outside it is
+// namespace_scope_limited, never blamed on the caller's RBAC.
+func TestHandleSearchAttributesNamedNamespacesToThePin(t *testing.T) {
+	setupFakeCacheForFilterTests(t)
+	k8s.ForceNamespaceScope = true
+	k8s.SetFallbackNamespace("alpha")
+	t.Cleanup(func() {
+		k8s.ForceNamespaceScope = false
+		k8s.SetFallbackNamespace("")
+		getPermCache().Invalidate()
+	})
+	ctx := withClusterAdmin(t, "search-pinned")
+	body := mcpSearch(t, ctx, searchInput{Query: "kind:Pod", Namespace: "beta"})
+	pinned := slices.ContainsFunc(body.Unsearched, func(gap search.UnsearchedKind) bool {
+		return gap.Kind == "*" && gap.Reason == "namespace_scope_limited" && slices.Equal(gap.Namespaces, []string{"beta"})
+	})
+	if !body.Partial || !pinned || len(body.Hits) != 0 {
+		t.Fatalf("pinned namespace: %+v", body)
 	}
 }

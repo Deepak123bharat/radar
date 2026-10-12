@@ -11,6 +11,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -47,6 +48,8 @@ type SummaryBuilderFunc func(obj runtime.Object, u *unstructured.Unstructured, g
 type Provider interface {
 	ListTyped(kind string, namespaces []string) ([]runtime.Object, error)
 	ListDynamic(ctx context.Context, gvr schema.GroupVersionResource, namespace string) ([]*unstructured.Unstructured, error)
+	// DynamicResources lists the dynamic kinds to search. A non-nil error
+	// means the list may be incomplete; any kinds returned are still searched.
 	DynamicResources() ([]schema.GroupVersionResource, error)
 	TypedCoverage(kind string, namespaces []string) readreason.Code
 	// DynamicObservation reports the kind's observation, with readiness taken
@@ -124,6 +127,11 @@ type Options struct {
 	NamespacesByKind map[string][]string
 	// NamespaceExcluded prevents namespaced scans when no requested namespace is visible.
 	NamespaceExcluded bool
+	// NamespaceCheckFailed means the caller's namespace access couldn't be
+	// determined: namespaced kinds are not searched (fail closed), and the
+	// result reports permission_check_failed rather than any namespace as
+	// excluded.
+	NamespaceCheckFailed bool
 	// ExcludedNamespaces are namespaces ns: terms named that the caller's RBAC
 	// leaves out; reported as namespace_excluded.
 	ExcludedNamespaces []string
@@ -191,8 +199,16 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 	}
 	// namespaced reports the namespaces ns: terms named that the caller's RBAC
 	// or the namespace selection left out, and returns false when no namespace
-	// is left to scan.
-	namespaced := func() bool {
+	// is left to scan for kind.
+	namespaced := func(kind, group string) bool {
+		if opts.NamespaceCheckFailed {
+			if len(q.KindFilter) > 0 {
+				cov.kind(kind, group, readreason.PermissionCheckFailed)
+			} else {
+				cov.catalog(readreason.PermissionCheckFailed)
+			}
+			return false
+		}
 		cov.namespaces(readreason.NamespaceExcluded, opts.ExcludedNamespaces...)
 		cov.namespaces(readreason.NamespaceScopeLimited, opts.SelectionExcludedNamespaces...)
 		return !opts.NamespaceExcluded
@@ -240,7 +256,7 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		if clusterScoped && skipClusterScoped {
 			continue
 		}
-		if !clusterScoped && !namespaced() {
+		if !clusterScoped && !namespaced(tk.Kind, tk.Group) {
 			continue
 		}
 		readiness := p.TypedCoverage(tk.Kind, opts.Namespaces)
@@ -353,7 +369,8 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 
 	// Dynamic kinds (CRDs and built-ins without typed listers).
 	gvrs, catalogErr := p.DynamicResources()
-	if catalogErr != nil {
+	incompleteDiscovery := errors.Is(catalogErr, errIncompleteDiscovery)
+	if catalogErr != nil && !incompleteDiscovery {
 		cov.catalog(listErrorReason(catalogErr))
 	}
 	for _, gvr := range gvrs {
@@ -367,7 +384,10 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		}
 		observation := p.DynamicObservation(gvr, "")
 		reason := dynamicObservationReason(observation)
-		warm := len(q.KindFilter) > 0 && reason == readreason.KindNotWatched
+		// A kind: term warms a kind Radar isn't watching, including one whose
+		// deferred probe or watch start failed, instead of reporting it.
+		warm := len(q.KindFilter) > 0 && (reason == readreason.KindNotWatched ||
+			observation.State == k8score.DynamicObservationDeferred && observation.ReasonCode != "scope_probe_incomplete")
 		// Namespace informers sync independently, so while one is still
 		// loading the others can answer: their readiness is judged per
 		// namespace below.
@@ -380,7 +400,7 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		if clusterScoped && skipClusterScoped {
 			continue
 		}
-		if !clusterScoped && !namespaced() {
+		if !clusterScoped && !namespaced(kind, gvr.Group) {
 			continue
 		}
 		if settled && classify(reason) == classScope {
@@ -490,14 +510,19 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		}
 	}
 
-	// Without a complete catalog a kind: term that matched nothing may simply
-	// not be discovered yet, so it is not called unknown.
-	if catalogErr == nil {
+	// While the catalog is loading, a kind: term that matched nothing may
+	// simply not be discovered yet, so it is not called unknown. When some API
+	// groups failed discovery it is, but the failure is reported beside it:
+	// the kind may live in one of them.
+	if catalogErr == nil || incompleteDiscovery {
 		for _, requested := range q.KindFilter {
 			if !covered[requested] && !slices.ContainsFunc(cov.gaps, func(gap UnsearchedKind) bool {
 				return gap.Reason == readreason.UnknownKind && strings.EqualFold(gap.Kind, requested)
 			}) {
 				cov.kind(requested, "", readreason.UnknownKind)
+				if incompleteDiscovery {
+					cov.catalog(readreason.ReadError)
+				}
 			}
 		}
 	}

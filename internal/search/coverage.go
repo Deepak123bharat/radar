@@ -204,6 +204,10 @@ func (o *Options) ScopeNamespaces(q Query, visible, ceiling []string) {
 	o.NamespaceExcluded = o.Namespaces != nil && len(o.Namespaces) == 0
 }
 
+// errIncompleteDiscovery marks a dynamic catalog missing the API groups whose
+// discovery failed.
+var errIncompleteDiscovery = errors.New("some API groups could not be discovered")
+
 // listErrorReason classifies a failed collector list or warm-up. The typed
 // cache reports a probe-disabled kind as a "forbidden:" error, and
 // ErrUnknownKind marks a kind Radar reads directly instead of watching. A 401
@@ -222,6 +226,9 @@ func listErrorReason(err error) readreason.Code {
 	return readreason.ReadError
 }
 
+// dynamicObservationReason maps a kind's observation to a coverage reason.
+// Deferring a kind on purpose (too many objects to watch eagerly) is Radar's
+// setup; deferring it because a probe or watch start failed is a failure.
 func dynamicObservationReason(observation k8score.DynamicResourceObservation) readreason.Code {
 	switch observation.State {
 	case k8score.DynamicObservationSynced:
@@ -234,8 +241,13 @@ func dynamicObservationReason(observation k8score.DynamicResourceObservation) re
 		}
 		return readreason.KindSyncPending
 	case k8score.DynamicObservationDeferred:
-		if observation.ReasonCode == "scope_probe_incomplete" {
+		switch observation.ReasonCode {
+		case "scope_probe_incomplete", "eager_watch_pending":
 			return readreason.KindSyncPending
+		case "watch_start_failed":
+			return readreason.KindSyncFailed
+		case "scope_probe_failed", "resource_count_probe_failed":
+			return readreason.ReadError
 		}
 		return readreason.KindNotWatched
 	case k8score.DynamicObservationUnsupported:

@@ -41,12 +41,17 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// --namespace-scope namespace) narrows the scan; an `ns:` term naming a
 	// namespace it leaves out is reported as namespace_scope_limited.
 	// globalNs=1 drops the cosmetic pick and scans the user's full RBAC
-	// ceiling — a "global" search whose only scope is the query's own `ns:`
-	// tokens. The omnibar sets it so a deliberately broad ⌘K lookup isn't
-	// narrowed to whatever namespace the view filter is on.
-	ceiling := s.getUserNamespaces(r, parseNamespaces(r.URL.Query()))
+	// ceiling (within the pin) — a "global" search whose only scope is the
+	// query's own `ns:` tokens. The omnibar sets it so a deliberately broad ⌘K
+	// lookup isn't narrowed to whatever namespace the view filter is on.
+	ceiling, namespaceCheckFailed := s.getUserNamespacesWithStatus(r, parseNamespaces(r.URL.Query()))
 	visible := ceiling
-	if r.URL.Query().Get("globalNs") != "1" {
+	switch {
+	case namespaceCheckFailed:
+	case r.URL.Query().Get("globalNs") == "1":
+		// globalNs drops the saved pick, never the --namespace-scope pin.
+		visible = s.capacityNamespacesForUser(r)
+	default:
 		visible = s.parseNamespacesForUser(r)
 	}
 
@@ -66,6 +71,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	opts.ScopeNamespaces(parsed, visible, ceiling)
+	opts.NamespaceCheckFailed = namespaceCheckFailed
 	scanNamespaces := opts.Namespaces
 	// summaryContext attaches managedBy/health/issueCount per hit. Build
 	// the per-request closure once (one Compose call + cached topology

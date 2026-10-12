@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -59,10 +60,24 @@ func TestSearchCoverageMatchesAcrossRESTAndMCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(k8s.ResetTestDynamicState)
+	dc := k8s.GetDynamicResourceCache()
 	for _, gvr := range gadgets {
-		if err := k8s.GetDynamicResourceCache().EnsureWatching(gvr); err == nil {
+		if err := dc.EnsureWatching(gvr); err == nil {
 			t.Fatalf("%s: collector list should be denied", gvr.Resource)
 		}
+	}
+	// Until CRD discovery completes every search reports the catalog as
+	// loading; finish it, and the widget watch it starts, first.
+	discovered := make(chan struct{})
+	dc.OnCRDDiscoveryComplete(func() { close(discovered) })
+	dc.DiscoverAllCRDs()
+	select {
+	case <-discovered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("CRD discovery did not complete")
+	}
+	if err := dc.EnsureWatching(widgets); err != nil || !dc.WaitForSync(widgets, 5*time.Second) {
+		t.Fatalf("widgets did not sync: %v", err)
 	}
 	srv := server.New(server.Config{DevMode: true, MCPHandler: mcp.NewHandler()})
 	ts := httptest.NewServer(srv.Handler())
@@ -87,6 +102,7 @@ func TestSearchCoverageMatchesAcrossRESTAndMCP(t *testing.T) {
 		// Unwatched kinds, list-only APIs and kinds Radar's own identity may
 		// not list are the search's scope: a broad query names none of them.
 		{"robusta", []search.UnsearchedKind{}},
+		{"kind:Widget robusta", []search.UnsearchedKind{}},
 		{"kind:NoSuchKindXyz robusta", []search.UnsearchedKind{{Kind: "NoSuchKindXyz", Reason: "unknown_kind"}}},
 		{"kind:Report robusta", []search.UnsearchedKind{{Kind: "Report", Group: "example.io", Reason: "collection_not_supported"}}},
 		{strings.Join(gadgetTerms, " ") + " robusta", deniedGadgets},

@@ -325,3 +325,63 @@ func TestSearchAttributesNamedNamespacesToRBACOrSelection(t *testing.T) {
 		}
 	}
 }
+
+// A namespace discovery that fails is fail-closed, and the search says so as a
+// failed permission check: never a complete empty result, never "you can't see
+// that namespace".
+func TestSearchReportsFailedNamespaceDiscovery(t *testing.T) {
+	useTestResourceCache(t, fake.NewClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}},
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "robusta-pod", Namespace: "default"}},
+	))
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "SAR unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(api.Close)
+	client, err := kubernetes.NewForConfig(&rest.Config{Host: api.URL, ContentConfig: rest.ContentConfig{ContentType: "application/json", AcceptContentTypes: "application/json"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := k8s.SetTestClient(client)
+	t.Cleanup(func() { k8s.SetTestClient(previous) })
+	env := newAuthTestServer(t)
+
+	for _, tc := range []struct {
+		query string
+		want  search.UnsearchedKind
+	}{
+		{"q=kind:Pod+robusta", search.UnsearchedKind{Kind: "Pod", Reason: "permission_check_failed"}},
+		{"q=ns:default+robusta", search.UnsearchedKind{Kind: "*", Reason: "permission_check_failed"}},
+	} {
+		result := searchAs(t, env, "search-unknown", tc.query)
+		if !result.Partial || len(result.Hits) != 0 || !slices.ContainsFunc(result.Unsearched, func(gap search.UnsearchedKind) bool { return reflect.DeepEqual(gap, tc.want) }) || len(namespaceGaps(result)) != 0 {
+			t.Fatalf("%s: %+v", tc.query, result)
+		}
+	}
+}
+
+// The --namespace-scope pin is Radar's setup, reported for a namespace an ns:
+// term names whether or not the search drops the saved pick.
+func TestSearchAttributesNamedNamespacesToThePin(t *testing.T) {
+	useTestResourceCache(t, fake.NewClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-b"}},
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "robusta-pod", Namespace: "default"}},
+		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "robusta-other", Namespace: "team-b"}},
+	))
+	env := newAuthTestServer(t)
+	env.srv.permCache.Set("search-pinned", nil, &auth.UserPermissions{})
+	k8s.ForceNamespaceScope = true
+	k8s.SetFallbackNamespace("default")
+	t.Cleanup(func() {
+		k8s.ForceNamespaceScope = false
+		k8s.SetFallbackNamespace("")
+	})
+	want := []search.UnsearchedKind{{Kind: "*", Reason: "namespace_scope_limited", Namespaces: []string{"team-b"}}}
+	for _, query := range []string{"q=ns:team-b+robusta", "q=ns:team-b+robusta&globalNs=1", "q=kind:Pod+ns:team-b+robusta&globalNs=1"} {
+		result := searchAs(t, env, "search-pinned", query)
+		if got := namespaceGaps(result); !reflect.DeepEqual(got, want) || len(result.Hits) != 0 {
+			t.Fatalf("%s: namespace coverage %+v hits %v, want %+v", query, got, hitKeys(result), want)
+		}
+	}
+}

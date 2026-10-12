@@ -3242,7 +3242,11 @@ func handleSearch(ctx context.Context, req *mcp.CallToolRequest, input searchInp
 	if input.Namespace != "" {
 		parsed.NSFilter = []string{input.Namespace}
 	}
-	visible := filterNamespacesForUser(ctx, nil)
+	ceiling, namespaceCheckFailed := filterNamespacesForUserWithStatus(ctx, nil)
+	visible := ceiling
+	if !namespaceCheckFailed {
+		visible = scopedNamespacesForUser(ctx, nil)
+	}
 
 	var include search.IncludeMode
 	switch input.Include {
@@ -3266,7 +3270,8 @@ func handleSearch(ctx context.Context, req *mcp.CallToolRequest, input searchInp
 			return canReadInNamespaceDecision(ctx, group, resource, "", "list")
 		},
 	}
-	opts.ScopeNamespaces(parsed, visible, visible)
+	opts.ScopeNamespaces(parsed, visible, ceiling)
+	opts.NamespaceCheckFailed = namespaceCheckFailed
 	scanNamespaces := opts.Namespaces
 	if input.Filter != "" {
 		f, err := filter.CachedObjectFilter(input.Filter)

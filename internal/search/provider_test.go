@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -132,12 +133,13 @@ func TestDynamicReadinessIsJudgedPerNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	discovery.AddAPIResource(k8score.APIResource{Group: gvr.Group, Version: gvr.Version, Name: gvr.Resource, Kind: "Widget", Namespaced: true, Verbs: []string{"get", "list", "watch"}})
 	dynamic, err := k8score.NewDynamicResourceCache(k8score.DynamicCacheConfig{DynamicClient: dyn, Discovery: discovery})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(dynamic.Stop)
+	completeCRDDiscovery(t, dynamic)
+	discovery.AddAPIResource(k8score.APIResource{Group: gvr.Group, Version: gvr.Version, Name: gvr.Resource, Kind: "Widget", Namespaced: true, Verbs: []string{"get", "list", "watch"}})
 	ctx := context.Background()
 	if err := dynamic.EnsureWatchingContext(ctx, gvr, "a"); err != nil {
 		t.Fatal(err)
@@ -169,5 +171,50 @@ func TestDynamicReadinessIsJudgedPerNamespace(t *testing.T) {
 		if !reflect.DeepEqual(res.Unsearched, tc.want) || res.Partial != (len(tc.want) > 0) {
 			t.Errorf("namespaces %v: coverage %+v partial=%v, want %+v", tc.namespaces, res.Unsearched, res.Partial, tc.want)
 		}
+	}
+}
+
+// completeCRDDiscovery runs CRD discovery while the catalog holds no CRDs, so
+// the cache counts as discovered without eagerly watching the test's kinds.
+func completeCRDDiscovery(t *testing.T, dynamic *k8score.DynamicResourceCache) {
+	t.Helper()
+	done := make(chan struct{})
+	dynamic.OnCRDDiscoveryComplete(func() { close(done) })
+	dynamic.DiscoverAllCRDs()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("CRD discovery did not complete")
+	}
+}
+
+// Until CRD discovery completes, kinds Radar is about to watch eagerly still
+// look unwatched, so search can't rule them out: the catalog reports loading
+// while what is already cached keeps answering.
+func TestCacheProviderCatalogLoadsUntilCRDDiscoveryCompletes(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	discovery, err := k8score.NewResourceDiscovery(fake.NewClientset().Discovery())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dynamic, err := k8score.NewDynamicResourceCache(k8score.DynamicCacheConfig{DynamicClient: dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()), Discovery: discovery})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(dynamic.Stop)
+	discovery.AddAPIResource(k8score.APIResource{Group: gvr.Group, Version: gvr.Version, Name: gvr.Resource, Kind: "Widget", Namespaced: true, Verbs: []string{"get", "list", "watch"}})
+	p := &CacheProvider{dynamic: &k8s.DynamicResourceCache{DynamicResourceCache: dynamic}, discovery: &k8s.ResourceDiscovery{ResourceDiscovery: discovery}}
+	gvrs, err := p.DynamicResources()
+	if !errors.Is(err, k8s.ErrDynamicNotReady) || !slices.Contains(gvrs, gvr) {
+		t.Fatalf("before CRD discovery: %v %v", gvrs, err)
+	}
+	res, _ := Search(context.Background(), p, Parse("kind:Gadget robusta"), Options{})
+	if want := []UnsearchedKind{{Kind: "*", Reason: "kind_sync_pending"}}; !reflect.DeepEqual(res.Unsearched, want) {
+		t.Fatalf("search before CRD discovery = %+v, want %+v", res.Unsearched, want)
+	}
+	completeCRDDiscovery(t, dynamic)
+	res, _ = Search(context.Background(), p, Parse("kind:Gadget robusta"), Options{})
+	if want := []UnsearchedKind{{Kind: "Gadget", Reason: "unknown_kind"}}; !reflect.DeepEqual(res.Unsearched, want) {
+		t.Fatalf("search after CRD discovery = %+v, want %+v", res.Unsearched, want)
 	}
 }

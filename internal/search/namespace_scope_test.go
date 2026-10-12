@@ -239,3 +239,26 @@ func TestDynamicNamespaceReadinessInEveryScope(t *testing.T) {
 		})
 	}
 }
+
+// When the caller's namespaces couldn't be determined, namespaced kinds stay
+// unsearched (fail closed) and the result says the check failed: neither
+// complete nor a denial, and no named namespace is blamed on the caller's RBAC.
+func TestFailedNamespaceCheckIsAFailureNotADenial(t *testing.T) {
+	for _, tc := range []struct {
+		query string
+		want  []UnsearchedKind
+		hits  []string
+	}{
+		{"robusta", []UnsearchedKind{{Kind: "*", Reason: "permission_check_failed"}}, []string{"ClusterRole//robusta-cr", "Node//robusta-node"}},
+		{"ns:a robusta", []UnsearchedKind{{Kind: "*", Reason: "permission_check_failed"}}, nil},
+		{"kind:Pod ns:a robusta", []UnsearchedKind{{Kind: "Pod", Reason: "permission_check_failed"}}, nil},
+	} {
+		q := Parse(tc.query)
+		opts := Options{Include: IncludeNone, NamespaceCheckFailed: true}
+		opts.ScopeNamespaces(q, []string{}, []string{})
+		res, _ := Search(context.Background(), namespaceFixture(), q, opts)
+		if !res.Partial || !reflect.DeepEqual(res.Unsearched, tc.want) || !reflect.DeepEqual(hitNames(res), tc.hits) {
+			t.Fatalf("%s: coverage %+v hits %v, want %+v and %v", tc.query, res.Unsearched, hitNames(res), tc.want, tc.hits)
+		}
+	}
+}

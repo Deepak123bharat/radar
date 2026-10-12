@@ -99,32 +99,40 @@ func getPermCache() *pkgauth.PermissionCache {
 // struct with a non-nil but empty AllowedNamespaces on discovery failure
 // (fail-closed: treat the user as having no access rather than leaking).
 func resolveUserPerms(ctx context.Context) (*pkgauth.User, *pkgauth.UserPermissions) {
+	user, perms, _ := resolveUserPermsWithStatus(ctx)
+	return user, perms
+}
+
+// resolveUserPermsWithStatus is resolveUserPerms plus whether the perms are
+// the fail-closed empty set of a failed namespace discovery rather than the
+// user genuinely having no access.
+func resolveUserPermsWithStatus(ctx context.Context) (*pkgauth.User, *pkgauth.UserPermissions, bool) {
 	user := pkgauth.UserFromContext(ctx)
 	if user == nil {
-		return nil, nil
+		return nil, nil, false
 	}
 	cache := getPermCache()
 	if perms := cache.Get(user.Username, user.Groups); perms != nil {
-		return user, perms
+		return user, perms, false
 	}
 
 	client := k8s.GetClient()
 	if client == nil {
 		log.Printf("[mcp] K8s client unavailable for namespace discovery (user=%s) — denying access", user.Username)
 		// Empty (not nil) AllowedNamespaces means "no access"; nil would mean cluster-admin.
-		return user, &pkgauth.UserPermissions{AllowedNamespaces: []string{}}
+		return user, &pkgauth.UserPermissions{AllowedNamespaces: []string{}}, true
 	}
 
 	allNamespaces := mcpAllNamespaceNames(ctx)
 	allowed, err := pkgauth.DiscoverNamespaces(ctx, client, user.Username, user.Groups, allNamespaces)
 	if err != nil {
 		log.Printf("[mcp] DiscoverNamespaces failed for %s: %v — denying access (fail-closed)", user.Username, err)
-		return user, &pkgauth.UserPermissions{AllowedNamespaces: []string{}}
+		return user, &pkgauth.UserPermissions{AllowedNamespaces: []string{}}, true
 	}
 
 	perms := &pkgauth.UserPermissions{AllowedNamespaces: allowed}
 	cache.Set(user.Username, user.Groups, perms)
-	return user, perms
+	return user, perms, false
 }
 
 func mcpAllNamespaceNames(ctx context.Context) []string {
@@ -155,11 +163,18 @@ func mcpAllNamespaceNames(ctx context.Context) []string {
 // requested may be nil ("all namespaces"). Pass a single-element slice to
 // check a specific namespace.
 func filterNamespacesForUser(ctx context.Context, requested []string) []string {
-	user, perms := resolveUserPerms(ctx)
+	namespaces, _ := filterNamespacesForUserWithStatus(ctx, requested)
+	return namespaces
+}
+
+// filterNamespacesForUserWithStatus is filterNamespacesForUser plus whether
+// the result is fail-closed because namespace discovery failed.
+func filterNamespacesForUserWithStatus(ctx context.Context, requested []string) ([]string, bool) {
+	user, perms, failed := resolveUserPermsWithStatus(ctx)
 	if user == nil {
-		return requested
+		return requested, false
 	}
-	return pkgauth.FilterNamespacesForUser(requested, user, perms)
+	return pkgauth.FilterNamespacesForUser(requested, user, perms), failed
 }
 
 // scopedNamespacesForUser applies the --namespace pin before the RBAC filter,

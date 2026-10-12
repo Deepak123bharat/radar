@@ -328,3 +328,65 @@ func TestLoadingCatalogIsPendingNotUnknown(t *testing.T) {
 	}
 }
 
+// When some API groups failed discovery, an unmatched kind: term is still
+// reported as unknown, but with the failure beside it: the kind may live in a
+// group Radar couldn't discover. A broad search says nothing about it.
+func TestIncompleteDiscoveryQualifiesUnknownKinds(t *testing.T) {
+	p := &fakeProvider{catalogErr: errIncompleteDiscovery}
+	if res, _ := Search(context.Background(), p, Parse("robusta"), Options{}); res.Partial || len(res.Unsearched) != 0 {
+		t.Fatalf("broad search reported incomplete discovery: %+v", res.Unsearched)
+	}
+	res, _ := Search(context.Background(), p, Parse("kind:Certificate kind:Pod"), Options{})
+	want := []UnsearchedKind{{Kind: "*", Reason: readreason.ReadError}, {Kind: "Certificate", Reason: readreason.UnknownKind}}
+	if !res.Partial || !reflect.DeepEqual(res.Unsearched, want) {
+		t.Fatalf("unmatched kind with incomplete discovery = %+v, want %+v", res.Unsearched, want)
+	}
+}
+
+// Deferring a kind on purpose is setup; deferring it because a probe or watch
+// start failed is a failure, reported on every search, and a kind: term still
+// retries the watch.
+func TestDeferredKindsSeparateSetupFromFailure(t *testing.T) {
+	for _, tc := range []struct {
+		code, broad string
+	}{
+		{"resource_count_exceeds_eager_limit", ""},
+		{"legacy_api_deferred", ""},
+		{"eager_watch_pending", "kind_sync_pending"},
+		{"watch_start_failed", "kind_sync_failed"},
+		{"scope_probe_failed", "read_error"},
+		{"resource_count_probe_failed", "read_error"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+			p := &fakeProvider{
+				kinds:        map[schema.GroupVersionResource]string{gvr: "Widget"},
+				namespaced:   map[schema.GroupVersionResource]bool{gvr: false},
+				observations: map[schema.GroupVersionResource]k8score.DynamicResourceObservation{gvr: {State: k8score.DynamicObservationDeferred, ReasonCode: tc.code}},
+			}
+			res, _ := Search(context.Background(), p, Parse("robusta"), Options{})
+			if got := reasonsOf(res); !reflect.DeepEqual(got, nonEmpty(tc.broad)) || len(p.warmed) != 0 {
+				t.Fatalf("broad: %+v warmed=%v", res.Unsearched, p.warmed)
+			}
+			res, _ = Search(context.Background(), p, Parse("kind:Widget"), Options{})
+			if res.Partial || len(p.warmed) != 1 {
+				t.Fatalf("named kind was not warmed: %+v warmed=%v", res.Unsearched, p.warmed)
+			}
+		})
+	}
+}
+
+func reasonsOf(res Result) []string {
+	var out []string
+	for _, gap := range res.Unsearched {
+		out = append(out, string(gap.Reason))
+	}
+	return out
+}
+
+func nonEmpty(s string) []string {
+	if s == "" {
+		return nil
+	}
+	return []string{s}
+}

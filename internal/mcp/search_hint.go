@@ -14,10 +14,19 @@ import (
 const maxCoverageSentences = 3
 
 // coverageTemplate turns the unsearched entries for one or more reasons into
-// one sentence. Reasons sharing a template share the sentence.
+// one sentence. Reasons sharing a template share the sentence. all is every
+// entry of the result, for sentences another reason qualifies.
 type coverageTemplate struct {
 	reasons  []readreason.Code
-	sentence func(entries []search.UnsearchedKind) string
+	sentence func(entries, all []search.UnsearchedKind) string
+}
+
+// catalogUnreadable reports a "*" read_error with no count: API discovery
+// failed for some groups, so any kind could have been in them.
+func catalogUnreadable(all []search.UnsearchedKind) bool {
+	return slices.ContainsFunc(all, func(e search.UnsearchedKind) bool {
+		return e.Kind == "*" && e.Reason == readreason.ReadError && e.Count == 0
+	})
 }
 
 // filterErrors marks where CEL evaluation failures rank among the templates.
@@ -26,41 +35,52 @@ var filterErrors = coverageTemplate{}
 // coverageTemplates is ordered most actionable first: what the agent can fix
 // or retry now, then what it can only report.
 var coverageTemplates = []coverageTemplate{
-	{[]readreason.Code{readreason.UnknownKind}, func(e []search.UnsearchedKind) string {
-		if len(e) == 1 {
-			return fmt.Sprintf("No kind named %s on this cluster; check the spelling.", e[0].Kind)
+	{[]readreason.Code{readreason.UnknownKind}, func(e, all []search.UnsearchedKind) string {
+		names := joinKinds(e, "or", func(kind string) string { return kind })
+		if catalogUnreadable(all) {
+			return fmt.Sprintf("No kind named %s was found, but some API groups couldn't be discovered; check the spelling, then retry.", names)
 		}
-		return fmt.Sprintf("No kinds named %s on this cluster; check the spelling.", joinKinds(e, "or", func(kind string) string { return kind }))
+		if len(e) == 1 {
+			return fmt.Sprintf("No kind named %s on this cluster; check the spelling.", names)
+		}
+		return fmt.Sprintf("No kinds named %s on this cluster; check the spelling.", names)
 	}},
-	{[]readreason.Code{readreason.CollectionNotSupported}, func(e []search.UnsearchedKind) string {
+	{[]readreason.Code{readreason.CollectionNotSupported}, func(e, _ []search.UnsearchedKind) string {
 		if len(e) == 1 {
 			return fmt.Sprintf("%s aren't searchable; use list_resources kind=%s.", kindPlural(e[0].Kind), e[0].Kind)
 		}
 		return fmt.Sprintf("%s aren't searchable; use list_resources for them.", joinKinds(e, "and", kindPlural))
 	}},
 	filterErrors,
-	{[]readreason.Code{readreason.KindSyncPending}, func(e []search.UnsearchedKind) string {
+	{[]readreason.Code{readreason.KindSyncPending}, func(e, _ []search.UnsearchedKind) string {
 		label, n := kindsLabel(e)
 		return fmt.Sprintf("%s %s still loading; retry in a few seconds before concluding absence.", capitalize(label), pluralWord(n, "was", "were"))
 	}},
-	{[]readreason.Code{readreason.PermissionCheckFailed}, func(e []search.UnsearchedKind) string {
+	{[]readreason.Code{readreason.PermissionCheckFailed}, func(e, _ []search.UnsearchedKind) string {
 		label, _ := kindsLabel(e)
 		return fmt.Sprintf("Radar couldn't check your access to %s; retry.", label)
 	}},
-	{[]readreason.Code{readreason.KindSyncFailed, readreason.ReadError, readreason.CollectorUnauthorized}, func(e []search.UnsearchedKind) string {
+	{[]readreason.Code{readreason.KindSyncFailed, readreason.ReadError, readreason.CollectorUnauthorized}, func(e, all []search.UnsearchedKind) string {
+		if slices.ContainsFunc(all, func(u search.UnsearchedKind) bool { return u.Reason == readreason.UnknownKind }) {
+			// The unknown-kind sentence already explains undiscovered groups.
+			e = slices.DeleteFunc(slices.Clone(e), func(u search.UnsearchedKind) bool { return u.Kind == "*" && u.Count == 0 })
+			if len(e) == 0 {
+				return ""
+			}
+		}
 		label, n := kindsLabel(e)
 		return fmt.Sprintf("Couldn't read %s; matches of %s may be missing.", label, pluralWord(n, "that kind", "those kinds"))
 	}},
-	{[]readreason.Code{readreason.RBACDenied}, func(e []search.UnsearchedKind) string {
-		return fmt.Sprintf("You can't list %s in some or all namespaces; this result says nothing about those.", joinKinds(e, "or", kindPlural))
+	{[]readreason.Code{readreason.RBACDenied}, func(e, _ []search.UnsearchedKind) string {
+		return fmt.Sprintf("Your access doesn't include all %s; this result says nothing about the rest.", joinKinds(e, "or", kindPlural))
 	}},
-	{[]readreason.Code{readreason.NamespaceExcluded}, func(e []search.UnsearchedKind) string {
+	{[]readreason.Code{readreason.NamespaceExcluded}, func(e, _ []search.UnsearchedKind) string {
 		return namespaceSentence(e, "it isn't among the namespaces you can see, or doesn't exist", "they aren't among the namespaces you can see, or don't exist")
 	}},
-	{[]readreason.Code{readreason.NamespaceScopeLimited, readreason.CollectorScopeLimited}, func(e []search.UnsearchedKind) string {
+	{[]readreason.Code{readreason.NamespaceScopeLimited, readreason.CollectorScopeLimited}, func(e, _ []search.UnsearchedKind) string {
 		return namespaceSentence(e, "Radar here watches only some namespaces", "Radar here watches only some namespaces")
 	}},
-	{[]readreason.Code{readreason.CollectorAccessDenied}, func(e []search.UnsearchedKind) string {
+	{[]readreason.Code{readreason.CollectorAccessDenied}, func(e, _ []search.UnsearchedKind) string {
 		return fmt.Sprintf("Radar isn't allowed to read %s on this cluster; granting you access won't help.", joinKinds(e, "or", kindPlural))
 	}},
 }
@@ -87,7 +107,9 @@ func coverageHint(res search.Result) string {
 			}
 		}
 		if len(entries) > 0 {
-			sentences = append(sentences, tmpl.sentence(entries))
+			if sentence := tmpl.sentence(entries, res.Unsearched); sentence != "" {
+				sentences = append(sentences, sentence)
+			}
 		}
 	}
 	var other []string
