@@ -1,13 +1,16 @@
-import { forwardRef, useMemo, useState } from 'react'
+import { forwardRef, useEffect, useMemo, useState } from 'react'
 import { Omnibar, type OmnibarHandle } from './Omnibar'
-import { useSearch, useNamespaceScope, useContexts, type SearchHit } from '../../api/client'
+import { useSearch, useNamespaceScope, useContexts, type SearchHit, type SearchResult } from '../../api/client'
 import { useAPIResources } from '../../api/apiResources'
 import { loadRecentResources, recordRecentResource } from '../../hooks/useRecentResources'
 import { useCommandItems, type CommandItemCallbacks } from './command-items'
+import { PENDING_RETRY_BUDGET_MS, PENDING_RETRY_MS, queryNamesKind, searchCoverageNote } from './searchCoverageNote'
 
 interface RadarOmnibarProps extends CommandItemCallbacks {
   onOpenResource: (hit: SearchHit) => void
 }
+
+const stillLoading = (data: SearchResult | undefined) => !!data?.unsearched?.some((e) => e.reason === 'kind_sync_pending')
 
 // Radar standalone's omnibar: wires the injectable Omnibar to Radar's own hooks
 // (cluster /api/search, kubeconfig contexts, API discovery, recents). Radar Hub
@@ -19,8 +22,22 @@ export const RadarOmnibar = forwardRef<OmnibarHandle, RadarOmnibarProps>(functio
   // The omnibar debounces internally and emits the query to search here.
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
+  // The query whose still-loading re-queries ran out of budget while open.
+  const [exhaustedQuery, setExhaustedQuery] = useState<string | null>(null)
 
-  const { data: searchData, isFetching, isPlaceholderData, isError } = useSearch(query, { enabled: open, globalNs: true })
+  const { data: searchData, isFetching, isPlaceholderData, isError } = useSearch(query, {
+    enabled: open,
+    globalNs: true,
+    refetchInterval: (data) => (open && stillLoading(data) && exhaustedQuery !== query ? PENDING_RETRY_MS : false),
+  })
+  const pending = !isPlaceholderData && stillLoading(searchData)
+  useEffect(() => {
+    if (!open || !pending) return
+    const timer = setTimeout(() => setExhaustedQuery(query), PENDING_RETRY_BUDGET_MS)
+    return () => clearTimeout(timer)
+  }, [open, pending, query])
+  useEffect(() => { if (!open) setExhaustedQuery(null) }, [open])
+
   const { data: nsScope } = useNamespaceScope()
   const { data: apiResources } = useAPIResources()
   const { data: contexts } = useContexts()
@@ -32,6 +49,15 @@ export const RadarOmnibar = forwardRef<OmnibarHandle, RadarOmnibarProps>(functio
   }), [nsScope, apiResources])
 
   const commandItems = useCommandItems(callbacks)
+  const { onNavigateKind } = callbacks
+  const note = searchCoverageNote(searchData?.unsearched, {
+    namedKinds: queryNamesKind(query),
+    pendingExhausted: exhaustedQuery === query,
+    openKindList: (kind, group) => {
+      const resource = apiResources?.find((r) => r.kind === kind && r.group === group)
+      return resource ? () => onNavigateKind(resource.name, resource.group) : undefined
+    },
+  })
 
   return (
     <Omnibar
@@ -43,6 +69,7 @@ export const RadarOmnibar = forwardRef<OmnibarHandle, RadarOmnibarProps>(functio
       isFetching={isFetching}
       isError={isError}
       isPlaceholderData={isPlaceholderData}
+      note={note}
       modifierOptions={modifierOptions}
       seedNamespaces={nsScope?.actives}
       loadRecents={() => loadRecentResources(contextKey)}

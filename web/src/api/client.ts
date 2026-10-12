@@ -1937,11 +1937,27 @@ export interface SearchHit {
   clusterName?: string;
 }
 
+/** One entry of a search's coverage (`unsearched`): a kind or set of kinds the
+ *  search couldn't fully cover, and why. Reasons come from Radar's
+ *  `pkg/readreason`. `kind: "*"` stands for several kinds (`count` of them when
+ *  known) or, with `namespaces`, for the named namespaces left out. */
+export interface SearchCoverageEntry {
+  kind: string;
+  group: string;
+  reason: string;
+  namespaces?: string[];
+  count?: number;
+}
+
 export interface SearchResult {
   hits: SearchHit[];
   total: number;
   searched: number;
   total_matched: number;
+  /** Absent from Radars that predate search coverage. true: the result can't
+   *  rule out a match for what was asked. */
+  partial?: boolean;
+  unsearched?: SearchCoverageEntry[];
 }
 
 const SEARCH_MIN_QUERY = 2;
@@ -1959,6 +1975,8 @@ export function useSearch(
     context?: "summary" | "none";
     enabled?: boolean;
     globalNs?: boolean;
+    /** Re-query on an interval decided from the latest response. */
+    refetchInterval?: (data: SearchResult | undefined) => number | false;
   },
 ) {
   const trimmed = query.trim();
@@ -1978,6 +1996,7 @@ export function useSearch(
       ),
     enabled,
     staleTime: 2000,
+    refetchInterval: (q) => opts?.refetchInterval?.(q.state.data) ?? false,
     placeholderData: (prev) => prev, // keepPreviousData
   });
 }
