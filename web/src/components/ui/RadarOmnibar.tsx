@@ -4,7 +4,7 @@ import { useSearch, useNamespaceScope, useContexts, type SearchHit, type SearchR
 import { useAPIResources } from '../../api/apiResources'
 import { loadRecentResources, recordRecentResource } from '../../hooks/useRecentResources'
 import { useCommandItems, type CommandItemCallbacks } from './command-items'
-import { PENDING_RETRY_BUDGET_MS, PENDING_RETRY_MS, queryNamesKind, searchCoverageNote } from './searchCoverageNote'
+import { PENDING_RETRY_BUDGET_MS, PENDING_RETRY_MS, searchCoverageNote } from './searchCoverageNote'
 
 interface RadarOmnibarProps extends CommandItemCallbacks {
   onOpenResource: (hit: SearchHit) => void
@@ -51,7 +51,6 @@ export const RadarOmnibar = forwardRef<OmnibarHandle, RadarOmnibarProps>(functio
   const commandItems = useCommandItems(callbacks)
   const { onNavigateKind } = callbacks
   const note = searchCoverageNote(searchData?.unsearched, {
-    namedKinds: queryNamesKind(query),
     pendingExhausted: exhaustedQuery === query,
     openKindList: (kind, group) => {
       const resource = apiResources?.find((r) => r.kind === kind && r.group === group)

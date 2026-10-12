@@ -3,16 +3,17 @@ import type { SearchCoverageEntry } from '../../api/client'
 import type { OmnibarNote } from './Omnibar'
 
 // While a search reports kinds still loading, the open omnibar re-queries every
-// PENDING_RETRY_MS for at most PENDING_RETRY_BUDGET_MS.
+// PENDING_RETRY_MS for at most PENDING_RETRY_BUDGET_MS. Radar gives up on a
+// kind that never syncs after about 30 s and reports it failed, so the budget
+// outlasts that and the note ends on the outcome rather than "still loading".
 export const PENDING_RETRY_MS = 5000
-export const PENDING_RETRY_BUDGET_MS = 30000
+export const PENDING_RETRY_BUDGET_MS = 45000
 
 const FAILURE_REASONS = new Set(['kind_sync_failed', 'read_error', 'collector_unauthorized'])
 const MAX_SENTENCES = 2
+const MAX_NAMES = 3
 
 export interface SearchCoverageNoteOptions {
-  /** The query has a kind: term. Failures are shown only for kinds the user named. */
-  namedKinds: boolean
   /** Re-querying a still-loading search ran out of budget. */
   pendingExhausted?: boolean
   /** Returns how to open a kind's resource list, or undefined when the host can't. */
@@ -29,10 +30,23 @@ function joinNames(names: string[], conj: string): string {
   return `${names.slice(0, -1).join(', ')} ${conj} ${names[names.length - 1]}`
 }
 
+// The kinds a failure reason covers, in prose: up to MAX_NAMES names, then
+// "N more kinds" for the rest (named beyond the cap, or folded into a counted
+// "*" entry), or "some kinds" when a "*" entry carries no count.
+function failedKinds(entries: SearchCoverageEntry[], label: (kind: string) => string): { text: string; one: boolean } {
+  const names = [...new Set(entries.filter((e) => e.kind !== '*').map((e) => label(e.kind)))]
+  const stars = entries.filter((e) => e.kind === '*')
+  if (stars.some((e) => !e.count)) return { text: names.length ? `${names.slice(0, MAX_NAMES).join(', ')} and other kinds` : 'some kinds', one: false }
+  const more = Math.max(names.length - MAX_NAMES, 0) + stars.reduce((n, e) => n + (e.count ?? 0), 0)
+  const shown = names.slice(0, MAX_NAMES)
+  if (!more) return { text: joinNames(shown, 'or'), one: shown.length === 1 }
+  return { text: `${shown.join(', ')} and ${more} more ${more === 1 ? 'kind' : 'kinds'}`, one: false }
+}
+
 // Radar's ⌘K note for one search: what happened to the kinds the query named,
-// and whether results are still loading. Access and setup never come up on a
-// broad search (Radar doesn't report them); broad failures stay quiet here too.
-// An older Radar sends no `unsearched`, and gets no note.
+// whether results are still loading, and which kinds failed to read. Access
+// and setup never come up on a broad search (Radar doesn't report them). An
+// older Radar sends no `unsearched`, and gets no note.
 export function searchCoverageNote(unsearched: SearchCoverageEntry[] | undefined, opts: SearchCoverageNoteOptions): OmnibarNote | undefined {
   if (!unsearched?.length) return undefined
   const named = (reasons: string | Set<string>) =>
@@ -45,12 +59,12 @@ export function searchCoverageNote(unsearched: SearchCoverageEntry[] | undefined
     say(opts.pendingExhausted ? 'Still loading — try again shortly.' : 'Still loading — results may change.')
   }
   const unknown = named('unknown_kind')
+  // A read_error "*" without a count beside an unknown kind: some API groups
+  // failed discovery, so the kind may exist there.
+  const groupsUnread = unknown.length > 0 && unsearched.some((e) => e.kind === '*' && e.reason === 'read_error' && !e.count)
   if (unknown.length) {
     const noun = `No ${unknown.length === 1 ? 'kind' : 'kinds'} named ${joinNames(unknown, 'or')}`
-    // A read_error "*" without a count: some API groups failed discovery, so
-    // the kind may exist there.
-    const groupsUnread = unsearched.some((e) => e.kind === '*' && e.reason === 'read_error' && !e.count)
-    say(groupsUnread ? `${noun} found, but some API groups couldn't be read.` : `${noun}. Check the spelling.`)
+    say(groupsUnread ? `${noun} found, but some API groups couldn't be read.` : `${noun} here — not installed, or misspelled?`)
   }
   const unsupported = unsearched.filter((e) => e.kind !== '*' && e.reason === 'collection_not_supported')
   if (unsupported.length) {
@@ -67,19 +81,16 @@ export function searchCoverageNote(unsearched: SearchCoverageEntry[] | undefined
   if (denied.length) say(`Your access doesn't include all ${joinNames(denied.map(kindPluralLabel), 'or')}.`)
   const collector = named('collector_access_denied')
   if (collector.length) say(`Radar isn't allowed to read ${joinNames(collector.map(kindPluralLabel), 'or')} on this cluster.`)
-  if (opts.namedKinds) {
-    const failed = named(FAILURE_REASONS)
-    if (failed.length) say(`Couldn't read ${joinNames(failed, 'or')}.`)
-    const unchecked = named('permission_check_failed')
-    if (unchecked.length) say(`Couldn't check your access to ${joinNames(unchecked.map(kindPluralLabel), 'or')}.`)
+  const failed = unsearched.filter((e) => FAILURE_REASONS.has(e.reason) && !(groupsUnread && e.kind === '*' && !e.count))
+  if (failed.length) {
+    const { text, one } = failedKinds(failed, (kind) => kind)
+    say(`Couldn't read ${text}; matches of ${one ? 'that kind' : 'those kinds'} may be missing.`)
   }
+  const unchecked = unsearched.filter((e) => e.reason === 'permission_check_failed')
+  if (unchecked.length) say(`Couldn't check your access to ${failedKinds(unchecked, kindPluralLabel).text}.`)
 
   if (!sentences.length) return undefined
   const shown = sentences.slice(0, MAX_SENTENCES)
   return { text: shown.map((s) => s.text).join(' '), action: shown.find((s) => s.action)?.action }
 }
 
-/** Whether a query string names a kind with a `kind:` (or `k:`) modifier. */
-export function queryNamesKind(query: string): boolean {
-  return /(^|\s)(kind|k):\S/i.test(query)
-}
