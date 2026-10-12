@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -169,6 +170,18 @@ func (p *CacheProvider) WarmDynamic(ctx context.Context, gvr schema.GroupVersion
 		return fmt.Errorf("%w: initial sync", k8s.ErrDynamicNotReady)
 	}
 	return nil
+}
+
+func (p *CacheProvider) NamespaceExists(name string) (bool, bool) {
+	lister := p.cache.Namespaces()
+	if lister == nil || !p.cache.IsKindReady("namespaces") {
+		return false, false
+	}
+	_, err := lister.Get(name)
+	if apierrors.IsNotFound(err) {
+		return false, true
+	}
+	return err == nil, err == nil
 }
 
 func (p *CacheProvider) KindForGVR(gvr schema.GroupVersionResource) string {

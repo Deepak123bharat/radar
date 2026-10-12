@@ -311,8 +311,13 @@ func TestSearchAttributesNamedNamespacesToRBACOrSelection(t *testing.T) {
 		{"search-erin", "q=robusta", 2, nil},
 		{"search-erin", "q=robusta&globalNs=1", 4, nil},
 		{"search-erin", "q=kind:Pod+robusta", 1, nil},
-		{"search-erin", "q=ns:team-b+ns:missing+robusta", 0, []search.UnsearchedKind{{Kind: "*", Reason: "namespace_scope_limited", Namespaces: []string{"missing", "team-b"}}}},
-		{"search-erin", "q=ns:team-b+ns:missing+robusta&globalNs=1", 2, nil},
+		// A namespace that doesn't exist is reported as not searched for an
+		// unrestricted caller, never as the pick's doing.
+		{"search-erin", "q=ns:team-b+ns:missing+robusta", 0, []search.UnsearchedKind{
+			{Kind: "*", Reason: "namespace_excluded", Namespaces: []string{"missing"}},
+			{Kind: "*", Reason: "namespace_scope_limited", Namespaces: []string{"team-b"}},
+		}},
+		{"search-erin", "q=ns:team-b+ns:missing+robusta&globalNs=1", 2, []search.UnsearchedKind{{Kind: "*", Reason: "namespace_excluded", Namespaces: []string{"missing"}}}},
 		{"search-frank", "q=ns:team-b+ns:other+robusta", 0, []search.UnsearchedKind{
 			{Kind: "*", Reason: "namespace_excluded", Namespaces: []string{"other"}},
 			{Kind: "*", Reason: "namespace_scope_limited", Namespaces: []string{"team-b"}},
@@ -382,6 +387,13 @@ func TestSearchAttributesNamedNamespacesToThePin(t *testing.T) {
 		result := searchAs(t, env, "search-pinned", query)
 		if got := namespaceGaps(result); !reflect.DeepEqual(got, want) || len(result.Hits) != 0 {
 			t.Fatalf("%s: namespace coverage %+v hits %v, want %+v", query, got, hitKeys(result), want)
+		}
+	}
+	// A namespace this cluster doesn't have isn't the pin's doing.
+	want = []search.UnsearchedKind{{Kind: "*", Reason: "namespace_excluded", Namespaces: []string{"payments-prd"}}}
+	for _, query := range []string{"q=ns:payments-prd+robusta", "q=ns:payments-prd+robusta&globalNs=1"} {
+		if got := namespaceGaps(searchAs(t, env, "search-pinned", query)); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: namespace coverage %+v, want %+v", query, got, want)
 		}
 	}
 }

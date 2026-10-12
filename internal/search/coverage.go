@@ -204,6 +204,35 @@ func (o *Options) ScopeNamespaces(q Query, visible, ceiling []string) {
 	o.NamespaceExcluded = o.Namespaces != nil && len(o.Namespaces) == 0
 }
 
+// excludeMissingNamespaces reports a namespace an ns: term names, that the
+// caller may see but doesn't exist on the cluster, as namespace_excluded: the
+// entry an unseen namespace gets. Otherwise it would be searched to a silent
+// empty answer, or blamed on the namespace selection. Namespaces outside the
+// caller's RBAC are never checked, so existence is never revealed beyond what
+// the caller can see.
+func (o *Options) excludeMissingNamespaces(p Provider, q Query) {
+	if len(q.NSFilter) == 0 {
+		return
+	}
+	split := func(namespaces []string) (kept []string) {
+		if namespaces == nil {
+			return nil
+		}
+		kept = make([]string, 0, len(namespaces))
+		for _, ns := range namespaces {
+			if exists, known := p.NamespaceExists(ns); known && !exists {
+				o.ExcludedNamespaces = append(o.ExcludedNamespaces, ns)
+			} else {
+				kept = append(kept, ns)
+			}
+		}
+		return kept
+	}
+	o.Namespaces = split(o.Namespaces)
+	o.SelectionExcludedNamespaces = split(o.SelectionExcludedNamespaces)
+	o.NamespaceExcluded = o.Namespaces != nil && len(o.Namespaces) == 0
+}
+
 // errIncompleteDiscovery marks a dynamic catalog missing the API groups whose
 // discovery failed.
 var errIncompleteDiscovery = errors.New("some API groups could not be discovered")

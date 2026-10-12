@@ -57,6 +57,9 @@ type Provider interface {
 	DynamicObservation(gvr schema.GroupVersionResource, namespace string) k8score.DynamicResourceObservation
 	WarmDynamic(ctx context.Context, gvr schema.GroupVersionResource, namespace string) error
 	KindForGVR(gvr schema.GroupVersionResource) string
+	// NamespaceExists reports whether a namespace exists on the cluster; known
+	// is false when Radar can't tell (it doesn't watch Namespaces cluster-wide).
+	NamespaceExists(name string) (exists, known bool)
 }
 
 type dynamicScopeProvider interface {
@@ -189,6 +192,7 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 	defer cancelWarm()
 	res := Result{}
 	cov := newCoverage(q)
+	opts.excludeMissingNamespaces(p, q)
 	covered := map[string]bool{}
 	markKnown := func(kind, plural string) {
 		for _, requested := range q.KindFilter {
@@ -241,10 +245,11 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 	// only to ship at most opts.Limit of them.
 	var pending []pendingHit
 
-	// Coverage order, for typed and dynamic kinds alike: a setup state (Radar
-	// can't collect the kind) is reported without asking about the caller; the
-	// caller's own access is checked before a loading or failed state is
-	// reported, so a kind the caller can't read never reports either to them.
+	// Coverage order, for typed and dynamic kinds alike: a kind search can't
+	// collect at all is reported without asking about the caller. Otherwise the
+	// caller's own access is checked first, so a kind the caller can't read is
+	// reported as theirs to fix (rbac_denied), never as Radar's denial, still
+	// loading or failed.
 
 	// Typed kinds.
 	for _, tk := range typedKinds {
@@ -263,8 +268,7 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		if readiness == readreason.CollectorScopeLimited {
 			readiness = ""
 		}
-		if readiness != "" && classify(readiness) == classScope {
-			cov.kind(tk.Kind, tk.Group, readiness)
+		if readiness != "" && cov.quiet(readiness) {
 			continue
 		}
 		if opts.SkipKinds[tk.Kind] {
@@ -403,7 +407,7 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		if !clusterScoped && !namespaced(kind, gvr.Group) {
 			continue
 		}
-		if settled && classify(reason) == classScope {
+		if settled && reason == readreason.CollectionNotSupported {
 			cov.kind(kind, gvr.Group, reason)
 			continue
 		}

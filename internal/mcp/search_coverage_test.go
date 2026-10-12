@@ -264,46 +264,51 @@ func TestCoverageHintTemplates(t *testing.T) {
 		return search.UnsearchedKind{Kind: kind, Group: group, Reason: reason}
 	}
 	for _, tc := range []struct {
-		name string
-		res  search.Result
-		want string
+		name    string
+		res     search.Result
+		want    string
+		seesAll bool
 	}{
 		{"pending fold", search.Result{Unsearched: []search.UnsearchedKind{{Kind: "*", Reason: readreason.KindSyncPending, Count: 37}}},
-			"37 kinds were still loading; retry in a few seconds before concluding absence."},
+			"37 kinds were still loading; retry in a few seconds before concluding absence.", false},
 		{"pending catalog", search.Result{Unsearched: []search.UnsearchedKind{{Kind: "*", Reason: readreason.KindSyncPending}}},
-			"Some kinds were still loading; retry in a few seconds before concluding absence."},
+			"Some kinds were still loading; retry in a few seconds before concluding absence.", false},
 		{"one failure", search.Result{Unsearched: []search.UnsearchedKind{gap("Certificate", "cert-manager.io", readreason.KindSyncFailed)}},
-			"Couldn't read Certificate (cert-manager.io); matches of that kind may be missing."},
+			"Couldn't read Certificate (cert-manager.io); matches of that kind may be missing.", false},
 		{"failures fold", search.Result{Unsearched: []search.UnsearchedKind{
 			{Kind: "*", Reason: readreason.ReadError, Count: 1}, gap("Certificate", "cert-manager.io", readreason.KindSyncFailed), gap("Issuer", "cert-manager.io", readreason.ReadError),
-		}}, "Couldn't read 3 kinds (Certificate, Issuer, …); matches of those kinds may be missing."},
+		}}, "Couldn't read 3 kinds (Certificate, Issuer, …); matches of those kinds may be missing.", false},
 		{"rbac", search.Result{Unsearched: []search.UnsearchedKind{gap("Secret", "", readreason.RBACDenied)}},
-			"Your access doesn't include all Secrets; this result says nothing about the rest."},
+			"Your access doesn't include all Secrets; this result says nothing about the rest.", false},
 		{"rbac cluster-scoped", search.Result{Unsearched: []search.UnsearchedKind{gap("Node", "", readreason.RBACDenied), gap("ClusterRole", "rbac.authorization.k8s.io", readreason.RBACDenied)}},
-			"Your access doesn't include all Nodes or ClusterRoles; this result says nothing about the rest."},
+			"Your access doesn't include all Nodes or ClusterRoles; this result says nothing about the rest.", false},
 		{"unknown", search.Result{Unsearched: []search.UnsearchedKind{gap("Deploymnet", "", readreason.UnknownKind)}},
-			"No kind named Deploymnet on this cluster; check the spelling."},
+			"Kind 'Deploymnet' isn't recognized on this cluster: it may not be installed here, or the name may be misspelled.", false},
 		{"unknown with undiscovered groups", search.Result{Unsearched: []search.UnsearchedKind{{Kind: "*", Reason: readreason.ReadError}, gap("Certificate", "", readreason.UnknownKind)}},
-			"No kind named Certificate was found, but some API groups couldn't be discovered; check the spelling, then retry."},
+			"Kind 'Certificate' wasn't recognized, but some API groups couldn't be discovered: it may be served by one of them; retry.", false},
 		{"unsupported", search.Result{Unsearched: []search.UnsearchedKind{gap("Lease", "coordination.k8s.io", readreason.CollectionNotSupported)}},
-			"Leases aren't searchable; use list_resources kind=Lease."},
+			"Leases aren't searchable; use list_resources kind=Lease.", false},
 		{"rbac namespace", search.Result{Unsearched: []search.UnsearchedKind{{Kind: "*", Reason: readreason.NamespaceExcluded, Namespaces: []string{"payments-prd"}}}},
-			"Namespace payments-prd wasn't searched: it isn't among the namespaces you can see, or doesn't exist."},
+			"Namespace payments-prd wasn't searched: it isn't among the namespaces you can see, or doesn't exist.", false},
+		{"missing namespace, caller sees all", search.Result{Unsearched: []search.UnsearchedKind{{Kind: "*", Reason: readreason.NamespaceExcluded, Namespaces: []string{"payments-prd"}}}},
+			"Namespace 'payments-prd' doesn't exist on this cluster.", true},
+		{"unknown kinds", search.Result{Unsearched: []search.UnsearchedKind{gap("CiliumNetworkPolicy", "", readreason.UnknownKind), gap("Deploymnet", "", readreason.UnknownKind)}},
+			"Kinds 'CiliumNetworkPolicy' and 'Deploymnet' aren't recognized on this cluster: they may not be installed here, or the names may be misspelled.", false},
 		{"scope namespace", search.Result{Unsearched: []search.UnsearchedKind{{Kind: "*", Reason: readreason.CollectorScopeLimited, Namespaces: []string{"billing"}}}},
-			"Namespace billing wasn't searched: Radar here watches only some namespaces."},
+			"Namespace billing wasn't searched: Radar here watches only some namespaces.", false},
 		{"check failed", search.Result{Unsearched: []search.UnsearchedKind{gap("Secret", "", readreason.PermissionCheckFailed)}},
-			"Radar couldn't check your access to Secret; retry."},
+			"Radar couldn't check your access to Secret; retry.", false},
 		{"collector", search.Result{Unsearched: []search.UnsearchedKind{gap("Node", "", readreason.CollectorAccessDenied)}},
-			"Radar isn't allowed to read Nodes on this cluster; granting you access won't help."},
+			"Radar isn't allowed to read Nodes on this cluster; granting you access won't help.", false},
 		{"filter", search.Result{FilterErrors: 143, FilterErrorSample: "no such key: readyReplicas"},
-			"143 objects failed the filter (no such key: readyReplicas); guard optional fields with has()."},
+			"143 objects failed the filter (no such key: readyReplicas). Kubernetes omits fields that are 0 or empty: guard them with has(), and match a zero with !has(x) || x == 0.", false},
 		{"ordered and capped", search.Result{FilterErrors: 1, FilterErrorSample: "no such key: x", Unsearched: []search.UnsearchedKind{
 			gap("Secret", "", readreason.RBACDenied), {Kind: "*", Reason: readreason.KindSyncPending, Count: 2}, gap("Deploymnet", "", readreason.UnknownKind), gap("Node", "", readreason.CollectorAccessDenied),
-		}}, "No kind named Deploymnet on this cluster; check the spelling. 1 object failed the filter (no such key: x); guard optional fields with has(). 2 kinds were still loading; retry in a few seconds before concluding absence. +2 more reasons."},
+		}}, "Kind 'Deploymnet' isn't recognized on this cluster: it may not be installed here, or the name may be misspelled. 1 object failed the filter (no such key: x). Kubernetes omits fields that are 0 or empty: guard them with has(), and match a zero with !has(x) || x == 0. 2 kinds were still loading; retry in a few seconds before concluding absence. +2 more reasons.", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.res.Partial = true
-			if got := coverageHint(tc.res); got != tc.want {
+			if got := coverageHint(tc.res, tc.seesAll); got != tc.want {
 				t.Fatalf("coverageHint = %q\nwant           %q", got, tc.want)
 			}
 		})
@@ -320,7 +325,7 @@ func TestCoverageHintCoversEveryReason(t *testing.T) {
 		readreason.ReadError, "reason_from_the_future",
 	} {
 		res := search.Result{Partial: true, Unsearched: []search.UnsearchedKind{{Kind: "Widget", Group: "example.io", Reason: reason, Namespaces: []string{"a"}}}}
-		if hint := coverageHint(res); hint == "" || strings.Contains(hint, "%!") {
+		if hint := coverageHint(res, false); hint == "" || strings.Contains(hint, "%!") {
 			t.Fatalf("%s: hint %q", reason, hint)
 		}
 	}
@@ -362,5 +367,42 @@ func TestHandleSearchAttributesNamedNamespacesToThePin(t *testing.T) {
 	})
 	if !body.Partial || !pinned || len(body.Hits) != 0 {
 		t.Fatalf("pinned namespace: %+v", body)
+	}
+}
+
+// For a caller who can see every namespace, a named namespace that doesn't
+// exist is reported, and the hint says exactly that; under the pin it is not
+// blamed on the pin.
+func TestHandleSearchNamedNamespaceThatDoesNotExist(t *testing.T) {
+	setupFakeCacheForFilterTests(t)
+	t.Cleanup(func() { getPermCache().Invalidate() })
+	for _, pinned := range []bool{false, true} {
+		if pinned {
+			k8s.ForceNamespaceScope = true
+			k8s.SetFallbackNamespace("alpha")
+			t.Cleanup(func() {
+				k8s.ForceNamespaceScope = false
+				k8s.SetFallbackNamespace("")
+			})
+		}
+		ctx := withClusterAdmin(t, "search-missing-ns")
+		result, _, err := handleSearch(ctx, nil, searchInput{Query: "pod", Namespace: "payments-prd", Context: "none", Include: "none"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body searchResponseMCP
+		if err := json.Unmarshal([]byte(extractText(t, result)), &body); err != nil {
+			t.Fatal(err)
+		}
+		var namespaceEntries []search.UnsearchedKind
+		for _, gap := range body.Unsearched {
+			if len(gap.Namespaces) > 0 {
+				namespaceEntries = append(namespaceEntries, gap)
+			}
+		}
+		want := []search.UnsearchedKind{{Kind: "*", Reason: "namespace_excluded", Namespaces: []string{"payments-prd"}}}
+		if !reflect.DeepEqual(namespaceEntries, want) || !strings.Contains(body.CoverageHint, "Namespace 'payments-prd' doesn't exist on this cluster.") {
+			t.Fatalf("pinned=%v: %+v hint %q", pinned, namespaceEntries, body.CoverageHint)
+		}
 	}
 }

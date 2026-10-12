@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"testing"
 
@@ -33,6 +34,16 @@ type fakeProvider struct {
 	kinds                 map[schema.GroupVersionResource]string
 	namespaced            map[schema.GroupVersionResource]bool
 	dynamicListNamespaces []string
+	// existingNamespaces, when non-nil, are the namespaces on the cluster;
+	// nil means existence is unknown.
+	existingNamespaces []string
+}
+
+func (f *fakeProvider) NamespaceExists(name string) (bool, bool) {
+	if f.existingNamespaces == nil {
+		return false, false
+	}
+	return slices.Contains(f.existingNamespaces, name), true
 }
 
 func (f *fakeProvider) ListTyped(kind string, namespaces []string) ([]runtime.Object, error) {

@@ -17,6 +17,7 @@ import (
 
 	"github.com/skyhook-io/radar/internal/filter"
 	"github.com/skyhook-io/radar/pkg/k8score"
+	"github.com/skyhook-io/radar/pkg/readreason"
 )
 
 func TestCELUsesCachedFieldsWithoutDetailPruning(t *testing.T) {
@@ -132,19 +133,49 @@ func TestBroadOnlyUnsupportedIsComplete(t *testing.T) {
 	}
 }
 
-// Radar's setup is reported without asking about the caller, but the caller's
-// own access decides whether a loading or failed kind is reported at all: a
-// kind they can't read is never "still loading" for them.
+// The caller's own access is checked first: a named kind both the caller and
+// Radar can't read is the caller's to fix, and a kind the caller can't read is
+// never "still loading" or "Radar can't read it" for them. Radar's denial is
+// reported only when the caller could read the kind.
 func TestCallerAccessPrecedesTransientCoverage(t *testing.T) {
-	collectorDenied := &fakeProvider{typedReasons: map[string]string{"Node": "collector_access_denied"}}
-	res, _ := Search(context.Background(), collectorDenied, Parse("kind:Node"), Options{
-		CanReadClusterScoped: func(string, string, string) (bool, bool) {
-			t.Fatal("collector-denied typed kind issued SAR")
-			return false, true
+	gadget := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "gadgets"}
+	collectorDenied := &fakeProvider{
+		typedReasons: map[string]string{"Node": "collector_access_denied", "Secret": "collector_access_denied"},
+		kinds:        map[schema.GroupVersionResource]string{gadget: "Gadget"},
+		namespaced:   map[schema.GroupVersionResource]bool{gadget: false},
+		observations: map[schema.GroupVersionResource]k8score.DynamicResourceObservation{gadget: {State: k8score.DynamicObservationDenied}},
+	}
+	for _, tc := range []struct {
+		allowed bool
+		reason  string
+	}{{false, "rbac_denied"}, {true, "collector_access_denied"}} {
+		res, _ := Search(context.Background(), collectorDenied, Parse("kind:Node kind:Secret kind:Gadget"), Options{
+			NamespacedRBAC: func([]string, string, string) (string, []string) {
+				if tc.allowed {
+					return "", nil
+				}
+				return "skip", nil
+			},
+			CanReadClusterScoped: func(string, string, string) (bool, bool) { return tc.allowed, true },
+		})
+		want := []UnsearchedKind{
+			{Kind: "Gadget", Group: "example.io", Reason: readreason.Code(tc.reason)},
+			{Kind: "Node", Reason: readreason.Code(tc.reason)},
+			{Kind: "Secret", Reason: readreason.Code(tc.reason)},
+		}
+		if !reflect.DeepEqual(res.Unsearched, want) {
+			t.Fatalf("caller allowed=%v: %+v, want %+v", tc.allowed, res.Unsearched, want)
+		}
+	}
+	if res, _ := Search(context.Background(), collectorDenied, Parse("robusta"), Options{
+		CanReadClusterScoped: func(kind, _, _ string) (bool, bool) {
+			if kind == "Node" || kind == "Gadget" {
+				t.Fatalf("a broad search checked the caller for %s, which Radar can't collect", kind)
+			}
+			return true, true
 		},
-	})
-	if !res.Partial || len(res.Unsearched) != 1 || res.Unsearched[0].Reason != "collector_access_denied" {
-		t.Fatalf("collector coverage: %+v", res)
+	}); res.Partial {
+		t.Fatalf("broad search reported Radar's setup: %+v", res.Unsearched)
 	}
 
 	loading := &fakeProvider{typedReasons: map[string]string{"Secret": "kind_sync_pending", "Node": "kind_sync_failed"}}
@@ -164,7 +195,7 @@ func TestCallerAccessPrecedesTransientCoverage(t *testing.T) {
 			t.Fatalf("%s: unreadable kinds reported to the caller: %+v", query, res.Unsearched)
 		}
 	}
-	res, _ = Search(context.Background(), loading, Parse("kind:Secret kind:Node kind:Gadget"), denied)
+	res, _ := Search(context.Background(), loading, Parse("kind:Secret kind:Node kind:Gadget"), denied)
 	want := []UnsearchedKind{
 		{Kind: "Gadget", Group: "example.io", Reason: "rbac_denied"},
 		{Kind: "Node", Reason: "rbac_denied"},

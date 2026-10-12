@@ -578,10 +578,13 @@ What gets reported follows from that:
   `permission_check_failed`) names its first five kinds, by kind then group, and
   folds the rest into `{kind: "*", reason, count: N}`, where N counts only the folded
   kinds. A query with `kind:` terms names every kind it reports, exactly.
-- **Only kinds you may read count.** Your own access is checked before a kind's
-  loading or failed state is reported, so a kind you can't list never shows up as
-  loading for you. Radar's setup states need no permission check and are reported
-  directly for a named kind.
+- **Only kinds you may read count, and your access comes first.** Your own access is
+  checked before a kind's loading, failed or collection state is reported, so a kind
+  you can't list never shows up as loading for you, and a named kind that neither
+  you nor Radar can read is reported as `rbac_denied` (yours to fix). Radar's own
+  denial (`collector_access_denied`) is reported only when you could read the kind.
+  A kind search can't collect at all (`collection_not_supported`) is reported
+  without a permission check.
 - **While discovery is loading** (API discovery, or the CRD discovery that decides
   which custom kinds Radar watches), the response carries a `*` `kind_sync_pending`
   entry without a `count` (the set of kinds isn't known yet) and no `unknown_kind`:
@@ -605,14 +608,18 @@ What gets reported follows from that:
 | `rbac_denied` | named `kind:` | Your role cannot list the kind in some or all of the searched namespaces. | Ask for access; authorized namespaces still contribute hits. |
 | `collector_access_denied` | named `kind:` | Kubernetes refused Radar's own identity for the kind. | Fix Radar's access; granting the caller access does not help. |
 | `collection_not_supported` | named `kind:` | The kind cannot be watched, or Radar reads it directly instead of watching. | Use `list_resources`; warming will not help. |
-| `unknown_kind` | named `kind:` | A `kind:` term matched no kind in the discovered catalog. Reported in your spelling. | Check the spelling, and that the API is installed. |
-| `namespace_excluded` | named `ns:` | Your RBAC doesn't include the namespace (or it doesn't exist). | Do not infer that it doesn't exist. |
-| `namespace_scope_limited` | named `ns:` | Radar's `--namespace-scope` pin leaves the namespace out, or on REST without `globalNs=1`, your saved namespace pick does. | Widen the pin, or pass `globalNs=1` to drop the pick. |
+| `unknown_kind` | named `kind:` | A `kind:` term matched no kind in the discovered catalog: it isn't installed on this cluster, or it is misspelled. Reported in your spelling. | Check the spelling, and whether the API is installed here. |
+| `namespace_excluded` | named `ns:` | Your RBAC doesn't include the namespace, or it doesn't exist on this cluster. | For a caller who can see every namespace it means the namespace doesn't exist; otherwise don't infer that. |
+| `namespace_scope_limited` | named `ns:` | The namespace exists, but Radar's `--namespace-scope` pin leaves it out, or on REST without `globalNs=1`, your saved namespace pick does. | Widen the pin, or pass `globalNs=1` to drop the pick. |
 | `collector_scope_limited` | named `ns:` | Radar's cache doesn't cover the namespace for at least one kind searched. | Widen Radar's collection. |
 
 The three namespace reasons use `kind: "*"`, one entry per reason, and `namespaces`
 lists the namespaces you named that were not searched for that reason; the entry
-never repeats per kind and says nothing about whether a namespace exists. Kubernetes
+never repeats per kind. A named namespace you may see but that doesn't exist on the
+cluster (Radar watches Namespaces cluster-wide, even under the pin) is
+`namespace_excluded`, never blamed on the pin or the pick. Existence is checked only
+for namespaces your RBAC covers, so a namespace you can't see is `namespace_excluded`
+whether or not it exists. Kubernetes
 rejecting Radar's credentials (401) is reported as `collector_access_denied`, not
 `collector_unauthorized`: the collector's permission probes don't keep 401 apart from
 403.
@@ -629,7 +636,12 @@ true, whether or not the hit limit added a `narrowHint`, and REST never carries 
  "coverageHint": "Your access doesn't include all Secrets; this result says nothing about the rest.", …}
 {"partial": true, "unsearched": [{"kind": "*", "group": "", "reason": "namespace_excluded", "namespaces": ["payments-prd"]}],
  "coverageHint": "Namespace payments-prd wasn't searched: it isn't among the namespaces you can see, or doesn't exist.", …}
+{"partial": true, "unsearched": [{"kind": "CiliumNetworkPolicy", "group": "", "reason": "unknown_kind"}],
+ "coverageHint": "Kind 'CiliumNetworkPolicy' isn't recognized on this cluster: it may not be installed here, or the name may be misspelled.", …}
 ```
+
+For a caller who can see every namespace, the `namespace_excluded` hint reads
+"Namespace 'payments-prd' doesn't exist on this cluster."
 
 `ns:` (and the MCP `namespace` argument) restricts namespaced kinds. A broad `ns:`
 query covers namespaced objects only. A cluster-scoped kind named with `kind:`
@@ -674,7 +686,8 @@ Examples:
 `has()` takes a field selection (`has(object.subjects)`), not a bare variable
 (`has(subjects)`). Use map membership for label keys. Kubernetes omits fields that
 are zero or empty (`status.readyReplicas` on a Deployment with none ready), so guard
-them with `has()`. Evaluation/activation errors set `partial: true`, preserve
+them with `has()`, and match a zero with `!has(x) || x == 0`: zero or unreported
+ready replicas is `!has(status.readyReplicas) || status.readyReplicas == 0`. Evaluation/activation errors set `partial: true`, preserve
 `filter_errors` and `filter_error_sample`, and return `filter_failed_objects`: the
 first 20 `{kind, namespace, name}` refs, with empty namespace at cluster scope.
 Surviving hits remain available. A valid false predicate is an ordinary non-match.

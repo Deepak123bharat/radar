@@ -262,3 +262,54 @@ func TestFailedNamespaceCheckIsAFailureNotADenial(t *testing.T) {
 		}
 	}
 }
+
+type existenceProbe struct {
+	*fakeProvider
+	asked []string
+}
+
+func (p *existenceProbe) NamespaceExists(name string) (bool, bool) {
+	p.asked = append(p.asked, name)
+	return p.fakeProvider.NamespaceExists(name)
+}
+
+// A named namespace that doesn't exist is reported like one the caller can't
+// see, never searched to a silent empty answer, and never blamed on the pin.
+// Existence is only checked for namespaces the caller may see.
+func TestNamedNamespaceThatDoesNotExist(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		query            string
+		visible, ceiling []string
+		want             []UnsearchedKind
+		hits             []string
+		asked            []string
+	}{
+		{"unrestricted", "ns:payments robusta", nil, nil, []UnsearchedKind{{Kind: "*", Reason: "namespace_excluded", Namespaces: []string{"payments"}}}, nil, []string{"payments"}},
+		{"unrestricted, one exists", "ns:a ns:payments robusta", nil, nil, []UnsearchedKind{{Kind: "*", Reason: "namespace_excluded", Namespaces: []string{"payments"}}}, []string{"Pod/a/robusta-a"}, []string{"a", "payments"}},
+		{"pinned, exists elsewhere", "ns:b robusta", []string{"a"}, nil, []UnsearchedKind{{Kind: "*", Reason: "namespace_scope_limited", Namespaces: []string{"b"}}}, nil, []string{"b"}},
+		{"pinned, exists nowhere", "ns:payments robusta", []string{"a"}, nil, []UnsearchedKind{{Kind: "*", Reason: "namespace_excluded", Namespaces: []string{"payments"}}}, nil, []string{"payments"}},
+		{"restricted caller", "ns:payments ns:b robusta", []string{"a"}, []string{"a"}, []UnsearchedKind{{Kind: "*", Reason: "namespace_excluded", Namespaces: []string{"b", "payments"}}}, nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := namespaceFixture()
+			fixture.existingNamespaces = []string{"a", "b"}
+			p := &existenceProbe{fakeProvider: fixture}
+			q := Parse(tc.query)
+			opts := Options{Include: IncludeNone}
+			opts.ScopeNamespaces(q, tc.visible, tc.ceiling)
+			res, _ := Search(context.Background(), p, q, opts)
+			if !reflect.DeepEqual(res.Unsearched, tc.want) || !reflect.DeepEqual(hitNames(res), tc.hits) || !reflect.DeepEqual(p.asked, tc.asked) {
+				t.Fatalf("coverage %+v hits %v asked %v, want %+v, %v, %v", res.Unsearched, hitNames(res), p.asked, tc.want, tc.hits, tc.asked)
+			}
+		})
+	}
+	// Without a cluster-wide view of Namespaces, existence is unknown and a
+	// named namespace is simply searched.
+	q := Parse("ns:payments robusta")
+	var opts Options
+	opts.ScopeNamespaces(q, nil, nil)
+	if res, _ := Search(context.Background(), namespaceFixture(), q, opts); res.Partial {
+		t.Fatalf("unknown existence reported: %+v", res.Unsearched)
+	}
+}

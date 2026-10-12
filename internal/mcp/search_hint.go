@@ -13,6 +13,10 @@ import (
 // maxCoverageSentences bounds coverageHint; further reasons are only counted.
 const maxCoverageSentences = 3
 
+// namespaceNotFound is hint-only: namespace_excluded as seen by a caller who
+// can see every namespace. It never reaches the wire.
+const namespaceNotFound readreason.Code = "namespace_not_found"
+
 // coverageTemplate turns the unsearched entries for one or more reasons into
 // one sentence. Reasons sharing a template share the sentence. all is every
 // entry of the result, for sentences another reason qualifies.
@@ -36,14 +40,15 @@ var filterErrors = coverageTemplate{}
 // or retry now, then what it can only report.
 var coverageTemplates = []coverageTemplate{
 	{[]readreason.Code{readreason.UnknownKind}, func(e, all []search.UnsearchedKind) string {
-		names := joinKinds(e, "or", func(kind string) string { return kind })
+		names := joinKinds(e, "and", func(kind string) string { return "'" + kind + "'" })
 		if catalogUnreadable(all) {
-			return fmt.Sprintf("No kind named %s was found, but some API groups couldn't be discovered; check the spelling, then retry.", names)
+			return fmt.Sprintf("%s %s recognized, but some API groups couldn't be discovered: %s may be served by one of them; retry.",
+				pluralWord(len(e), "Kind", "Kinds")+" "+names, pluralWord(len(e), "wasn't", "weren't"), pluralWord(len(e), "it", "they"))
 		}
 		if len(e) == 1 {
-			return fmt.Sprintf("No kind named %s on this cluster; check the spelling.", names)
+			return fmt.Sprintf("Kind %s isn't recognized on this cluster: it may not be installed here, or the name may be misspelled.", names)
 		}
-		return fmt.Sprintf("No kinds named %s on this cluster; check the spelling.", names)
+		return fmt.Sprintf("Kinds %s aren't recognized on this cluster: they may not be installed here, or the names may be misspelled.", names)
 	}},
 	{[]readreason.Code{readreason.CollectionNotSupported}, func(e, _ []search.UnsearchedKind) string {
 		if len(e) == 1 {
@@ -77,6 +82,16 @@ var coverageTemplates = []coverageTemplate{
 	{[]readreason.Code{readreason.NamespaceExcluded}, func(e, _ []search.UnsearchedKind) string {
 		return namespaceSentence(e, "it isn't among the namespaces you can see, or doesn't exist", "they aren't among the namespaces you can see, or don't exist")
 	}},
+	{[]readreason.Code{namespaceNotFound}, func(e, _ []search.UnsearchedKind) string {
+		var namespaces []string
+		for _, entry := range e {
+			namespaces = append(namespaces, entry.Namespaces...)
+		}
+		if len(namespaces) == 1 {
+			return fmt.Sprintf("Namespace '%s' doesn't exist on this cluster.", namespaces[0])
+		}
+		return fmt.Sprintf("Namespaces %s don't exist on this cluster.", quoteJoin(namespaces))
+	}},
 	{[]readreason.Code{readreason.NamespaceScopeLimited, readreason.CollectorScopeLimited}, func(e, _ []search.UnsearchedKind) string {
 		return namespaceSentence(e, "Radar here watches only some namespaces", "Radar here watches only some namespaces")
 	}},
@@ -89,7 +104,18 @@ var coverageTemplates = []coverageTemplate{
 // reason present, most actionable first, at most maxCoverageSentences and then
 // a count of the rest. Every reason yields a sentence, so it is non-empty
 // whenever res.Partial is true.
-func coverageHint(res search.Result) string {
+//
+// seesAllNamespaces says the caller's RBAC covers every namespace, so a
+// namespace_excluded entry can only mean the named namespace doesn't exist.
+func coverageHint(res search.Result, seesAllNamespaces bool) string {
+	if seesAllNamespaces {
+		res.Unsearched = slices.Clone(res.Unsearched)
+		for i := range res.Unsearched {
+			if res.Unsearched[i].Reason == readreason.NamespaceExcluded {
+				res.Unsearched[i].Reason = namespaceNotFound
+			}
+		}
+	}
 	var sentences []string
 	used := map[readreason.Code]bool{}
 	for _, tmpl := range coverageTemplates {
@@ -191,6 +217,14 @@ func joinKinds(entries []search.UnsearchedKind, conj string, format func(string)
 	return strings.Join(names[:len(names)-1], ", ") + " " + conj + " " + names[len(names)-1]
 }
 
+func quoteJoin(values []string) string {
+	quoted := make([]string, len(values))
+	for i, v := range values {
+		quoted[i] = "'" + v + "'"
+	}
+	return strings.Join(quoted, ", ")
+}
+
 func namespaceSentence(entries []search.UnsearchedKind, oneWhy, manyWhy string) string {
 	var namespaces []string
 	for _, e := range entries {
@@ -219,10 +253,11 @@ func filterSentence(failed int, sample string) string {
 		cause = cause[:80] + "…"
 	}
 	objects := pluralWord(failed, "object", "objects")
+	const advice = "Kubernetes omits fields that are 0 or empty: guard them with has(), and match a zero with !has(x) || x == 0."
 	if cause == "" {
-		return fmt.Sprintf("%d %s failed the filter; guard optional fields with has().", failed, objects)
+		return fmt.Sprintf("%d %s failed the filter. %s", failed, objects, advice)
 	}
-	return fmt.Sprintf("%d %s failed the filter (%s); guard optional fields with has().", failed, objects, cause)
+	return fmt.Sprintf("%d %s failed the filter (%s). %s", failed, objects, cause, advice)
 }
 
 func pluralWord(n int, one, many string) string {
