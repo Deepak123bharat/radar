@@ -84,7 +84,7 @@ func collectorLimitedCoverage(resource string, reason readreason.Code, read []st
 	slices.Sort(read)
 	where := fmt.Sprintf("namespace %q", read[0])
 	if len(read) > 1 {
-		where = fmt.Sprintf("namespaces %q", strings.Join(read, ","))
+		where = fmt.Sprintf("namespaces %q", namespaceForError(read))
 	}
 	return &listCoverage{
 		Reason:     reason,
@@ -137,7 +137,7 @@ func resourceReadNamespaces(ctx context.Context, requested []string) ([]string, 
 		if len(requested) == 1 {
 			scope = fmt.Sprintf("namespace %q", clamped[0])
 		} else if len(requested) > 1 {
-			scope = fmt.Sprintf("namespaces %q", clamped)
+			scope = fmt.Sprintf("namespaces %q", namespaceForError(clamped))
 		}
 		return nil, readErrorf(readreason.NoNamespaceAccess, "no Radar access to %s (Radar grants namespace access when your role can list pods or deployments there; re-checked every ~2 minutes)", scope)
 	}
@@ -148,8 +148,8 @@ func namespaceForError(namespaces []string) string {
 	if len(namespaces) == 1 {
 		return namespaces[0]
 	}
-	if len(namespaces) > 10 {
-		return fmt.Sprintf("%s (+%d more)", strings.Join(namespaces[:10], ","), len(namespaces)-10)
+	if len(namespaces) > 3 {
+		return fmt.Sprintf("%s and %d more", strings.Join(namespaces[:3], ","), len(namespaces)-3)
 	}
 	return strings.Join(namespaces, ",")
 }

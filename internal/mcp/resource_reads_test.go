@@ -36,6 +36,7 @@ import (
 	pkgauth "github.com/skyhook-io/radar/pkg/auth"
 	"github.com/skyhook-io/radar/pkg/investigation"
 	"github.com/skyhook-io/radar/pkg/k8score"
+	"github.com/skyhook-io/radar/pkg/readreason"
 	"github.com/skyhook-io/radar/pkg/resourceid"
 )
 
@@ -878,6 +879,38 @@ func setupListCoverageFixture(t *testing.T, class coverageClass, limited bool, o
 	}
 	t.Cleanup(k8s.ResetTestDynamicState)
 	return gvr.Resource
+}
+
+func TestCollectorLimitedCoverageBoundsNamespaceProse(t *testing.T) {
+	for _, count := range []int{1, 3, 4, 40} {
+		for _, reason := range []readreason.Code{readreason.CollectorScopeLimited, readreason.CollectorAccessDenied} {
+			t.Run(fmt.Sprintf("%s/%d", reason, count), func(t *testing.T) {
+				read := make([]string, count)
+				for i := range read {
+					read[i] = fmt.Sprintf("team-%02d", count-i)
+				}
+				original := slices.Clone(read)
+				coverage := collectorLimitedCoverage("services", reason, read)
+				expected := slices.Clone(read)
+				slices.Sort(expected)
+				if !slices.Equal(read, original) || !slices.Equal(coverage.Namespaces, expected) {
+					t.Fatalf("namespace data changed: input %v, coverage %v", read, coverage.Namespaces)
+				}
+				where := fmt.Sprintf("namespace %q", expected[0])
+				if count > 1 {
+					listed := strings.Join(expected[:min(count, 3)], ",")
+					if count > 3 {
+						listed += fmt.Sprintf(" and %d more", count-3)
+					}
+					where = fmt.Sprintf("namespaces %q", listed)
+				}
+				want := fmt.Sprintf("Radar read services only in %s; objects in other namespaces were not read, so this result cannot show they don't exist.", where)
+				if coverage.Note != want || coverage.Reason != reason || coverage.Complete {
+					t.Fatalf("coverage = %+v, want reason %s and note %q", coverage, reason, want)
+				}
+			})
+		}
+	}
 }
 
 // An unrestricted, unscoped list asks for the whole cluster. When Radar's
@@ -1822,7 +1855,7 @@ func TestResourceReadErrorDetails(t *testing.T) {
 	ctx := withRestrictedUser(t, "secret-denial-reader", namespaces)
 	seedSecretListCanI(t, "secret-denial-reader", nil, namespaces)
 	_, _, err = handleListResources(ctx, nil, listResourcesInput{Kind: "secrets"})
-	if err == nil || !strings.Contains(err.Error(), "ns-09") || !strings.Contains(err.Error(), "(+5 more)") || strings.Contains(err.Error(), "ns-10") {
+	if err == nil || !strings.Contains(err.Error(), "ns-00,ns-01,ns-02 and 12 more") || strings.Contains(err.Error(), "ns-03") {
 		t.Fatalf("Secret namespace denial must be bounded: %v", err)
 	}
 }

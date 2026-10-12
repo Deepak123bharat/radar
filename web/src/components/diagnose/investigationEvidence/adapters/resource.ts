@@ -336,13 +336,4 @@ export function adaptListResources(
         : { type: "inventory", resources, scope },
     },
   );
-  if (namespacesRead) {
-    const readIn = `${namespacesRead.length === 1 ? "namespace" : "namespaces"} ${namespacesRead.join(", ")}`;
-    builder.limit(
-      source,
-      "Resource inventory",
-      `Radar read ${noun} only in ${readIn}; other namespaces were not read, so this list cannot show that none exist elsewhere.`,
-      "unknown",
-    );
-  }
 }

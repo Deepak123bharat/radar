@@ -4,9 +4,17 @@ import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { DiagnosisEvidenceItem } from "../../../../api/diagnose";
+import type {
+  Diagnosis,
+  DiagnosisEvidenceItem,
+} from "../../../../api/diagnose";
+import { ResultCard } from "../../AssessmentCard";
 import { InvestigationEvidencePane } from "../../InvestigationEvidencePane";
 import { resolveInvestigationCase } from "../../investigationCase";
+import { investigationEvidenceCoverageLimited } from "../../investigationState";
+import { StoryExcerpt } from "../../StoryExcerpt";
+import { namedInventoryRows } from "../bodies/inventory";
+import type { InvestigationEvidenceTimelineItem } from "../types";
 import { evidenceRef, groupsOf, project, tool } from "../evidenceFixtures";
 
 // The list_resources results a partial read returns over MCP. internal/mcp
@@ -26,10 +34,15 @@ interface FixtureCase {
 
 const cases: FixtureCase[] = JSON.parse(readFileSync(FIXTURE, "utf8")).cases;
 
-function projectCase(name: string, ref?: string) {
+function projectCase(
+  name: string,
+  ref?: string,
+  preceding: InvestigationEvidenceTimelineItem[] = [],
+) {
   const fixture = cases.find((item) => item.name === name);
   if (!fixture) throw new Error(`no fixture case ${name}`);
   return project([
+    ...preceding,
     tool(
       "list",
       "list_resources",
@@ -41,7 +54,18 @@ function projectCase(name: string, ref?: string) {
 
 describe("a list Radar's collector read only in some namespaces", () => {
   it("shows the rows it read with the namespaces they came from", () => {
-    const projection = projectCase("partial");
+    const projection = projectCase("partial", undefined, [
+      tool("diagnose", "diagnose", {
+        resource: {
+          apiVersion: "apps/v1",
+          kind: "Deployment",
+          metadata: { name: "api", namespace: "shop" },
+        },
+        pods: 0,
+        events: [],
+        recentChanges: [],
+      }),
+    ]);
     const [inventory] = groupsOf(projection.groups, "inventory");
     if (inventory?.latest.data.type !== "inventory") {
       throw new Error("expected an inventory card");
@@ -53,17 +77,26 @@ describe("a list Radar's collector read only in some namespaces", () => {
       "1 returned · only alpha, gamma read",
     );
     expect(inventory.latest.data.namespacesRead).toEqual(["alpha", "gamma"]);
-    expect(projection.limitations).toEqual([
-      expect.objectContaining({
-        source: "Resource inventory",
-        kind: "unknown",
-        message:
-          "Radar read Services only in namespaces alpha, gamma; other namespaces were not read, so this list cannot show that none exist elsewhere.",
-      }),
-    ]);
-    expect(projection.limitations[0].sources[0].id).toBe(
-      inventory.latest.source.id,
+    expect(projection.limitations).toEqual([]);
+    const coverageLimited = investigationEvidenceCoverageLimited(
+      projection,
+      "Deployment",
     );
+    expect(coverageLimited).toBe(false);
+    const html = renderToStaticMarkup(
+      createElement(ResultCard, {
+        diagnosis: {
+          healthy: true,
+          rootCause: "",
+          report: "The workload appears healthy.",
+          remediation: [],
+        } as Diagnosis,
+        coverageLimited,
+      }),
+    );
+    expect(html).toContain("border-emerald-500/30");
+    expect(html).not.toContain("No problem identified in available evidence");
+    expect(html).not.toContain("Evidence coverage is limited");
   });
 
   it("does not present an empty partial read as an empty cluster", () => {
@@ -72,6 +105,76 @@ describe("a list Radar's collector read only in some namespaces", () => {
     expect(projection.limitations.map((item) => item.message)).toEqual([
       'The listing returned nothing. Radar read services only in namespaces "alpha,gamma"; objects in other namespaces were not read, so this result cannot show they don\'t exist.',
     ]);
+    expect(investigationEvidenceCoverageLimited(projection, "Service")).toBe(
+      true,
+    );
+  });
+
+  it("bounds namespace prose while retaining the complete set for citations", () => {
+    const namespaces = Array.from(
+      { length: 40 },
+      (_, index) => `team-${String(index + 1).padStart(2, "0")}`,
+    );
+    const coverage = {
+      complete: false,
+      namespaces,
+      note: 'Radar read services only in namespaces "team-01,team-02,team-03 and 37 more"; objects in other namespaces were not read, so this result cannot show they don\'t exist.',
+    };
+    const rows = [
+      { kind: "Service", name: "present", namespace: namespaces[0] },
+    ];
+    const projection = project([
+      tool(
+        "list",
+        "list_resources",
+        { coverage, items: rows },
+        {
+          summary: JSON.stringify({ kind: "services" }),
+        },
+      ),
+    ]);
+    const [inventory] = groupsOf(projection.groups, "inventory");
+    if (inventory.latest.data.type !== "inventory") {
+      throw new Error("expected an inventory card");
+    }
+    const data = inventory.latest.data;
+    expect(data.namespacesRead).toEqual(namespaces);
+    expect(inventory.latest.summary).toBe(
+      "1 returned · only 40 namespaces read",
+    );
+    const entries = namedInventoryRows(
+      data.resources,
+      [
+        { subject: { kind: "Service", name: "api" } },
+        { subject: { kind: "Service", name: "api", namespace: "team-40" } },
+        { subject: { kind: "Service", name: "api", namespace: "unread" } },
+      ],
+      undefined,
+      data.namespacesRead,
+    );
+    expect(entries[0].readOnlyIn).toEqual(namespaces);
+    const html = renderToStaticMarkup(
+      createElement(StoryExcerpt, {
+        excerpt: { kind: "rows", entries },
+        data,
+        prominence: "primary",
+        open: false,
+        canExpand: false,
+      }),
+    );
+    expect(html).toContain(
+      "api: not in the namespaces read (team-01, team-02, team-03 and 37 more)",
+    );
+    expect(html).not.toContain("team-04");
+    expect(html).toContain("Not in this listing: team-40/api");
+    expect(html).toContain("unread/api: unread was not read");
+    const empty = project([
+      tool("empty", "list_resources", { coverage, items: [] }),
+    ]);
+    expect(empty.limitations.map((item) => item.message)).toEqual([
+      `The listing returned nothing. ${coverage.note}`,
+    ]);
+    expect(empty.limitations[0].message).not.toContain("team-04");
   });
 
   it("names the resource Radar read, not the alias the agent asked for", () => {
