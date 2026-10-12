@@ -19,7 +19,8 @@ type ControllerTeardown struct {
 	// Resources are the managed resources Radar observes; the controller acts
 	// on its own inventory, which can hold more, and skips resources that opt
 	// out of deletion.
-	Resources []ResourceRef `json:"resources,omitempty"`
+	Resources      []ResourceRef `json:"resources,omitempty"`
+	ResourcesBasis string        `json:"resourcesBasis"`
 	// Terminating means the object is already being deleted, so the
 	// controller may already be tearing down and force delete can't stop it.
 	Terminating bool `json:"terminating,omitempty"`
@@ -85,6 +86,10 @@ func controllerTeardown(root *Node, topo *Topology, dp DynamicProvider) *Control
 	}
 
 	teardown := &ControllerTeardown{Controller: controller, Action: action, Terminating: obj.GetDeletionTimestamp() != nil}
+	teardown.ResourcesBasis = "inventory"
+	if root.Kind == KindHelmRelease {
+		teardown.ResourcesBasis = "labels"
+	}
 	nodeByID := make(map[string]*Node, len(topo.Nodes))
 	for i := range topo.Nodes {
 		nodeByID[topo.Nodes[i].ID] = &topo.Nodes[i]

@@ -4315,6 +4315,7 @@ export interface CascadeDeletePreview {
   basis?: string;
   controllerTeardown?: {
     controller: string;
+    resourcesBasis: 'inventory' | 'labels';
     action: string;
     resources?: { kind: string; namespace: string; name: string; group?: string }[];
     terminating?: boolean;

@@ -21,6 +21,7 @@ export interface CascadeDetail {
   controllerTeardown?: {
     controller: string
     action: 'prune' | 'uninstall' | string
+    resourcesBasis: 'inventory' | 'labels'
     resources?: CascadeDependent[]
     /** Already being deleted: the teardown may be underway. */
     terminating?: boolean
@@ -171,8 +172,8 @@ function ControllerTeardownNotice({ teardown, force }: { teardown: NonNullable<C
   return (
     <CascadeDependentsList
       dependents={resources}
-      title={resources.length > 0 ? `${title} (${resources.length} shown)` : title}
-      summary={`${teardown.controller} deletes what its own inventory records, which can include resources Radar doesn't show.${optOut(teardown) ? ` Resources marked ${optOut(teardown)} stay.` : ''}`}
+      title={resources.length > 0 ? `${title} (${resources.length} ${teardown.resourcesBasis === 'labels' ? 'label matches' : 'shown'})` : title}
+      summary={`${teardown.resourcesBasis === 'labels' ? 'Shown resources match Helm-release labels; their membership in the release is unverified. ' : ''}${teardown.controller} deletes what its own inventory records, which can include resources Radar doesn't show.${optOut(teardown) ? ` Resources marked ${optOut(teardown)} stay.` : ''}`}
     />
   )
 }
