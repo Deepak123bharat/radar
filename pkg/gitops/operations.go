@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -33,6 +34,8 @@ const (
 	legacyArgoSuspendedPruneAnnotation    = "skyhook.io/suspended-prune"
 	legacyArgoSuspendedSelfHealAnnotation = "skyhook.io/suspended-selfheal"
 )
+
+const argoRollbackInfoName = "radarhq.io/rollback"
 
 // Sentinel errors so HTTP handlers can map operation outcomes to status
 // codes via errors.Is rather than fragile substring matching.
@@ -373,12 +376,8 @@ func syncArgoApp(ctx context.Context, dynClient dynamic.Interface, namespace, na
 			"value": validationID,
 		}}
 	}
-	patch := map[string]any{
-		"operation": operation,
-		"metadata": map[string]any{
-			"resourceVersion": app.GetResourceVersion(),
-		},
-	}
+	patch := argoOperationPatch(app, operation)
+	patch["metadata"] = map[string]any{"resourceVersion": app.GetResourceVersion()}
 	dryRun := opts.DryRun != nil && *opts.DryRun
 	if !dryRun {
 		patch["metadata"] = map[string]any{
@@ -767,13 +766,12 @@ func RollbackArgoApp(ctx context.Context, dynClient dynamic.Interface, namespace
 	}
 
 	timestamp := time.Now().Format(time.RFC3339Nano)
-	patch := map[string]any{
-		"metadata": map[string]any{"resourceVersion": app.GetResourceVersion()},
-		"operation": map[string]any{
-			"initiatedBy": map[string]any{"username": "radar"},
-			"sync":        argoRollbackSyncOperation(app, entry, opts),
-		},
-	}
+	patch := argoOperationPatch(app, map[string]any{
+		"initiatedBy": map[string]any{"username": "radar"},
+		"info":        []any{map[string]any{"name": argoRollbackInfoName, "value": "true"}},
+		"sync":        argoRollbackSyncOperation(app, entry, opts),
+	})
+	patch["metadata"] = map[string]any{"resourceVersion": app.GetResourceVersion()}
 
 	if err := mergePatch(ctx, dynClient, argoAppGVR, namespace, name, patch); err != nil {
 		if apierrors.IsConflict(err) {
@@ -791,6 +789,52 @@ func RollbackArgoApp(ctx context.Context, dynClient dynamic.Interface, namespace
 		Name:        name,
 		RequestedAt: timestamp,
 	}, nil
+}
+
+// ArgoSuccessfulRollback returns the applied revision(s) and initiator when
+// the last completed operation was a Radar rollback. Argo's native rollback
+// is indistinguishable from a pinned sync in operationState, so only the
+// explicit operation marker records rollback intent; a later sync replaces
+// that evidence.
+func ArgoSuccessfulRollback(app *unstructured.Unstructured) (revision, username string) {
+	phase, _, _ := unstructured.NestedString(app.Object, "status", "operationState", "phase")
+	if phase != "Succeeded" || argoOperationInProgress(app) {
+		return "", ""
+	}
+	operation, _, _ := unstructured.NestedMap(app.Object, "status", "operationState", "operation")
+	if !argoOperationHasInfo(operation, argoRollbackInfoName, "true") {
+		return "", ""
+	}
+	dryRun, _, _ := unstructured.NestedBool(operation, "sync", "dryRun")
+	if dryRun {
+		return "", ""
+	}
+	revisions, _, _ := unstructured.NestedStringSlice(app.Object, "status", "operationState", "syncResult", "revisions")
+	if len(revisions) > 0 {
+		targets, _, _ := unstructured.NestedStringSlice(operation, "sync", "revisions")
+		if !slices.Equal(targets, revisions) {
+			return "", ""
+		}
+		revision = strings.Join(revisions, ", ")
+	} else {
+		revision, _, _ = unstructured.NestedString(app.Object, "status", "operationState", "syncResult", "revision")
+		target, _, _ := unstructured.NestedString(operation, "sync", "revision")
+		if target != revision {
+			return "", ""
+		}
+	}
+	username, _, _ = unstructured.NestedString(operation, "initiatedBy", "username")
+	return revision, username
+}
+
+// Argo merge-patches operation state, so omitted fields from a completed
+// operation (including its info) would otherwise survive into the next one.
+func argoOperationPatch(app *unstructured.Unstructured, operation map[string]any) map[string]any {
+	patch := map[string]any{"operation": operation}
+	if _, found, _ := unstructured.NestedFieldNoCopy(app.Object, "status", "operationState"); found {
+		patch["status"] = map[string]any{"operationState": nil}
+	}
+	return patch
 }
 
 func argoHistoryEntry(app *unstructured.Unstructured, id int64) map[string]any {

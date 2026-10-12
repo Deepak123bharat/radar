@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -113,7 +114,17 @@ func handleManageGitOps(ctx context.Context, req *mcp.CallToolRequest, input man
 	}
 
 	if err != nil {
+		if tool == "argocd" && action == "rollback" && errors.Is(err, gitops.ErrAutoSyncEnabled) {
+			return nil, nil, fmt.Errorf("%w (MCP: manage_gitops with tool=argocd and action=suspend)", err)
+		}
 		return nil, nil, err
+	}
+	if tool == "argocd" && action == "rollback" {
+		if input.DryRun != nil && *input.DryRun {
+			result.Message = fmt.Sprintf("Rollback dry-run to history #%d initiated for ArgoCD Application %s/%s — preview only; no changes will be applied", *input.HistoryID, input.Namespace, input.Name)
+		} else {
+			result.Message += ". Once it succeeds, the application stays on that revision with auto-sync off until you sync or use manage_gitops with tool=argocd and action=resume."
+		}
 	}
 
 	resp := map[string]any{

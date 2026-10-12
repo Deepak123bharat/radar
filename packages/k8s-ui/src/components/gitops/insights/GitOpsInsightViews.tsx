@@ -616,7 +616,7 @@ function GitOpsCompactIssueStack({ issues, onSelectIssue }: { issues: GitOpsIssu
         <div className="flex w-full items-center gap-2">
           {tone.icon}
           <span className={clsx('shrink-0 font-semibold', tone.text)}>{headline.reason}</span>
-          <span className="min-w-0 flex-1 truncate text-theme-text-secondary">{headline.message}</span>
+          <span className={clsx('min-w-0 flex-1 text-theme-text-secondary', headline.reason === 'RolledBack' ? 'whitespace-normal break-words' : 'truncate')}>{headline.message}</span>
           {/* Inline count when there are more issues behind the headline.
               Lightweight text — pairs with the chevron as a single disclosure
               unit instead of a separator-bordered count button. */}
@@ -636,7 +636,7 @@ function GitOpsCompactIssueStack({ issues, onSelectIssue }: { issues: GitOpsIssu
           {canExpand && <CollapseChevron open={expanded} className="h-3.5 w-3.5" />}
         </div>
         {headline.cause && (
-          <p className="truncate pl-[22px] text-[11px] text-theme-text-tertiary">{headline.cause}</p>
+          <p className={clsx('pl-[22px] text-[11px] text-theme-text-tertiary', headline.reason === 'RolledBack' ? 'whitespace-normal break-words' : 'truncate')}>{headline.cause}</p>
         )}
       </button>
       {canExpand && (
@@ -872,6 +872,7 @@ export function GitOpsChangesView({ insight, error, onOpenResource, onSyncResour
   // to a muted placeholder and explain the cause once. Health stays — it's a
   // live signal that's still knowable and still worth reading.
   const syncUnavailable = isArgoRoot && (insight.summary.sync ?? '').toLowerCase() === 'unknown'
+  const rolledBack = !!insight.issues?.some(issue => issue.reason === 'RolledBack')
   const toggleFacet = (facet: ResourceStatusFacet) => {
     setStatusFilters((prev) => {
       const next = new Set(prev)
@@ -1093,7 +1094,7 @@ export function GitOpsChangesView({ insight, error, onOpenResource, onSyncResour
                 const rowKey = refKey(change.ref)
                 const focused = focusKey === rowKey
                 const explanation = !change.syncError && !change.message
-                  ? explainChangeStatus(change.sync, change.health, insight.summary)
+                  ? explainChangeStatus(change.sync, change.health, insight.summary, rolledBack)
                   : ''
                 const hasInlineDetail = !!(
                   (change.drift && change.drift.entries.length > 0) ||
@@ -1267,6 +1268,7 @@ function explainChangeStatus(
   sync: string | undefined,
   health: string | undefined,
   summary: GitOpsInsight['summary'],
+  rolledBack: boolean,
 ): string {
   const isAuto = (summary.autoSyncMode ?? '').toLowerCase().startsWith('auto')
   const phase = (summary.operationPhase ?? '').toLowerCase()
@@ -1279,12 +1281,15 @@ function explainChangeStatus(
   if (sync === 'OutOfSync') {
     if (parentFailed) return 'Sync failed for this resource — see the operation error above for the cause.'
     if (inFlight) return 'Live state differs from Git. A sync is in progress — wait for it to finish.'
+    if (rolledBack) return 'Live state differs from Git after a rollback. Sync applies the desired state and can undo the rollback.'
     if (isAuto) return 'Live state differs from Git. Auto-sync should reconcile this within a few minutes; click Sync to force it.'
     return 'Live state differs from Git. Click Sync to apply the desired state.'
   }
   if (health === 'Missing' && parentFailed) return 'Resource was not created — see the operation error above for the cause.'
   if (health === 'Degraded') return 'Resource reports an unhealthy state. Open the resource for events and logs.'
-  if (health === 'Missing') return 'Declared in Git but not present in the cluster. Sync to create it.'
+  if (health === 'Missing') return rolledBack
+    ? 'Declared in Git but not present in the cluster after a rollback. Sync can recreate it and undo the rollback.'
+    : 'Declared in Git but not present in the cluster. Sync to create it.'
   if (health === 'Progressing') return 'Resource is mid-rollout (e.g. pods coming up). Should converge shortly.'
   if (health === 'Suspended') return 'Resource is paused (e.g. CronJob suspended, HPA disabled). Intentional unless surprising.'
   return ''

@@ -330,6 +330,9 @@ func TestRollbackArgoAppWritesSyncOperation(t *testing.T) {
 		if got := nestedMap(operation, "initiatedBy")["username"]; got != "radar" {
 			t.Fatalf("initiatedBy.username = %#v, want radar", got)
 		}
+		if !argoOperationHasInfo(operation, argoRollbackInfoName, "true") {
+			t.Fatalf("rollback operation lacks its marker: %#v", operation)
+		}
 		want := map[string]any{
 			"revision":     "rev-old",
 			"source":       map[string]any{"repoURL": "https://example.com/repo", "path": "old", "targetRevision": "main"},
@@ -384,6 +387,40 @@ func TestRollbackArgoAppWritesSyncOperation(t *testing.T) {
 		}
 		assertNoPatch(t, client)
 	})
+}
+
+func TestArgoOperationsClearCompletedState(t *testing.T) {
+	for _, action := range []string{"sync", "rollback"} {
+		t.Run(action, func(t *testing.T) {
+			ctx := context.Background()
+			client := newFakeArgo(argoAppForTest("argocd", "demo", func(obj map[string]any) {
+				obj["status"] = map[string]any{
+					"operationState": map[string]any{
+						"phase":      "Succeeded",
+						"operation":  map[string]any{"info": []any{map[string]any{"name": argoRollbackInfoName, "value": "true"}}},
+						"syncResult": map[string]any{"revision": "abc123"},
+					},
+					"history": []any{map[string]any{"id": int64(0), "revision": "abc123", "source": map[string]any{"repoURL": "https://example.com/repo"}}},
+				}
+			}))
+			var err error
+			if action == "sync" {
+				_, err = SyncArgoApp(ctx, client, "argocd", "demo", ArgoSyncOptions{})
+			} else {
+				_, err = RollbackArgoApp(ctx, client, "argocd", "demo", ArgoRollbackOptions{ID: 0})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			app, err := client.Resource(argoAppGVR).Namespace("argocd").Get(ctx, "demo", metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, found, _ := unstructured.NestedFieldNoCopy(app.Object, "status", "operationState"); found {
+				t.Fatalf("completed operation state survives %s: %#v", action, app.Object)
+			}
+		})
+	}
 }
 
 // Argo CD refuses a rollback while automated sync is on; Argo CD 3.x can keep

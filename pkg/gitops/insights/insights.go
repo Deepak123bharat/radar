@@ -2051,9 +2051,8 @@ func detectStuckDriftLoop(root *unstructured.Unstructured) *Issue {
 
 // detectManualDriftWithoutAutoSync emits a warning when an Argo Application
 // is OutOfSync but auto-sync is disabled. The user otherwise has no signal
-// that the drift won't resolve on its own — they wait, nothing happens,
-// and they file the bug. This issue puts a clear "Click Sync" prompt at
-// the top of the page so the next-step is obvious.
+// that the drift won't resolve on its own. A proven successful rollback
+// instead explains why the app stays on that revision.
 //
 // Returns nil when conditions don't match — caller appends only on hit.
 func detectManualDriftWithoutAutoSync(root *unstructured.Unstructured) *Issue {
@@ -2066,6 +2065,23 @@ func detectManualDriftWithoutAutoSync(root *unstructured.Unstructured) *Issue {
 	// live drift — and is owned by detectAutoDriftSelfHealOff.
 	if describeArgoAutoSync(root) != "Manual" {
 		return nil
+	}
+	if revision, username := gitops.ArgoSuccessfulRollback(root); revision != "" {
+		message := "Rolled back to " + revision
+		if username != "" {
+			message += " by " + username
+		}
+		revisionLabel := "this revision"
+		if revisions, _, _ := unstructured.NestedStringSlice(root.Object, "status", "operationState", "syncResult", "revisions"); len(revisions) > 1 {
+			revisionLabel = "these revisions"
+		}
+		return &Issue{
+			Severity: SeverityInfo,
+			Scope:    ScopeOperation,
+			Reason:   "RolledBack",
+			Message:  message + ".",
+			Cause:    "It stays on " + revisionLabel + " with auto-sync off until you sync or turn auto-sync back on.",
+		}
 	}
 	return &Issue{
 		Severity: SeverityWarning,

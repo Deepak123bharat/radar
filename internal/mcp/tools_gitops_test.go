@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/skyhook-io/radar/internal/k8s"
@@ -74,10 +75,15 @@ func TestHandleManageGitOpsRollback(t *testing.T) {
 
 	t.Run("history_id 0 starts a sync to the first entry", func(t *testing.T) {
 		setup(t, nil)
-		if _, _, err := handleManageGitOps(context.Background(), nil, manageGitOpsInput{
+		result, _, err := handleManageGitOps(context.Background(), nil, manageGitOpsInput{
 			Action: "rollback", Tool: "argocd", Namespace: "argocd", Name: "demo", HistoryID: historyID(0),
-		}); err != nil {
+		})
+		if err != nil {
 			t.Fatalf("handleManageGitOps: %v", err)
+		}
+		want := "Rollback to history #0 initiated for ArgoCD Application argocd/demo. Once it succeeds, the application stays on that revision with auto-sync off until you sync or use manage_gitops with tool=argocd and action=resume."
+		if got := decodeToolResult(t, result)["message"]; got != want {
+			t.Fatalf("message = %q, want %q", got, want)
 		}
 		app, err := k8s.GetDynamicClient().Resource(gvr).Namespace("argocd").Get(context.Background(), "demo", metav1.GetOptions{})
 		if err != nil {
@@ -85,6 +91,21 @@ func TestHandleManageGitOpsRollback(t *testing.T) {
 		}
 		if revision, _, _ := unstructured.NestedString(app.Object, "operation", "sync", "revision"); revision != "abc123" {
 			t.Fatalf("operation.sync.revision = %q, want abc123; operation=%v", revision, app.Object["operation"])
+		}
+	})
+
+	t.Run("dry-run only promises a preview", func(t *testing.T) {
+		setup(t, nil)
+		dryRun := true
+		result, _, err := handleManageGitOps(context.Background(), nil, manageGitOpsInput{
+			Action: "rollback", Tool: "argocd", Namespace: "argocd", Name: "demo", HistoryID: historyID(0), DryRun: &dryRun,
+		})
+		if err != nil {
+			t.Fatalf("handleManageGitOps: %v", err)
+		}
+		want := "Rollback dry-run to history #0 initiated for ArgoCD Application argocd/demo — preview only; no changes will be applied"
+		if got := decodeToolResult(t, result)["message"]; got != want {
+			t.Fatalf("message = %q, want %q", got, want)
 		}
 	})
 
@@ -104,6 +125,9 @@ func TestHandleManageGitOpsRollback(t *testing.T) {
 		})
 		if !errors.Is(err, gitops.ErrAutoSyncEnabled) {
 			t.Fatalf("expected ErrAutoSyncEnabled, got %v", err)
+		}
+		if !strings.Contains(err.Error(), "(MCP: manage_gitops with tool=argocd and action=suspend)") {
+			t.Fatalf("error lacks the suspend action: %v", err)
 		}
 	})
 }

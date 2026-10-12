@@ -1,13 +1,21 @@
 package insights
 
 import (
+	"context"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic/fake"
 
+	"github.com/skyhook-io/radar/pkg/gitops"
 	"github.com/skyhook-io/radar/pkg/gitops/diagnose"
 	gitopstree "github.com/skyhook-io/radar/pkg/gitops/tree"
 )
@@ -763,6 +771,209 @@ func TestDetectManualDriftWithoutAutoSync(t *testing.T) {
 			}
 			if got != nil && got.Reason != "ManualDrift" {
 				t.Errorf("Reason = %q, want ManualDrift", got.Reason)
+			}
+		})
+	}
+}
+
+func TestBuildIssuesArgoRollbackState(t *testing.T) {
+	ctx := context.Background()
+	gvr := schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"}
+	root := argoApp(map[string]any{
+		"sync": map[string]any{"status": "OutOfSync"},
+		"history": []any{map[string]any{
+			"id": int64(0), "revision": "rev-old",
+			"source": map[string]any{"repoURL": "https://example.com/repo", "path": "app"},
+		}},
+	})
+	client := fake.NewSimpleDynamicClient(runtime.NewScheme(), root)
+	if _, err := gitops.RollbackArgoApp(ctx, client, "argocd", "billing", gitops.ArgoRollbackOptions{ID: 0}); err != nil {
+		t.Fatal(err)
+	}
+	root, err := client.Resource(gvr).Namespace("argocd").Get(ctx, "billing", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation, _, _ := unstructured.NestedMap(root.Object, "operation")
+	unstructured.RemoveNestedField(root.Object, "operation")
+	_ = unstructured.SetNestedMap(root.Object, map[string]any{
+		"phase": "Succeeded", "operation": operation,
+		"syncResult": map[string]any{"revision": "rev-old"},
+	}, "status", "operationState")
+
+	wantRollback := "Rolled back to rev-old by radar."
+	cases := []struct {
+		name    string
+		mutate  func(*unstructured.Unstructured)
+		reason  string
+		message string
+		cause   string
+	}{
+		{name: "successful Radar rollback", reason: "RolledBack", message: wantRollback},
+		{
+			name: "unrelated operation info coexists", reason: "RolledBack", message: wantRollback,
+			mutate: func(u *unstructured.Unstructured) {
+				info, _, _ := unstructured.NestedSlice(u.Object, "status", "operationState", "operation", "info")
+				info = append([]any{map[string]any{"name": "Initiated via", "value": "Radar"}}, info...)
+				_ = unstructured.SetNestedSlice(u.Object, info, "status", "operationState", "operation", "info")
+			},
+		},
+		{
+			name: "automated.enabled false counts as manual", reason: "RolledBack", message: wantRollback,
+			mutate: func(u *unstructured.Unstructured) {
+				_ = unstructured.SetNestedMap(u.Object, map[string]any{"enabled": false, "prune": true}, "spec", "syncPolicy", "automated")
+			},
+		},
+		{
+			name: "unknown user omitted", reason: "RolledBack",
+			message: "Rolled back to rev-old.",
+			mutate: func(u *unstructured.Unstructured) {
+				unstructured.RemoveNestedField(u.Object, "status", "operationState", "operation", "initiatedBy")
+			},
+		},
+		{
+			name: "multi-source result names every revision", reason: "RolledBack",
+			message: "Rolled back to rev-a, rev-b by alice.",
+			cause:   "It stays on these revisions with auto-sync off until you sync or turn auto-sync back on.",
+			mutate: func(u *unstructured.Unstructured) {
+				unstructured.RemoveNestedField(u.Object, "status", "operationState", "syncResult", "revision")
+				_ = unstructured.SetNestedStringSlice(u.Object, []string{"rev-a", "rev-b"}, "status", "operationState", "syncResult", "revisions")
+				_ = unstructured.SetNestedStringSlice(u.Object, []string{"rev-a", "rev-b"}, "status", "operationState", "operation", "sync", "revisions")
+				_ = unstructured.SetNestedField(u.Object, "alice", "status", "operationState", "operation", "initiatedBy", "username")
+			},
+		},
+		{
+			name: "plain pinned sync to old revision is not proof", reason: "ManualDrift",
+			mutate: func(u *unstructured.Unstructured) {
+				unstructured.RemoveNestedField(u.Object, "status", "operationState", "operation", "info")
+			},
+		},
+		{
+			name: "provenance alone is not proof", reason: "ManualDrift",
+			mutate: func(u *unstructured.Unstructured) {
+				_ = unstructured.SetNestedSlice(u.Object, []any{map[string]any{"name": "Initiated via", "value": "Radar"}}, "status", "operationState", "operation", "info")
+			},
+		},
+		{
+			name: "successful dry-run is not a rollback", reason: "ManualDrift",
+			mutate: func(u *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(u.Object, true, "status", "operationState", "operation", "sync", "dryRun")
+			},
+		},
+		{
+			name: "no applied revision does not invent one", reason: "ManualDrift",
+			mutate: func(u *unstructured.Unstructured) {
+				unstructured.RemoveNestedField(u.Object, "status", "operationState", "syncResult")
+			},
+		},
+		{
+			name: "marker with a different applied revision is not proof", reason: "ManualDrift",
+			mutate: func(u *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(u.Object, "rev-new", "status", "operationState", "syncResult", "revision")
+			},
+		},
+		{
+			name: "running rollback", reason: "Running",
+			mutate: func(u *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(u.Object, "Running", "status", "operationState", "phase")
+			},
+		},
+		{
+			name: "failed rollback keeps failure", reason: "Failed",
+			mutate: func(u *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(u.Object, "Failed", "status", "operationState", "phase")
+			},
+		},
+		{
+			name: "auto-sync enabled restores normal drift insight", reason: "SelfHealDisabled",
+			mutate: func(u *unstructured.Unstructured) {
+				_ = unstructured.SetNestedMap(u.Object, map[string]any{"enabled": true}, "spec", "syncPolicy", "automated")
+			},
+		},
+		{
+			name: "Synced no longer needs a drift insight",
+			mutate: func(u *unstructured.Unstructured) {
+				_ = unstructured.SetNestedField(u.Object, "Synced", "status", "sync", "status")
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := root.DeepCopy()
+			if tc.mutate != nil {
+				tc.mutate(app)
+			}
+			issues := buildIssues(app, nil, "argocd", nil)
+			if tc.reason == "" {
+				if len(issues) != 0 {
+					t.Fatalf("expected no issues, got %+v", issues)
+				}
+				return
+			}
+			if len(issues) != 1 || issues[0].Reason != tc.reason {
+				t.Fatalf("expected only %s, got %+v", tc.reason, issues)
+			}
+			issue := issues[0]
+			if tc.message != "" && issue.Message != tc.message {
+				t.Fatalf("message = %q, want %q", issue.Message, tc.message)
+			}
+			if tc.reason == "RolledBack" && (issue.Severity != SeverityInfo || issue.Action != "") {
+				t.Fatalf("rollback should be informational without a remediation action, got %+v", issue)
+			}
+			if tc.reason == "RolledBack" {
+				wantCause := tc.cause
+				if wantCause == "" {
+					wantCause = "It stays on this revision with auto-sync off until you sync or turn auto-sync back on."
+				}
+				if issue.Cause != wantCause {
+					t.Fatalf("cause = %q, want %q", issue.Cause, wantCause)
+				}
+			}
+			if tc.reason == "ManualDrift" && (issue.Severity != SeverityWarning || issue.Message != "Application is OutOfSync and auto-sync is disabled — nothing will reconcile until you click Sync." || issue.Action != "Open Changes to review the per-resource diff, then click Sync to apply. Enable auto-sync if you want this to fix itself going forward.") {
+				t.Fatalf("manual drift changed: %+v", issue)
+			}
+		})
+	}
+
+	for _, dryRun := range []bool{false, true} {
+		name := "later successful sync restores ManualDrift"
+		if dryRun {
+			name = "later dry-run replaces rollback evidence without moving the app"
+		}
+		t.Run(name, func(t *testing.T) {
+			if _, err := client.Resource(gvr).Namespace("argocd").Update(ctx, root, metav1.UpdateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := gitops.SyncArgoApp(ctx, client, "argocd", "billing", gitops.ArgoSyncOptions{Revision: "rev-old", DryRun: &dryRun}); err != nil {
+				t.Fatal(err)
+			}
+			app, err := client.Resource(gvr).Namespace("argocd").Get(ctx, "billing", metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, issue := range buildIssues(app, nil, "argocd", nil) {
+				if issue.Reason == "RolledBack" {
+					t.Fatalf("pending sync must not report a completed rollback: %+v", issue)
+				}
+			}
+			syncOperation, _, _ := unstructured.NestedMap(app.Object, "operation")
+			body, err := json.Marshal(map[string]any{
+				"operation": nil,
+				"status": map[string]any{"operationState": map[string]any{
+					"phase": "Succeeded", "operation": syncOperation,
+					"syncResult": map[string]any{"revision": "rev-old"},
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			app, err = client.Resource(gvr).Namespace("argocd").Patch(ctx, "billing", types.MergePatchType, body, metav1.PatchOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issues := buildIssues(app, nil, "argocd", nil)
+			if len(issues) != 1 || issues[0].Reason != "ManualDrift" {
+				t.Fatalf("expected ManualDrift after a sync with remaining drift, got %+v", issues)
 			}
 		})
 	}
