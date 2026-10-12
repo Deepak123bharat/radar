@@ -159,7 +159,7 @@ export function layerDeploymentInventory(
   const inventoryComplete = inventory.complete !== false && (inventory.warnings?.length ?? 0) === 0
 
   const runtimeNodes = topology.nodes.map((node) => {
-    if (node.kind === 'PodGroup' || node.kind === 'Internet') return node
+    if (node.kind === 'PodGroup' && !node.data?.apiVersion || node.kind === 'Internet') return node
     const namespace = (node.data?.namespace as string) || ''
     const match = inventoryByExact.get(identityKey(topologyNodeResourceKind(node), topologyGroup(node), namespace, node.name))
     if (match) {

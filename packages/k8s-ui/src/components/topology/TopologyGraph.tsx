@@ -762,7 +762,7 @@ export function TopologyGraph({
       // actually carry a per-pod array are expandable — summary-only orphan
       // nodes (summary mode) hold counts only, so they get no expand affordance.
       const nodesWithHandlers = positionedNodes.map(node => {
-        const isPodGroup = node.data?.kind === 'PodGroup'
+        const isPodGroup = node.data?.kind === 'PodGroup' && !node.data?.apiVersion
         const nodeData = node.data?.nodeData as Record<string, unknown> | undefined
         // The per-pod array lives on the backend node data (nodeData.pods).
         // Summary-only orphan nodes omit it, so they get no expand affordance.

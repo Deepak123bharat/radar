@@ -4435,7 +4435,7 @@ export function useBulkDeleteResources() {
     },
     meta: {
       errorMessage: "Failed to delete some resources",
-      successMessage: "Resources deleted",
+      successMessage: "Deletion requested",
     },
     // onSettled, not onSuccess — a partial failure still deleted some
     // resources, and the table must refetch to drop them.

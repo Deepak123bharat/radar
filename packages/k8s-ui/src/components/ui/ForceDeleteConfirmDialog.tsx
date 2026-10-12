@@ -173,7 +173,7 @@ function ControllerTeardownNotice({ teardown, force }: { teardown: NonNullable<C
     <CascadeDependentsList
       dependents={resources}
       title={resources.length > 0 ? `${title} (${resources.length} ${teardown.resourcesBasis === 'labels' ? 'label matches' : 'shown'})` : title}
-      summary={`${teardown.resourcesBasis === 'labels' ? 'Shown resources match Helm-release labels; their membership in the release is unverified. ' : ''}${teardown.controller} deletes what its own inventory records, which can include resources Radar doesn't show.${optOut(teardown) ? ` Resources marked ${optOut(teardown)} stay.` : ''}`}
+      summary={`${teardown.resourcesBasis === 'labels' ? 'Shown resources match Helm-release labels; their membership in the release is unverified. ' : ''}${teardown.action === 'uninstall' ? 'Helm uninstalls resources in its stored release manifest' : `${teardown.controller} deletes what its own inventory records`}, which can include resources Radar doesn't show.${optOut(teardown) ? ` Resources marked ${optOut(teardown)} stay.` : ''}`}
     />
   )
 }
