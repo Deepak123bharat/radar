@@ -157,3 +157,16 @@ func TestIssuesDoNotSayHelmUncheckedWhenCallerLeft(t *testing.T) {
 		t.Errorf("helm_issues_unchecked = %v, want it absent", got)
 	}
 }
+
+// A 401 is Radar's own credentials failing, not the caller's permissions.
+func TestIssuesSayHelmUncheckedWhenRadarCredentialsAreRejected(t *testing.T) {
+	useHelmStorageAnswering(t, http.StatusUnauthorized,
+		`{"kind":"Status","apiVersion":"v1","status":"Failure","message":"Unauthorized","reason":"Unauthorized","code":401}`)
+
+	recorder := httptest.NewRecorder()
+	testServerSrv.handleIssues(recorder, httptest.NewRequest(http.MethodGet, "/api/issues?namespace=shop", nil))
+
+	if got := issuesWire(t, recorder)["helm_issues_unchecked"]; got != true {
+		t.Errorf("helm_issues_unchecked = %v, want true", got)
+	}
+}
