@@ -53,11 +53,7 @@ func (c *Client) ListIssueReleasesAcrossNamespaces(ctx context.Context, namespac
 		return []HelmRelease{}, nil
 	}
 	contextName := k8s.GetContextName()
-	client, err := c.storageClient(username, groups)
-	if err != nil {
-		return nil, err
-	}
-	labelsClient, err := c.storageMetadataClient(username, groups)
+	client, labelsClient, err := c.issueStorageClients(username, groups)
 	if err != nil {
 		return nil, err
 	}
@@ -75,9 +71,11 @@ func listIssueReleasesWithClients(ctx context.Context, client kubernetes.Interfa
 	})
 }
 
-// storageMetadataClient reads release Secret labels as the same identity and
-// on the same cluster as storageClient.
-func (c *Client) storageMetadataClient(username string, groups []string) (metadata.Interface, error) {
+// issueStorageClients builds the label and Secret clients from one config,
+// so a context switch between the two lists can't send them to different
+// clusters. Like storageClient, it uses c's own rest.Config when it has one,
+// else Radar's current cluster.
+func (c *Client) issueStorageClients(username string, groups []string) (kubernetes.Interface, metadata.Interface, error) {
 	c.mu.RLock()
 	restConfig := c.restConfig
 	c.mu.RUnlock()
@@ -85,16 +83,20 @@ func (c *Client) storageMetadataClient(username string, groups []string) (metada
 		restConfig = k8s.GetConfig()
 	}
 	if restConfig == nil {
-		return nil, fmt.Errorf("kubernetes config not initialized for release storage lookup")
+		return nil, nil, fmt.Errorf("kubernetes config not initialized for release storage lookup")
 	}
 	if username != "" {
 		restConfig = pkgauth.ImpersonatedConfig(restConfig, username, groups)
 	}
-	client, err := metadata.NewForConfig(restConfig)
+	client, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build client for release storage lookup: %w", err)
+		return nil, nil, fmt.Errorf("failed to build client for release storage lookup: %w", err)
 	}
-	return client, nil
+	labelsClient, err := metadata.NewForConfig(restConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to build client for release storage lookup: %w", err)
+	}
+	return client, labelsClient, nil
 }
 
 // storedRelease is one release's revisions in one storage namespace, as its
@@ -125,6 +127,10 @@ func helmIssueStorageSnapshot(ctx context.Context, client kubernetes.Interface, 
 			snapshot, err := helmReleaseStorageSnapshotWithClient(ctx, client, namespace)
 			return snapshot, nil, err
 		}
+		// Helm keys a release's history by storage namespace and name. A
+		// full read keys it by the release's own namespace instead, which
+		// differs only if one stored history holds revisions installed
+		// into two namespaces.
 		key := item.Namespace + "/" + name
 		if seen, ok := newest[key]; !ok || seen.revision <= revision {
 			newest[key] = storedRelease{namespace: item.Namespace, name: name, revision: revision, status: status}
