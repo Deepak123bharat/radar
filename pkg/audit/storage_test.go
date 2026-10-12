@@ -106,7 +106,7 @@ func TestPVCNoConsumer(t *testing.T) {
 			if tc.want {
 				for _, f := range r.Findings {
 					if f.CheckID == "pvcNoConsumer" {
-						for _, s := range []string{"No consumer observed", "8Gi", "local", "disk", "age", "CRD consumers or snapshot operations may still reference this claim."} {
+						for _, s := range []string{"Requested 8Gi", `storage class "local"`, "Bound PV disk", "PVC age", "reclaim policy"} {
 							if !strings.Contains(f.Message, s) {
 								t.Errorf("missing %q in %q", s, f.Message)
 							}
@@ -217,8 +217,47 @@ func TestPVCUnusedCondition(t *testing.T) {
 				} else if strings.Contains(f.Message, "reports it unused") {
 					t.Errorf("unexpected Unused evidence in %q", f.Message)
 				}
-				if !strings.Contains(f.Message, "No consumer observed") || !strings.Contains(f.Message, "CRD consumers or snapshot operations may still reference this claim.") {
-					t.Errorf("lost consumer caveat in %q", f.Message)
+				for _, fact := range []string{"Requested 8Gi", `storage class "local"`, "PVC age"} {
+					if !strings.Contains(f.Message, fact) {
+						t.Errorf("missing fact %q in %q", fact, f.Message)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestPVCFindingMessages(t *testing.T) {
+	now := time.Date(2026, time.October, 12, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		phase   corev1.PersistentVolumeClaimPhase
+		unused  bool
+		checkID string
+		message string
+	}{
+		{"Bound", corev1.ClaimBound, false, "pvcNoConsumer", `Requested 8Gi; storage class "local"; PVC age 2d. Bound PV disk; reclaim policy Retain.`},
+		{"Bound with Unused condition", corev1.ClaimBound, true, "pvcNoConsumer", `Kubernetes reports it unused by any Pod since 2026-10-10T12:00:00Z (2d ago). Requested 8Gi; storage class "local"; PVC age 2d. Bound PV disk; reclaim policy Retain.`},
+		{"Pending", corev1.ClaimPending, false, "pvcLongPending", `Pending since creation, 2d ago. StorageClass uses WaitForFirstConsumer. Requested 8Gi; storage class "local"; PVC age 2d.`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			i := storageInput()
+			pvc := i.PersistentVolumeClaims[0]
+			pvc.CreationTimestamp = metav1.NewTime(now.Add(-48 * time.Hour))
+			pvc.Status.Phase = tc.phase
+			if tc.unused {
+				pvc.Status.Conditions = []corev1.PersistentVolumeClaimCondition{{Type: corev1.PersistentVolumeClaimUnused, Status: corev1.ConditionTrue, LastTransitionTime: pvc.CreationTimestamp}}
+			}
+			fs := checkStorage(newEvalTracker(), i, now)
+			if len(fs) != 1 || fs[0].CheckID != tc.checkID {
+				t.Fatalf("expected one %s finding: %+v", tc.checkID, fs)
+			}
+			if fs[0].Message != tc.message {
+				t.Errorf("message=%q want=%q", fs[0].Message, tc.message)
+			}
+			for _, caveat := range []string{"No consumer observed among", "may still reference this claim"} {
+				if strings.Contains(fs[0].Message, caveat) {
+					t.Errorf("unexpected caveat %q in %q", caveat, fs[0].Message)
 				}
 			}
 		})
@@ -360,8 +399,17 @@ func TestLongPendingPVC(t *testing.T) {
 				t.Fatalf("finding=%v want=%v: %+v", got, tc.want, fs)
 			}
 			if tc.want {
-				if !strings.Contains(fs[0].Message, "CRD consumers or snapshot operations may still reference this claim.") {
-					t.Fatalf("missing consumer caveat: %+v", fs[0])
+				for _, fact := range []string{"Requested 8Gi", `storage class "local"`, "PVC age 2d"} {
+					if !strings.Contains(fs[0].Message, fact) {
+						t.Errorf("missing fact %q in %q", fact, fs[0].Message)
+					}
+				}
+				bindingEvidence := "StorageClass uses WaitForFirstConsumer."
+				if tc.unknownClass {
+					bindingEvidence = "StorageClass binding mode not visible."
+				}
+				if !strings.Contains(fs[0].Message, bindingEvidence) {
+					t.Errorf("missing binding evidence %q in %q", bindingEvidence, fs[0].Message)
 				}
 				if !strings.Contains(fs[0].Message, "Pending since creation, 2d ago") || strings.Contains(fs[0].Message, "bound PV") || strings.Contains(fs[0].Message, "reclaim policy") || strings.Contains(fs[0].Message, "snapshot does not establish") {
 					t.Fatalf("inaccurate Pending detail: %+v", fs[0])

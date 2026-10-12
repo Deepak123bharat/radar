@@ -322,7 +322,7 @@ var CheckRegistry = map[string]CheckMeta{
 		Title:       "PVC with no consumer observed",
 		Category:    CategoryEfficiency,
 		Description: "A Bound claim without a controller owner has no reference from the Pods, built-in workload templates, or Pending clones Radar can see. Where Kubernetes reports the claim's Unused condition (1.37+), the 24 hours count from when it became unused, and a claim it reports in use is never flagged. StatefulSet generated claims count even at zero replicas. CRD consumers, snapshot operations, and intentional retained data may still need this storage.",
-		Remediation: "Confirm whether an operator, virtual machine, external consumer, or recovery plan still needs the data. Check the bound volume's reclaim policy and backups before deciding what to retain.",
+		Remediation: "Confirm whether an operator, virtual machine, snapshot, external consumer, or recovery plan still needs the data, and check the bound volume's reclaim policy and backups. If nothing needs it, delete the claim; if its PV is Retain, reclaim that too.",
 		References:  []Reference{refPV},
 	},
 	"pvcLongPending": {
@@ -338,7 +338,7 @@ var CheckRegistry = map[string]CheckMeta{
 		Title:       "Released or Failed persistent volume",
 		Category:    CategoryEfficiency,
 		Description: "A Released volume has been retained for more than 24 hours after claim deletion, deletion has not completed after one hour with reclaim policy Delete, or a recent VolumeFailedDelete warning shows deletion is failing. Without a phase-transition time, release duration is unknown: Retain volumes are reported with PV age, and Delete volumes without a recent warning are not evaluated. A Failed volume, whose deletion or recycling failed after claim deletion, is reported immediately. Capacity is provisioned storage, not a cost estimate.",
-		Remediation: "For Retain, confirm the data retention and recovery plan before reclaiming storage. For Delete failures and Failed volumes, inspect the latest warning or status message, storage controller, and provider permissions. Do not remove finalizers without understanding the cleanup they protect.",
+		Remediation: "For Retain, confirm the data retention and recovery plan first. Deleting a Retain PV keeps its disk: to reclaim a dynamically provisioned volume, set its reclaim policy to Delete; otherwise delete the PV, then the disk in your cloud provider. For Delete failures and Failed volumes, inspect the latest warning or status message, storage controller, and provider permissions. Do not remove finalizers without understanding the cleanup they protect.",
 		References:  []Reference{refPV},
 	},
 
