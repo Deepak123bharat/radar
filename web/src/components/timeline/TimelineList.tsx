@@ -176,7 +176,7 @@ export function TimelineList({ namespaces, onViewChange, currentView, onResource
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
-      {/* Same rule as staleNote: under a scrubber the view shows the note. */}
+      {/* Under a scrubber TimelineView already shows the note above it. */}
       {!selectionWindow && <TimelineRetentionBanner />}
       {staleNote}
       <div className="min-h-0 flex-1">
