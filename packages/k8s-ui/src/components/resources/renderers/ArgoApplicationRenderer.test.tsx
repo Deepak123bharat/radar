@@ -44,3 +44,13 @@ describe('ArgoApplicationRenderer sync policy', () => {
     expect(automatedSyncBadge(html)).toBe('Disabled')
   })
 })
+
+// ManagedResourcesList appends the count to its title itself.
+describe('ArgoApplicationRenderer managed resources', () => {
+  it('shows the count once', () => {
+    const data = app(undefined)
+    const html = render(<ArgoApplicationRenderer data={{ ...data, status: { ...data.status, resources: [{ kind: 'Service', name: 'guestbook-ui', namespace: 'guestbook', status: 'Synced' }] } }} />)
+    expect(html).toContain('Managed Resources (1)')
+    expect(html).not.toContain('(1) (1)')
+  })
+})

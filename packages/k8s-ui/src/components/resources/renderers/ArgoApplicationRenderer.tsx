@@ -373,10 +373,7 @@ export function ArgoApplicationRenderer({ data, onTerminate, isTerminating }: Ar
 
       {/* Managed Resources */}
       {managedResources.length > 0 && (
-        <ManagedResourcesList
-          resources={managedResources}
-          title={`Managed Resources (${managedResources.length})`}
-        />
+        <ManagedResourcesList resources={managedResources} />
       )}
 
       {/* Revision History */}
