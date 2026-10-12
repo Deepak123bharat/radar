@@ -56,14 +56,13 @@ func IndexByResource(topo *Topology) *RelationshipsIndex {
 	for i := range topo.Nodes {
 		node := &topo.Nodes[i]
 		idx.nodesByID[node.ID] = node
-		if nodeGroup(node) == "apps" && (node.Kind == KindDeployment || node.Kind == KindStatefulSet || node.Kind == KindDaemonSet) {
-			if ref := resourceRefForNode(node, nil); ref != nil {
-				if ref.Namespace != "" {
-					idx.workloadsByNamespace[ref.Namespace] = append(idx.workloadsByNamespace[ref.Namespace], node)
-				}
-				// The empty-namespace bucket holds all visible workloads for clusterwide selectors.
-				idx.workloadsByNamespace[""] = append(idx.workloadsByNamespace[""], node)
+		if (node.Kind == KindDeployment || node.Kind == KindStatefulSet || node.Kind == KindDaemonSet) && nodeGroup(node) == "apps" {
+			namespace := nodeNamespaceFromData(node)
+			if namespace != "" {
+				idx.workloadsByNamespace[namespace] = append(idx.workloadsByNamespace[namespace], node)
 			}
+			// The empty-namespace bucket holds all visible workloads for clusterwide selectors.
+			idx.workloadsByNamespace[""] = append(idx.workloadsByNamespace[""], node)
 		}
 		switch node.Kind {
 		case KindNetworkPolicy, KindCiliumNetworkPolicy, KindCiliumClusterwideNetworkPolicy:

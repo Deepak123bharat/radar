@@ -258,7 +258,14 @@ func Build(ctx context.Context, obj runtime.Object, opts Options) *ResourceConte
 			toContextRefs(selected),
 			"selectedBy", omitted)
 
-		rc.Protects = filterRefs(ctx, opts.AccessChecker, toContextRefs(rel.Protects), "protects", omitted)
+		// Bound candidates before authorization so a mostly-denied broad policy
+		// cannot force an unbounded number of permission checks.
+		policyTargets := toContextRefs(rel.Protects)
+		if len(policyTargets) > maxPolicyTargetCandidates {
+			policyTargets = policyTargets[:maxPolicyTargetCandidates]
+			omitted.add("protects", OmittedBudgetExceeded)
+		}
+		rc.Protects = filterRefs(ctx, opts.AccessChecker, policyTargets, "protects", omitted)
 		rc.HealthChecks = filterRefs(ctx, opts.AccessChecker, toContextRefs(rel.HealthChecks), "healthChecks", omitted)
 		rc.StagedPolicies = filterRefs(ctx, opts.AccessChecker, toContextRefs(rel.StagedPolicies), "stagedPolicies", omitted)
 		rc.Monitors = filterRefs(ctx, opts.AccessChecker, toContextRefs(rel.Monitors), "monitors", omitted)
@@ -577,6 +584,7 @@ func buildUsesFromWorkload(ctx context.Context, obj runtime.Object, ac RefAccess
 }
 
 const (
+	maxPolicyTargetCandidates  = 50
 	maxReferencedByItems       = 20
 	maxReferencedByPathsPerRef = 8
 )

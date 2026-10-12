@@ -3,6 +3,7 @@ package resourcecontext
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/skyhook-io/radar/pkg/topology"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -56,5 +57,54 @@ func TestAllPodPolicyTargetsReachAgentContextWithPermissions(t *testing.T) {
 	limited := Build(context.Background(), policy, Options{Relationships: rel, AccessChecker: denyChecker{group: "apps", kind: "Deployment", namespace: "app"}})
 	if len(limited.Protects) != 0 || !hasOmitted(limited.Omitted, "protects") {
 		t.Fatalf("policy targets ignored permissions: %+v", limited)
+	}
+}
+
+type policyTargetCheckCounter struct {
+	calls int
+	allow bool
+}
+
+func (c *policyTargetCheckCounter) CanRead(ctx context.Context, group, kind, namespace string) bool {
+	c.calls++
+	return c.allow
+}
+
+func TestPolicyTargetContextBoundsCandidatesAndPreservesUncertainty(t *testing.T) {
+	for _, allow := range []bool{false, true} {
+		t.Run(fmt.Sprint(allow), func(t *testing.T) {
+			refs := make([]topology.ResourceRef, 0, maxPolicyTargetCandidates+10)
+			for i := maxPolicyTargetCandidates + 9; i >= 0; i-- {
+				refs = append(refs, topology.ResourceRef{Kind: "Deployment", Group: "apps", Namespace: fmt.Sprintf("ns-%03d", i), Name: "web"})
+			}
+			counter := &policyTargetCheckCounter{allow: allow}
+			obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": map[string]any{"name": "all", "namespace": "app"}}}
+			rc := Build(context.Background(), obj, Options{Relationships: &topology.Relationships{Protects: refs}, AccessChecker: counter})
+			if counter.calls != maxPolicyTargetCandidates {
+				t.Fatalf("permission checks=%d", counter.calls)
+			}
+			want := 0
+			if allow {
+				want = maxPolicyTargetCandidates
+			}
+			if len(rc.Protects) != want {
+				t.Fatalf("targets=%d want=%d", len(rc.Protects), want)
+			}
+			budget := false
+			for _, omission := range rc.Omitted {
+				if omission.Field == "protects" && omission.Reason == OmittedBudgetExceeded {
+					budget = true
+				}
+			}
+			if !budget {
+				t.Fatalf("truncated targets looked complete: %+v", rc)
+			}
+			if allow && (rc.Protects[0].Namespace != "ns-000" || rc.Protects[len(rc.Protects)-1].Namespace != "ns-049") {
+				t.Fatalf("sample is not deterministic: %+v", rc.Protects)
+			}
+			if refs[0].Namespace != "ns-059" {
+				t.Fatal("mutated shared relationship input")
+			}
+		})
 	}
 }
