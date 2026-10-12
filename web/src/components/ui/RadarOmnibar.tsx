@@ -51,6 +51,7 @@ export const RadarOmnibar = forwardRef<OmnibarHandle, RadarOmnibarProps>(functio
   const commandItems = useCommandItems(callbacks)
   const { onNavigateKind } = callbacks
   const note = searchCoverageNote(searchData?.unsearched, {
+    hits: searchData?.hits,
     pendingExhausted: exhaustedQuery === query,
     openKindList: (kind, group) => {
       const resource = apiResources?.find((r) => r.kind === kind && r.group === group)

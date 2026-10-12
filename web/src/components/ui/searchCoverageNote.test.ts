@@ -58,6 +58,17 @@ describe('searchCoverageNote', () => {
     )
   })
 
+  it('names a kind with its group when the hits hold a same-named kind of another group', () => {
+    const knative = entry('Certificate', 'kind_sync_failed', 'networking.internal.knative.dev')
+    expect(searchCoverageNote([knative], {})?.text).toBe("Couldn't read Certificate; matches of that kind may be missing.")
+    expect(searchCoverageNote([knative], { hits: [{ kind: 'Certificate', group: 'cert-manager.io' }] })?.text).toBe(
+      "Couldn't read Certificate (networking.internal.knative.dev); matches of that kind may be missing.",
+    )
+    expect(searchCoverageNote([entry('Certificate', 'rbac_denied', 'cert-manager.io')], { hits: [{ kind: 'Certificate', group: 'networking.internal.knative.dev' }] })?.text).toBe(
+      "Your access doesn't include all Certificates (cert-manager.io).",
+    )
+  })
+
   it('leaves namespaces and unknown reasons to other surfaces', () => {
     expect(searchCoverageNote([{ kind: '*', group: '', reason: 'namespace_excluded', namespaces: ['payments'] }], {})).toBeUndefined()
     expect(searchCoverageNote([entry('Widget', 'reason_from_the_future')], {})).toBeUndefined()

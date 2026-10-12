@@ -14,6 +14,9 @@ const MAX_SENTENCES = 2
 const MAX_NAMES = 3
 
 export interface SearchCoverageNoteOptions {
+  /** The search's hits: a kind that shares its name with a hit of another
+   *  API group is named with its group. */
+  hits?: { kind: string; group?: string }[]
   /** Re-querying a still-loading search ran out of budget. */
   pendingExhausted?: boolean
   /** Returns how to open a kind's resource list, or undefined when the host can't. */
@@ -30,17 +33,32 @@ function joinNames(names: string[], conj: string): string {
   return `${names.slice(0, -1).join(', ')} ${conj} ${names[names.length - 1]}`
 }
 
+type KindLabel = (entry: SearchCoverageEntry, plural?: boolean) => string
+
+// kindLabeler names a kind by its Kind, adding the API group when another kind
+// of the same name but a different group is in the entries or the hits
+// ("Certificate (networking.internal.knative.dev)" beside cert-manager's).
+function kindLabeler(unsearched: SearchCoverageEntry[], hits: { kind: string; group?: string }[]): KindLabel {
+  const groups = new Map<string, Set<string>>()
+  const add = (kind: string, group: string) => groups.set(kind, (groups.get(kind) ?? new Set()).add(group))
+  for (const e of unsearched) if (e.kind !== '*') add(e.kind, e.group)
+  for (const h of hits) add(h.kind, h.group ?? '')
+  return (e, plural = false) => {
+    const name = plural ? kindPluralLabel(e.kind) : e.kind
+    return e.group && (groups.get(e.kind)?.size ?? 0) > 1 ? `${name} (${e.group})` : name
+  }
+}
+
+// The kinds entries name, once each by group and kind.
+function distinctKinds(entries: SearchCoverageEntry[]): SearchCoverageEntry[] {
+  return [...new Map(entries.filter((e) => e.kind !== '*').map((e) => [`${e.group}/${e.kind}`, e])).values()]
+}
+
 // The kinds a failure reason covers, in prose: up to MAX_NAMES names, then
 // "N more kinds" for the rest (named beyond the cap, or folded into a counted
-// "*" entry), or "some kinds" when a "*" entry carries no count. A kind is its
-// group and name: same-named kinds of different groups are named with their
-// group and counted apart.
-function failedKinds(entries: SearchCoverageEntry[], label: (kind: string) => string): { text: string; one: boolean } {
-  const kinds = [...new Map(entries.filter((e) => e.kind !== '*').map((e) => [`${e.group}/${e.kind}`, e])).values()]
-  const names = kinds.map((e) => {
-    const shared = kinds.some((o) => o !== e && o.kind === e.kind)
-    return shared && e.group ? `${label(e.kind)} (${e.group})` : label(e.kind)
-  })
+// "*" entry), or "some kinds" when a "*" entry carries no count.
+function failedKinds(entries: SearchCoverageEntry[], label: (e: SearchCoverageEntry) => string): { text: string; one: boolean } {
+  const names = distinctKinds(entries).map(label)
   const stars = entries.filter((e) => e.kind === '*')
   if (stars.some((e) => !e.count)) return { text: names.length ? `${names.slice(0, MAX_NAMES).join(', ')} and other kinds` : 'some kinds', one: false }
   const more = Math.max(names.length - MAX_NAMES, 0) + stars.reduce((n, e) => n + (e.count ?? 0), 0)
@@ -55,8 +73,9 @@ function failedKinds(entries: SearchCoverageEntry[], label: (kind: string) => st
 // older Radar sends no `unsearched`, and gets no note.
 export function searchCoverageNote(unsearched: SearchCoverageEntry[] | undefined, opts: SearchCoverageNoteOptions): OmnibarNote | undefined {
   if (!unsearched?.length) return undefined
-  const named = (reasons: string | Set<string>) =>
-    [...new Set(unsearched.filter((e) => e.kind !== '*' && (typeof reasons === 'string' ? e.reason === reasons : reasons.has(e.reason))).map((e) => e.kind))]
+  const label = kindLabeler(unsearched, opts.hits ?? [])
+  const named = (reason: string) => distinctKinds(unsearched.filter((e) => e.reason === reason))
+  const names = (entries: SearchCoverageEntry[], conj: string, plural = true) => joinNames([...new Set(entries.map((e) => label(e, plural)))], conj)
 
   const sentences: OmnibarNote[] = []
   const say = (text: string) => sentences.push({ text })
@@ -69,31 +88,30 @@ export function searchCoverageNote(unsearched: SearchCoverageEntry[] | undefined
   // failed discovery, so the kind may exist there.
   const groupsUnread = unknown.length > 0 && unsearched.some((e) => e.kind === '*' && e.reason === 'read_error' && !e.count)
   if (unknown.length) {
-    const noun = `No ${unknown.length === 1 ? 'kind' : 'kinds'} named ${joinNames(unknown, 'or')}`
+    const noun = `No ${unknown.length === 1 ? 'kind' : 'kinds'} named ${names(unknown, 'or', false)}`
     say(groupsUnread ? `${noun} found, but some API groups couldn't be read.` : `${noun} here — not installed, or misspelled?`)
   }
   const unsupported = unsearched.filter((e) => e.kind !== '*' && e.reason === 'collection_not_supported')
   if (unsupported.length) {
     const first = unsupported[0]
-    const label = kindPluralLabel(first.kind)
-    const names = joinNames([...new Set(unsupported.map((e) => kindPluralLabel(e.kind)))], 'and')
-    const pointer = `Open the ${label} list instead.`
+    const pointer = `Open the ${label(first, true)} list instead.`
     const openList = opts.openKindList?.(first.kind, first.group)
+    const what = names(unsupported, 'and')
     sentences.push(openList
-      ? { text: `${names} can't be searched.`, action: { label: pointer, onSelect: openList } }
-      : { text: `${names} can't be searched. ${pointer}` })
+      ? { text: `${what} can't be searched.`, action: { label: pointer, onSelect: openList } }
+      : { text: `${what} can't be searched. ${pointer}` })
   }
   const denied = named('rbac_denied')
-  if (denied.length) say(`Your access doesn't include all ${joinNames(denied.map(kindPluralLabel), 'or')}.`)
+  if (denied.length) say(`Your access doesn't include all ${names(denied, 'or')}.`)
   const collector = named('collector_access_denied')
-  if (collector.length) say(`Radar isn't allowed to read ${joinNames(collector.map(kindPluralLabel), 'or')} on this cluster.`)
+  if (collector.length) say(`Radar isn't allowed to read ${names(collector, 'or')} on this cluster.`)
   const failed = unsearched.filter((e) => FAILURE_REASONS.has(e.reason) && !(groupsUnread && e.kind === '*' && !e.count))
   if (failed.length) {
-    const { text, one } = failedKinds(failed, (kind) => kind)
+    const { text, one } = failedKinds(failed, (e) => label(e))
     say(`Couldn't read ${text}; matches of ${one ? 'that kind' : 'those kinds'} may be missing.`)
   }
   const unchecked = unsearched.filter((e) => e.reason === 'permission_check_failed')
-  if (unchecked.length) say(`Couldn't check your access to ${failedKinds(unchecked, kindPluralLabel).text}.`)
+  if (unchecked.length) say(`Couldn't check your access to ${failedKinds(unchecked, (e) => label(e, true)).text}.`)
 
   if (!sentences.length) return undefined
   const shown = sentences.slice(0, MAX_SENTENCES)
