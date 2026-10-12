@@ -609,17 +609,18 @@ What gets reported follows from that:
 | `collector_access_denied` | named `kind:` | Kubernetes refused Radar's own identity for the kind. | Fix Radar's access; granting the caller access does not help. |
 | `collection_not_supported` | named `kind:` | The kind cannot be watched, or Radar reads it directly instead of watching. | Use `list_resources`; warming will not help. |
 | `unknown_kind` | named `kind:` | A `kind:` term matched no kind in the discovered catalog: it isn't installed on this cluster, or it is misspelled. Reported in your spelling. | Check the spelling, and whether the API is installed here. |
-| `namespace_excluded` | named `ns:` | Your RBAC doesn't include the namespace, or it doesn't exist on this cluster. | For a caller who can see every namespace it means the namespace doesn't exist; otherwise don't infer that. |
-| `namespace_scope_limited` | named `ns:` | The namespace exists, but Radar's `--namespace-scope` pin leaves it out, or on REST without `globalNs=1`, your saved namespace pick does. | Widen the pin, or pass `globalNs=1` to drop the pick. |
+| `namespace_excluded` | named `ns:` | Your RBAC doesn't include the namespace; or, if you can see every namespace, it doesn't exist on this cluster. | Only a caller who can see every namespace may read it as "doesn't exist". |
+| `namespace_scope_limited` | named `ns:` | Radar's `--namespace-scope` pin leaves the namespace out, or on REST without `globalNs=1`, your saved namespace pick does. | Widen the pin, or pass `globalNs=1` to drop the pick. |
 | `collector_scope_limited` | named `ns:` | Radar's cache doesn't cover the namespace for at least one kind searched. | Widen Radar's collection. |
 
 The three namespace reasons use `kind: "*"`, one entry per reason, and `namespaces`
 lists the namespaces you named that were not searched for that reason; the entry
-never repeats per kind. A named namespace you may see but that doesn't exist on the
-cluster (Radar watches Namespaces cluster-wide, even under the pin) is
-`namespace_excluded`, never blamed on the pin or the pick. Existence is checked only
-for namespaces your RBAC covers, so a namespace you can't see is `namespace_excluded`
-whether or not it exists. Kubernetes
+never repeats per kind. For a caller whose RBAC covers every namespace, a named
+namespace that doesn't exist on the cluster is `namespace_excluded`, never searched
+to a silent empty answer or blamed on the pin or the pick (Radar watches Namespaces
+cluster-wide, even under the pin; when it can't list them, existence is unknown and
+the namespace is treated as existing). For anyone else existence is never checked,
+so a namespace outside your RBAC is `namespace_excluded` whether or not it exists. Kubernetes
 rejecting Radar's credentials (401) is reported as `collector_access_denied`, not
 `collector_unauthorized`: the collector's permission probes don't keep 401 apart from
 403.
@@ -686,8 +687,10 @@ Examples:
 `has()` takes a field selection (`has(object.subjects)`), not a bare variable
 (`has(subjects)`). Use map membership for label keys. Kubernetes omits fields that
 are zero or empty (`status.readyReplicas` on a Deployment with none ready), so guard
-them with `has()`, and match a zero with `!has(x) || x == 0`: zero or unreported
-ready replicas is `!has(status.readyReplicas) || status.readyReplicas == 0`. Evaluation/activation errors set `partial: true`, preserve
+them with `has()`, and match a zero with `!has(x) || x == 0` under a kind check, since
+the bare form also matches every object without that field. Deployments with zero or
+unreported ready replicas:
+`kind == "Deployment" && (!has(status.readyReplicas) || status.readyReplicas == 0)`. Evaluation/activation errors set `partial: true`, preserve
 `filter_errors` and `filter_error_sample`, and return `filter_failed_objects`: the
 first 20 `{kind, namespace, name}` refs, with empty namespace at cluster scope.
 Surviving hits remain available. A valid false predicate is an ordinary non-match.

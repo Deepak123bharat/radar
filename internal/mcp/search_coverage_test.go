@@ -301,10 +301,10 @@ func TestCoverageHintTemplates(t *testing.T) {
 		{"collector", search.Result{Unsearched: []search.UnsearchedKind{gap("Node", "", readreason.CollectorAccessDenied)}},
 			"Radar isn't allowed to read Nodes on this cluster; granting you access won't help.", false},
 		{"filter", search.Result{FilterErrors: 143, FilterErrorSample: "no such key: readyReplicas"},
-			"143 objects failed the filter (no such key: readyReplicas). Kubernetes omits fields that are 0 or empty: guard them with has(), and match a zero with !has(x) || x == 0.", false},
+			"143 objects failed the filter (no such key: readyReplicas): Kubernetes omits fields that are 0 or empty, so guard them with has() and match a zero with kind == \"K\" && (!has(x) || x == 0).", false},
 		{"ordered and capped", search.Result{FilterErrors: 1, FilterErrorSample: "no such key: x", Unsearched: []search.UnsearchedKind{
 			gap("Secret", "", readreason.RBACDenied), {Kind: "*", Reason: readreason.KindSyncPending, Count: 2}, gap("Deploymnet", "", readreason.UnknownKind), gap("Node", "", readreason.CollectorAccessDenied),
-		}}, "Kind 'Deploymnet' isn't recognized on this cluster: it may not be installed here, or the name may be misspelled. 1 object failed the filter (no such key: x). Kubernetes omits fields that are 0 or empty: guard them with has(), and match a zero with !has(x) || x == 0. 2 kinds were still loading; retry in a few seconds before concluding absence. +2 more reasons.", false},
+		}}, "Kind 'Deploymnet' isn't recognized on this cluster: it may not be installed here, or the name may be misspelled. 1 object failed the filter (no such key: x): Kubernetes omits fields that are 0 or empty, so guard them with has() and match a zero with kind == \"K\" && (!has(x) || x == 0). 2 kinds were still loading; retry in a few seconds before concluding absence. +2 more reasons.", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.res.Partial = true

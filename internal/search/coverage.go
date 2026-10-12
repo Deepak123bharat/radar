@@ -186,6 +186,7 @@ func (o *Options) ScopeNamespaces(q Query, visible, ceiling []string) {
 	o.Namespaces = visible
 	o.ExcludedNamespaces = nil
 	o.SelectionExcludedNamespaces = nil
+	o.seesAllNamespaces = ceiling == nil
 	if len(q.NSFilter) > 0 {
 		o.Namespaces = make([]string, 0, len(q.NSFilter))
 		for _, ns := range q.NSFilter {
@@ -204,14 +205,13 @@ func (o *Options) ScopeNamespaces(q Query, visible, ceiling []string) {
 	o.NamespaceExcluded = o.Namespaces != nil && len(o.Namespaces) == 0
 }
 
-// excludeMissingNamespaces reports a namespace an ns: term names, that the
-// caller may see but doesn't exist on the cluster, as namespace_excluded: the
-// entry an unseen namespace gets. Otherwise it would be searched to a silent
-// empty answer, or blamed on the namespace selection. Namespaces outside the
-// caller's RBAC are never checked, so existence is never revealed beyond what
-// the caller can see.
+// excludeMissingNamespaces reports a namespace an ns: term names that doesn't
+// exist on the cluster as namespace_excluded, the entry an unseen namespace
+// gets, instead of searching it to a silent empty answer or blaming the
+// namespace selection. Only for a caller whose RBAC covers every namespace:
+// for anyone else, which namespaces exist is not theirs to learn.
 func (o *Options) excludeMissingNamespaces(p Provider, q Query) {
-	if len(q.NSFilter) == 0 {
+	if len(q.NSFilter) == 0 || !o.seesAllNamespaces {
 		return
 	}
 	split := func(namespaces []string) (kept []string) {

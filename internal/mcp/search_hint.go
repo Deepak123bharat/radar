@@ -253,11 +253,11 @@ func filterSentence(failed int, sample string) string {
 		cause = cause[:80] + "…"
 	}
 	objects := pluralWord(failed, "object", "objects")
-	const advice = "Kubernetes omits fields that are 0 or empty: guard them with has(), and match a zero with !has(x) || x == 0."
+	const advice = "Kubernetes omits fields that are 0 or empty, so guard them with has() and match a zero with kind == \"K\" && (!has(x) || x == 0)."
 	if cause == "" {
-		return fmt.Sprintf("%d %s failed the filter. %s", failed, objects, advice)
+		return fmt.Sprintf("%d %s failed the filter: %s", failed, objects, advice)
 	}
-	return fmt.Sprintf("%d %s failed the filter (%s). %s", failed, objects, cause, advice)
+	return fmt.Sprintf("%d %s failed the filter (%s): %s", failed, objects, cause, advice)
 }
 
 func pluralWord(n int, one, many string) string {

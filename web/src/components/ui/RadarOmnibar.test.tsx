@@ -1,0 +1,106 @@
+// @vitest-environment jsdom
+import { act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { SearchCoverageEntry } from '../../api/client'
+
+vi.mock('../../api/usage-data', () => ({ recordUsageEvent: vi.fn() }))
+vi.mock('../../hooks/useRecentResources', () => ({ loadRecentResources: () => [], recordRecentResource: vi.fn() }))
+vi.mock('../../api/apiResources', async (importOriginal) => ({ ...(await importOriginal<object>()), useAPIResources: () => ({ data: [] }) }))
+vi.mock('./command-items', async (importOriginal) => ({ ...(await importOriginal<object>()), useCommandItems: () => [] }))
+vi.mock('../../api/client', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  useNamespaceScope: () => ({ data: undefined }),
+  useContexts: () => ({ data: [] }),
+}))
+
+import { RadarOmnibar } from './RadarOmnibar'
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
+let root: Root
+let host: HTMLDivElement
+let unsearched: SearchCoverageEntry[]
+let searches = 0
+
+const pending: SearchCoverageEntry[] = [{ kind: '*', group: '', reason: 'kind_sync_pending' }]
+const failed: SearchCoverageEntry[] = [{ kind: 'SpStall', group: 'stall.sp-live.test', reason: 'kind_sync_failed' }]
+
+beforeEach(() => {
+  vi.useFakeTimers()
+  searches = 0
+  vi.stubGlobal('fetch', vi.fn(async (input: string) => {
+    const url = new URL(input, 'http://localhost')
+    if (!url.pathname.endsWith('/search')) throw new Error(`Unexpected request: ${input}`)
+    searches++
+    return new Response(JSON.stringify({ hits: [], total: 0, searched: 0, total_matched: 0, partial: true, unsearched }), { status: 200 })
+  }))
+  host = document.createElement('div')
+  document.body.appendChild(host)
+  root = createRoot(host)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const noop = vi.fn()
+  act(() => {
+    root.render(
+      <QueryClientProvider client={client}>
+        <RadarOmnibar onOpenResource={noop} onNavigateView={noop} onNavigateKind={noop} onSwitchContext={noop} onSetNamespaces={noop} onToggleTheme={noop} />
+      </QueryClientProvider>,
+    )
+  })
+})
+
+afterEach(() => {
+  act(() => root.unmount())
+  host.remove()
+  document.body.innerHTML = ''
+  vi.unstubAllGlobals()
+  vi.useRealTimers()
+})
+
+async function typeQuery(text: string) {
+  const input = host.querySelector('input')!
+  act(() => input.focus())
+  act(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, text)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await act(async () => { await vi.advanceTimersByTimeAsync(200) })
+  await act(async () => { await vi.advanceTimersByTimeAsync(100) })
+}
+
+const advance = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms) })
+const page = () => document.body.textContent ?? ''
+
+describe('RadarOmnibar while results load', () => {
+  it('re-queries a loading search and ends on the failure once Radar gives up on the kind', async () => {
+    unsearched = pending
+    await typeQuery('sp-live')
+    expect(page()).toContain('Still loading — results may change.')
+
+    await advance(25_000)
+    expect(searches).toBeGreaterThanOrEqual(5)
+    expect(page()).toContain('Still loading — results may change.')
+
+    // Radar reports a kind that never synced as failed after about 30 s, so
+    // the omnibar must still be asking then.
+    await advance(6_000)
+    unsearched = failed
+    await advance(10_000)
+    expect(page()).toContain("Couldn't read SpStall; matches of that kind may be missing.")
+    expect(page()).not.toContain('Still loading')
+
+    const settled = searches
+    await advance(30_000)
+    expect(searches).toBe(settled)
+  })
+
+  it('stops re-querying after its budget and says so', async () => {
+    unsearched = pending
+    await typeQuery('sp-live')
+    await advance(46_000)
+    expect(page()).toContain('Still loading — try again shortly.')
+    const settled = searches
+    await advance(30_000)
+    expect(searches).toBe(settled)
+  })
+})

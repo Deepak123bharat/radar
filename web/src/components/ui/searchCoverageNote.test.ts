@@ -51,6 +51,13 @@ describe('searchCoverageNote', () => {
     expect(searchCoverageNote([entry('*', 'permission_check_failed')], {})?.text).toBe("Couldn't check your access to some kinds.")
   })
 
+  it('counts same-named kinds of different groups apart', () => {
+    const widgets = ['a', 'b', 'c', 'd', 'e'].map((g) => entry('Widget', 'kind_sync_failed', `${g}.example.io`))
+    expect(searchCoverageNote([...widgets, entry('*', 'kind_sync_failed', '', 1)], {})?.text).toBe(
+      "Couldn't read Widget (a.example.io), Widget (b.example.io), Widget (c.example.io) and 3 more kinds; matches of those kinds may be missing.",
+    )
+  })
+
   it('leaves namespaces and unknown reasons to other surfaces', () => {
     expect(searchCoverageNote([{ kind: '*', group: '', reason: 'namespace_excluded', namespaces: ['payments'] }], {})).toBeUndefined()
     expect(searchCoverageNote([entry('Widget', 'reason_from_the_future')], {})).toBeUndefined()

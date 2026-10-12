@@ -142,6 +142,9 @@ type Options struct {
 	// caller may see but the saved namespace pick or the --namespace-scope pin
 	// leaves out; reported as namespace_scope_limited.
 	SelectionExcludedNamespaces []string
+	// seesAllNamespaces records that the caller's RBAC covers every namespace
+	// (ScopeNamespaces' ceiling was nil).
+	seesAllNamespaces bool
 	// NamespacedRBAC gates sensitive typed kinds before their readiness is
 	// read. Decisions are empty (allowed), override (scoped subset), skip
 	// (denied), or permission_check_failed (non-authoritative permission

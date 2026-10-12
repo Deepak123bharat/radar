@@ -292,3 +292,24 @@ func TestPermissionCheckFailuresAreNotReportedAsDenial(t *testing.T) {
 		}
 	}
 }
+
+// The documented example for "zero or unreported ready replicas": Kubernetes
+// omits readyReplicas at 0, and the kind check keeps objects that never carry
+// the field (ConfigMaps) out.
+func TestZeroReadyReplicasExample(t *testing.T) {
+	f, err := filter.CompileObjectFilter(`kind == "Deployment" && (!has(status.readyReplicas) || status.readyReplicas == 0)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &fakeProvider{typed: map[string][]runtime.Object{
+		"deployments": {
+			&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "robusta-down", Namespace: "a"}},
+			&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "robusta-up", Namespace: "a"}, Status: appsv1.DeploymentStatus{ReadyReplicas: 2}},
+		},
+		"configmaps": {&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "robusta-config", Namespace: "a"}}},
+	}}
+	res, _ := Search(context.Background(), p, Parse("robusta"), Options{Include: IncludeNone, Filter: f})
+	if got := hitNames(res); !reflect.DeepEqual(got, []string{"Deployment/a/robusta-down"}) || res.FilterErrors != 0 {
+		t.Fatalf("hits %v, filter errors %d", got, res.FilterErrors)
+	}
+}

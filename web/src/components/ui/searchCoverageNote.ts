@@ -32,9 +32,15 @@ function joinNames(names: string[], conj: string): string {
 
 // The kinds a failure reason covers, in prose: up to MAX_NAMES names, then
 // "N more kinds" for the rest (named beyond the cap, or folded into a counted
-// "*" entry), or "some kinds" when a "*" entry carries no count.
+// "*" entry), or "some kinds" when a "*" entry carries no count. A kind is its
+// group and name: same-named kinds of different groups are named with their
+// group and counted apart.
 function failedKinds(entries: SearchCoverageEntry[], label: (kind: string) => string): { text: string; one: boolean } {
-  const names = [...new Set(entries.filter((e) => e.kind !== '*').map((e) => label(e.kind)))]
+  const kinds = [...new Map(entries.filter((e) => e.kind !== '*').map((e) => [`${e.group}/${e.kind}`, e])).values()]
+  const names = kinds.map((e) => {
+    const shared = kinds.some((o) => o !== e && o.kind === e.kind)
+    return shared && e.group ? `${label(e.kind)} (${e.group})` : label(e.kind)
+  })
   const stars = entries.filter((e) => e.kind === '*')
   if (stars.some((e) => !e.count)) return { text: names.length ? `${names.slice(0, MAX_NAMES).join(', ')} and other kinds` : 'some kinds', one: false }
   const more = Math.max(names.length - MAX_NAMES, 0) + stars.reduce((n, e) => n + (e.count ?? 0), 0)

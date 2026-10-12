@@ -290,6 +290,9 @@ func TestNamedNamespaceThatDoesNotExist(t *testing.T) {
 		{"pinned, exists elsewhere", "ns:b robusta", []string{"a"}, nil, []UnsearchedKind{{Kind: "*", Reason: "namespace_scope_limited", Namespaces: []string{"b"}}}, nil, []string{"b"}},
 		{"pinned, exists nowhere", "ns:payments robusta", []string{"a"}, nil, []UnsearchedKind{{Kind: "*", Reason: "namespace_excluded", Namespaces: []string{"payments"}}}, nil, []string{"payments"}},
 		{"restricted caller", "ns:payments ns:b robusta", []string{"a"}, []string{"a"}, []UnsearchedKind{{Kind: "*", Reason: "namespace_excluded", Namespaces: []string{"b", "payments"}}}, nil, nil},
+		// A namespace inside a restricted caller's (possibly stale) RBAC list
+		// keeps the pin's entry: existence is never checked for them.
+		{"restricted caller, pinned", "ns:gone robusta", []string{"a"}, []string{"a", "gone"}, []UnsearchedKind{{Kind: "*", Reason: "namespace_scope_limited", Namespaces: []string{"gone"}}}, nil, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := namespaceFixture()
