@@ -31,7 +31,7 @@ export interface OmnibarSearchResult {
 }
 
 // A host-provided line about the current search (what was or wasn't searched),
-// shown muted under the results or the empty state. The host interprets its
+// shown muted above the results or the empty state. The host interprets its
 // own search response; the omnibar only renders the text and optional action.
 export interface OmnibarNote {
   text: string
@@ -492,6 +492,9 @@ export const Omnibar = forwardRef<OmnibarHandle, OmnibarProps>(function Omnibar(
                   {isFetching && <Loader2 className="w-3 h-3 animate-spin" />}
                   {!isFetching && !isError && totalMatched > total && <span className="normal-case font-normal">showing {total} of {totalMatched}</span>}
                 </div>
+                {/* Above the rows: with a full page of hits a note below them
+                    would sit under the fold. */}
+                {shownNote && <OmnibarNoteRow note={shownNote} onAction={(action) => { action.onSelect(); close() }} />}
                 {isError ? (
                   <div className="flex items-center gap-2 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
                     <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> Search is unavailable right now.
@@ -510,7 +513,6 @@ export const Omnibar = forwardRef<OmnibarHandle, OmnibarProps>(function Omnibar(
                     <ResourceRow key={row.id} hit={row.hit} stale={resourcesStale} selected={row.id === selectedId} onSelect={() => selectRow(row.id)} onActivate={() => { if (!resourcesStale) execute(row) }} />
                   ))
                 )}
-                {shownNote && <OmnibarNoteRow note={shownNote} onAction={(action) => { action.onSelect(); close() }} />}
               </>
             )}
 

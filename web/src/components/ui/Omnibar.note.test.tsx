@@ -12,6 +12,8 @@ let host: HTMLDivElement
 
 beforeEach(() => {
   vi.useFakeTimers()
+  // jsdom has no layout; the omnibar scrolls the selected row into view.
+  Element.prototype.scrollIntoView = vi.fn()
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -67,6 +69,17 @@ describe('Omnibar note', () => {
     render({ text: 'Still loading — results may change.' }, { isPlaceholderData: true })
     typeQuery('lease')
     expect(document.body.textContent).not.toContain('Still loading')
+  })
+
+  it('shows the note above the results, where a full page of hits cannot push it out of view', () => {
+    const hits = Array.from({ length: 20 }, (_, i) => ({ score: 1, kind: 'Certificate', group: 'cert-manager.io', namespace: 'a', name: `lease-${i}` }))
+    act(() => {
+      root.render(<Omnibar onOpenResource={vi.fn()} commandItems={[]} searchData={{ hits }} note={{ text: "Couldn't read Certificate (networking.internal.knative.dev)." }} />)
+    })
+    typeQuery('lease')
+    const text = document.body.textContent ?? ''
+    expect(text.indexOf("Couldn't read Certificate")).toBeGreaterThan(-1)
+    expect(text.indexOf("Couldn't read Certificate")).toBeLessThan(text.indexOf('lease-0'))
   })
 
   it('keeps the empty state and note steady while the same query re-fetches', () => {
