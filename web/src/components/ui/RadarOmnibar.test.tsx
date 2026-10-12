@@ -97,6 +97,19 @@ describe('RadarOmnibar while results load', () => {
     expect(searches).toBe(settled)
   })
 
+  it('still catches a kind that fails 30 s after a watch that started late in warm-up', async () => {
+    unsearched = pending
+    await typeQuery('sp-live')
+    await advance(48_000)
+    expect(page()).toContain('Still loading — results may change.')
+    unsearched = failed
+    await advance(6_000)
+    expect(page()).toContain("Couldn't read SpStall; matches of that kind may be missing.")
+    const settled = searches
+    await advance(30_000)
+    expect(searches).toBe(settled)
+  })
+
   it('stops re-querying after its budget and says so', async () => {
     unsearched = pending
     await typeQuery('sp-live')
@@ -114,10 +127,12 @@ describe('RadarOmnibar namespace notes', () => {
   const missing: SearchCoverageEntry[] = [{ kind: '*', group: '', reason: 'namespace_excluded', namespaces: ['payments-prd'] }]
 
   it('says a namespace does not exist when auth is off, which capabilities report by omitting authEnabled', async () => {
-    caps.data = {}
-    unsearched = missing
-    await typeQuery('ns:payments-prd web')
-    expect(page()).toContain("Namespace 'payments-prd' doesn't exist on this cluster.")
+    for (const data of [{}, { authEnabled: false }]) {
+      caps.data = data
+      unsearched = missing
+      await typeQuery(`ns:payments-prd web${'authEnabled' in data ? 's' : ''}`)
+      expect(page()).toContain("Namespace 'payments-prd' doesn't exist on this cluster.")
+    }
   })
 
   it('stays scoped to what the caller can see when auth is on or capabilities have not loaded', async () => {
