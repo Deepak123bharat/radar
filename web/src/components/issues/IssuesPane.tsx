@@ -25,6 +25,7 @@ import {
 import { builtinGroupForKind } from "@skyhook-io/k8s-ui/utils/api-resources";
 import { AlertTriangle } from "lucide-react";
 import { IssueDiagnoseButton } from "../diagnose/LocalDiagnoseAction";
+import { HELM_UNCHECKED_LINE } from "./helmUnchecked";
 
 // A capacity-relevant issue links to its Karpenter diagnosis. Karpenter is
 // always single-cluster (unlike Argo hub-and-spoke), so the issue and the
@@ -152,8 +153,6 @@ export function issueSubjectState(
   }
   return { state: "none" };
 }
-
-const HELM_UNCHECKED_LINE = "Helm releases couldn't be checked, so failed or stuck releases may be missing.";
 
 const SEVERITY_TONE: Record<IssueSeverity, SummaryTone> = {
   critical: "error",

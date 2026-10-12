@@ -101,3 +101,12 @@ describe('Issues page when Radar could not read Helm releases', () => {
     expect(html).not.toContain('couldn')
   })
 })
+
+describe('Helm notice in subject mode', () => {
+  it('is left out: the per-resource lookup never reads Helm storage', () => {
+    state.fleet.data = { issues: [], helm_issues_unchecked: true }
+    const html = render()
+    expect(html).toContain('The selected Pod keeps crashing')
+    expect(html).not.toContain('Helm releases couldn')
+  })
+})
