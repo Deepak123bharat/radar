@@ -14,6 +14,8 @@ package summarycontext
 
 import (
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -42,19 +44,50 @@ type Builder func(obj runtime.Object, u *unstructured.Unstructured, group, kind,
 // than hold its results.
 const SearchBudget = 3 * time.Second
 
+// lagging counts builds still running after their caller stopped waiting.
+var lagging atomic.Int32
+
 // Within returns what build produces if it finishes within budget, and the
 // zero value otherwise. build keeps running in the background, so the caches
-// it fills are warm for a later request.
+// it fills are warm for a later request. While such a build is still running,
+// Within returns the zero value at once instead of starting another: during
+// a long warm-up every search would otherwise leave one more stuck build
+// behind.
 func Within[T any](budget time.Duration, build func() T) T {
+	var zero T
+	if lagging.Load() > 0 {
+		return zero
+	}
+	var mu sync.Mutex
+	finished, abandoned := false, false
 	done := make(chan T, 1)
-	go func() { done <- build() }()
+	go func() {
+		v := build()
+		mu.Lock()
+		finished = true
+		if abandoned {
+			lagging.Add(-1)
+		}
+		mu.Unlock()
+		done <- v
+	}()
 	timer := time.NewTimer(budget)
 	defer timer.Stop()
 	select {
 	case v := <-done:
 		return v
 	case <-timer.C:
-		var zero T
+	}
+	mu.Lock()
+	if !finished {
+		abandoned = true
+		lagging.Add(1)
+	}
+	mu.Unlock()
+	select {
+	case v := <-done:
+		return v
+	default:
 		return zero
 	}
 }
