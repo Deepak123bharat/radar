@@ -128,7 +128,7 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 
 	addToolWithRegistry(paramRegistry, server, &mcp.Tool{
 		Name: "get_resource",
-		Description: "Use AFTER narrowing to one resource. Returns the resource's " +
+		Description: "After narrowing to one resource, returns " +
 			"Kubernetes-shaped spec/status/metadata plus resourceContext when available " +
 			"(relationships, refs, controller observations, issue/audit/policy rollups; " +
 			"use include=issues for bounded failures and diagnostic facts, or diagnose for a bundle; " +
@@ -138,12 +138,10 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"preserve uncertainty, including omissions. Matching does not establish enforcement. " +
 			"auditSummary.highestSeverity uses the Checks ladder " +
 			"(critical|high|medium|low; current built-ins high|medium), separate " +
-			"from issueSummary's operational critical|warning). Start with issues, " +
-			"get_dashboard, search, or list_resources; then get_resource for the exact object. " +
-			"For a string across " +
-			"ConfigMaps, CRD specs, env refs, or object content, use search instead of " +
-			"fetching resources one by one. Use the group parameter for ambiguous " +
-			"kinds such as Knative Service vs core Service. When recentChanges entries " +
+			"from issueSummary's operational critical|warning). Narrow with issues, " +
+			"get_dashboard, search or list_resources first. For content strings in ConfigMaps, " +
+			"CRDs or env refs, use search. Set group for colliding kinds " +
+			"(Knative Service vs core Service). When recentChanges entries " +
 			"carry `application_configuration_change: true`, it is a factual edit " +
 			"classification and narrow ranking hint, not a causal or universal relevance verdict.",
 		Annotations: readOnly,
