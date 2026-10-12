@@ -54,6 +54,8 @@ const failedSync: GitOpsIssue = {
   action: 'Open Activity for operation details.',
 }
 const causeAdvice = 'so Argo creates it on sync'
+const emptyRenderHazard = 'The current render is empty. A sync with Prune enabled would delete every managed resource. Check the source path, targetRevision, Helm values, and Kustomize or directory include/exclude settings first.'
+const emptyRenderReference = 'See the empty-render guard below before syncing.'
 
 describe('GitOpsIssuesBand failure card', () => {
   it('shows the failure’s next step after its cause', () => {
@@ -64,13 +66,38 @@ describe('GitOpsIssuesBand failure card', () => {
   })
 
   it('warns of a sync hazard before the cause’s own sync advice', () => {
-    const hazard = 'Do not sync yet: every managed resource requires pruning, so a sync with pruning would delete them all.'
+    const hazard = emptyRenderHazard
     const html = renderToString(<GitOpsIssuesBand issues={[{ ...failedSync, hazard }]} />)
     const at = html.indexOf(hazard)
     expect(at).toBeGreaterThan(-1)
     expect(at).toBeLessThan(html.indexOf(causeAdvice))
     expect(html.lastIndexOf(SEVERITY_BADGE.warning, at)).toBeGreaterThan(-1)
     expect(html).toContain(failedSync.action)
+    expect(html).not.toContain(emptyRenderReference)
+  })
+
+  it.each([false, true])('points to the empty-render guard in the issue band (terminating=%s)', (terminating) => {
+    const html = renderToString(<GitOpsIssuesBand issues={[{ ...failedSync, hazard: emptyRenderHazard }, guard]} terminating={terminating} />)
+    expect(html).toContain(emptyRenderReference)
+    expect(html).not.toContain(emptyRenderHazard)
+    expect(html).toContain(guard.message)
+    expect(html).toContain(guard.action)
+    expect(html.indexOf(emptyRenderReference)).toBeLessThan(html.indexOf(causeAdvice))
+  })
+
+  it('keeps the full hazard when the guard is behind a collapsed row', () => {
+    const comparisonError: GitOpsIssue = { severity: 'critical', scope: 'condition', reason: 'ComparisonError', message: 'Cannot render source.' }
+    const html = renderToString(<GitOpsIssuesBand issues={[{ ...failedSync, hazard: emptyRenderHazard }, comparisonError, guard]} />)
+    expect(html).toContain(emptyRenderHazard)
+    expect(html).not.toContain(emptyRenderReference)
+  })
+
+  it('keeps shared-ownership hazards unchanged', () => {
+    const hazard = 'Resolve shared ownership before syncing: some resources are also tracked by Application payments, and a sync would take them over.'
+    const shared: GitOpsIssue = { severity: 'warning', scope: 'condition', reason: 'SharedResourceWarning', message: 'Shared resource' }
+    const html = renderToString(<GitOpsIssuesBand issues={[{ ...failedSync, hazard }, shared]} />)
+    expect(html).toContain(hazard)
+    expect(html).not.toContain(emptyRenderReference)
   })
 
   it('shows a remote failure’s destination-cluster instruction', () => {

@@ -1125,7 +1125,7 @@ func TestDetectArgoAppProblems_ManualDriftAdviceRespectsSyncHazards(t *testing.T
 		{"shared resources", "also tracked by Application payments", func(app *unstructured.Unstructured) {
 			_ = unstructured.SetNestedSlice(app.Object, []any{map[string]any{"type": "SharedResourceWarning", "message": "Deployment/web is part of applications argocd/billing and payments"}}, "status", "conditions")
 		}},
-		{"empty render", "delete them all", func(app *unstructured.Unstructured) {
+		{"empty render", "The current render is empty. A sync with Prune enabled would delete every managed resource.", func(app *unstructured.Unstructured) {
 			_ = unstructured.SetNestedSlice(app.Object, argoPrunedResources(), "status", "resources")
 		}},
 	} {
@@ -1196,7 +1196,7 @@ func TestDetectArgoAppProblems_SyncHazardDisarmsRetryAdvice(t *testing.T) {
 		want            string
 	}{
 		{"failed namespace sync, then an empty render", `namespaces "demo" not found`, true,
-			[]any{map[string]any{"type": "SyncError", "message": "Skipping sync attempt to [new]: auto-sync will wipe out all resources"}}, "delete them all"},
+			[]any{map[string]any{"type": "SyncError", "message": "Skipping sync attempt to [new]: auto-sync will wipe out all resources"}}, "The current render is empty. A sync with Prune enabled would delete every managed resource."},
 		{"failed namespace sync with shared resources", `namespaces "demo" not found`, false, []any{shared}, "also tracked by Application payments"},
 		{"failed-attempt condition carrying the namespace fix, shared", "", false,
 			[]any{map[string]any{"type": "SyncError", "message": `Failed sync attempt to x: namespaces "demo" not found`}, shared}, "also tracked by Application payments"},

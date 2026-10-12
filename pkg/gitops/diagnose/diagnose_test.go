@@ -410,8 +410,8 @@ func TestArgoSyncHazardAction(t *testing.T) {
 		contains string
 	}{
 		{"plain drift", false, nil, ""},
-		{"empty render", true, nil, "delete them all"},
-		{"empty render outranks shared", true, shared, "delete them all"},
+		{"empty render", true, nil, "The current render is empty. A sync with Prune enabled would delete every managed resource."},
+		{"empty render outranks shared", true, shared, "The current render is empty. A sync with Prune enabled would delete every managed resource."},
 		{"shared", false, shared, "also tracked by Application live-shared-a"},
 		{"shared, owner unknown", false, []string{"unparseable"}, "also tracked by another Application"},
 	} {

@@ -292,7 +292,7 @@ func ArgoConditionAction(condType, appName string, messages []string) string {
 // resources over from another Application. Empty when neither applies.
 func ArgoSyncHazardAction(prunesEverything bool, sharedResourceMessages []string) string {
 	if prunesEverything {
-		return "Do not sync yet: every managed resource requires pruning, so a sync with pruning would delete them all. Check the source path, targetRevision, Helm values, and Kustomize or directory include/exclude settings for an unintended empty render, and sync only if removing everything is intended."
+		return "The current render is empty. A sync with Prune enabled would delete every managed resource. Check the source path, targetRevision, Helm values, and Kustomize or directory include/exclude settings first."
 	}
 	if len(sharedResourceMessages) == 0 {
 		return ""

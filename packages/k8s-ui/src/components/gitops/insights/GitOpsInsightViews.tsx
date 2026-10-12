@@ -354,7 +354,7 @@ export function GitOpsIssuesBand({
         <GitOpsHistoricalIssuesDisclosure operationFailure={operationFailure} others={others} onSelectIssue={onSelectIssue} onRemediate={onRemediate} remediationPending={remediationPending} />
       ) : (
         <>
-          {operationFailure && <GitOpsFailureCard issue={operationFailure} onSelect={onSelectIssue} onRemediate={onRemediate} remediationPending={remediationPending} />}
+          {operationFailure && <GitOpsFailureCard issue={operationFailure} emptyRenderGuardShown={others[0]?.reason === 'AutoSyncBlockedEmpty'} onSelect={onSelectIssue} onRemediate={onRemediate} remediationPending={remediationPending} />}
           {others.length > 0 && <GitOpsCompactIssueStack issues={others} onSelectIssue={onSelectIssue} />}
         </>
       )}
@@ -426,7 +426,7 @@ function GitOpsHistoricalIssuesDisclosure({
       </button>
       <Collapse open={expanded}>
         <div className="border-t border-theme-border">
-          {operationFailure && <GitOpsFailureCard issue={operationFailure} onSelect={onSelectIssue} onRemediate={onRemediate} remediationPending={remediationPending} />}
+          {operationFailure && <GitOpsFailureCard issue={operationFailure} emptyRenderGuardShown={others[0]?.reason === 'AutoSyncBlockedEmpty'} onSelect={onSelectIssue} onRemediate={onRemediate} remediationPending={remediationPending} />}
           {others.length > 0 && <GitOpsCompactIssueStack issues={others} onSelectIssue={onSelectIssue} />}
         </div>
       </Collapse>
@@ -440,11 +440,13 @@ function GitOpsHistoricalIssuesDisclosure({
 // error in a collapsed details.
 function GitOpsFailureCard({
   issue,
+  emptyRenderGuardShown,
   onSelect,
   onRemediate,
   remediationPending,
 }: {
   issue: GitOpsIssue
+  emptyRenderGuardShown: boolean
   onSelect?: (issue: GitOpsIssue) => void
   // onRemediate fires when the contextual fix button is clicked. The host
   // app (web/) dispatches on issue.remediation.kind to run the right
@@ -493,7 +495,7 @@ function GitOpsFailureCard({
           {issue.hazard && (
             <div className={clsx('mt-2 flex items-start gap-1.5 rounded border px-2 py-1.5 text-[12px] font-medium', SEVERITY_BADGE.warning)}>
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              <p className="min-w-0">{issue.hazard}</p>
+              <p className="min-w-0">{emptyRenderGuardShown ? 'See the empty-render guard below before syncing.' : issue.hazard}</p>
             </div>
           )}
           {body && <p className="mt-1 text-[13px] text-theme-text-secondary">{body}</p>}
