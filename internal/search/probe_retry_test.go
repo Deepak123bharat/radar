@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/skyhook-io/radar/pkg/k8score"
 	"github.com/skyhook-io/radar/pkg/readreason"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -223,6 +225,79 @@ func TestSearchExhaustedNamedKindRecovers(t *testing.T) {
 	res, err = Search(t.Context(), p, Parse("kind:Widget robusta"), opts)
 	if err != nil || res.Partial || !reflect.DeepEqual(hitNames(res), []string{"Widget//robusta"}) || dc.Observation(gvr).ProbeRetrying {
 		t.Fatalf("named search did not warm and recover: %+v err=%v", res, err)
+	}
+}
+
+func TestSearchExhaustedNamedKindSyncTimeoutRefreshesCoverage(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	objects := []runtime.Object{}
+	for _, ns := range []string{"a", "b"} {
+		objects = append(objects, &unstructured.Unstructured{Object: map[string]any{"apiVersion": "example.io/v1", "kind": "Widget", "metadata": map[string]any{"name": "robusta-" + ns, "namespace": ns}}})
+	}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "WidgetList"}, objects...)
+	var bAllowed atomic.Bool
+	releaseSync := make(chan struct{})
+	var releaseOnce sync.Once
+	dyn.PrependReactor("list", "widgets", func(action ktesting.Action) (bool, runtime.Object, error) {
+		if action.GetNamespace() == "" {
+			return true, nil, apierrors.NewForbidden(gvr.GroupResource(), "", fmt.Errorf("collector scope"))
+		}
+		if action.GetNamespace() == "b" {
+			if !bAllowed.Load() {
+				return true, nil, fmt.Errorf("client rate limiter Wait returned an error: rate: Wait(n=1) would exceed context deadline")
+			}
+			if action.(interface{ GetListOptions() metav1.ListOptions }).GetListOptions().Limit != 1 {
+				<-releaseSync
+			}
+		}
+		return false, nil, nil
+	})
+	discovery, err := k8score.NewResourceDiscovery(fake.NewClientset().Discovery())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dc, err := k8score.NewDynamicResourceCache(k8score.DynamicCacheConfig{DynamicClient: dyn, Discovery: discovery, NamespaceFallbacks: []string{"a", "b"}, ProbeRetryBackoff: []time.Duration{time.Millisecond}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(releaseSync) })
+		dc.Stop()
+	})
+	completeCRDDiscovery(t, dc)
+	discovery.AddAPIResource(k8score.APIResource{Group: gvr.Group, Version: gvr.Version, Name: gvr.Resource, Kind: "Widget", Namespaced: true, Verbs: []string{"get", "list", "watch"}})
+	if err := dc.EnsureWatching(gvr); err != nil || !dc.WaitForSync(gvr, time.Second) {
+		t.Fatalf("initial fallback sync: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for dc.Observation(gvr).ProbeRetrying && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if o := dc.Observation(gvr); o.ProbeRetrying || !reflect.DeepEqual(o.UnansweredNamespaces, []string{"b"}) {
+		t.Fatalf("retry did not exhaust: %+v", o)
+	}
+	p := &probeRetryProvider{&CacheProvider{dynamic: &k8s.DynamicResourceCache{DynamicResourceCache: dc}, discovery: &k8s.ResourceDiscovery{ResourceDiscovery: discovery}}}
+	skipTyped := map[string]bool{}
+	for _, kind := range typedKinds {
+		skipTyped[kind.Kind] = true
+	}
+	opts := Options{Include: IncludeNone, SkipKinds: skipTyped}
+	bAllowed.Store(true)
+	res, err := Search(t.Context(), p, Parse("kind:Widget robusta"), opts)
+	if o := dc.Observation(gvr); !dc.HasCoveringInformer(gvr, "b") || o.State != k8score.DynamicObservationSyncing || len(o.UnansweredNamespaces) != 0 {
+		t.Fatalf("access did not recover before sync timeout: %+v", o)
+	}
+	want := []UnsearchedKind{{Kind: "Widget", Group: gvr.Group, Reason: readreason.KindSyncPending}}
+	if err != nil || !res.Partial || !reflect.DeepEqual(res.Unsearched, want) || !reflect.DeepEqual(hitNames(res), []string{"Widget/a/robusta-a"}) {
+		t.Fatalf("sync timeout retained stale coverage or lost synced hits: %+v err=%v", res, err)
+	}
+	releaseOnce.Do(func() { close(releaseSync) })
+	if !dc.WaitForSync(gvr, time.Second) {
+		t.Fatal("recovered informer did not sync")
+	}
+	res, err = Search(t.Context(), p, Parse("kind:Widget robusta"), opts)
+	if err != nil || res.Partial || !reflect.DeepEqual(hitNames(res), []string{"Widget/a/robusta-a", "Widget/b/robusta-b"}) {
+		t.Fatalf("synced recovery retained a gap: %+v err=%v", res, err)
 	}
 }
 

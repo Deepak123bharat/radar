@@ -748,6 +748,65 @@ func TestProbeRetryPreservesPriorFullWalk(t *testing.T) {
 	}
 }
 
+func TestProbeRetrySingleFallbackCountsRemainUnavailable(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	for _, exhausted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("exhausted=%v", exhausted), func(t *testing.T) {
+			backoff, refused := time.Hour, 1
+			if exhausted {
+				backoff, refused = time.Millisecond, 2
+			}
+			d, err := NewDynamicResourceCache(DynamicCacheConfig{DynamicClient: rateLimitedLists(gvr, []string{"a", "c"}, map[string]int{"c": refused}), NamespaceFallbacks: []string{"a"}, ProbeRetryBackoff: []time.Duration{backoff}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(d.Stop)
+			if err := d.EnsureWatching(gvr); err != nil || !d.WaitForSync(gvr, time.Second) {
+				t.Fatalf("initial fallback sync: %v", err)
+			}
+			if n, err := d.Count(gvr, nil); err != nil || n != 0 {
+				t.Fatalf("initial count: %d, %v", n, err)
+			}
+			if err := d.EnsureWatchingContext(t.Context(), gvr, "c"); !IsClientRateLimited(err) {
+				t.Fatalf("explicit namespace probe: %v", err)
+			}
+			if exhausted {
+				d.mu.RLock()
+				done := d.probeRetries[gvr].done
+				d.mu.RUnlock()
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Fatal("retry did not exhaust")
+				}
+			}
+			if o := d.Observation(gvr); o.ProbeRetrying == exhausted || !slices.Equal(o.UnansweredNamespaces, []string{"c"}) {
+				t.Fatalf("missing unresolved scope: %+v", o)
+			}
+			_, countErr := d.Count(gvr, nil)
+			_, counted := d.CountWatched(nil)[gvr]
+			if countErr == nil || counted {
+				t.Fatalf("unanswered c accepted as authoritative: Count error=%v, CountWatched present=%v", countErr, counted)
+			}
+			if n, err := d.Count(gvr, []string{"a"}); err != nil || n != 0 {
+				t.Fatalf("answered namespace count unavailable: %d, %v", n, err)
+			}
+			if n, ok := d.CountWatched([]string{"a"})[gvr]; !ok || n != 0 {
+				t.Fatalf("answered namespace missing from watched counts: %d, %v", n, ok)
+			}
+			if err := d.EnsureWatchingContext(t.Context(), gvr, "c"); err != nil || !d.WaitForSync(gvr, time.Second) {
+				t.Fatalf("explicit scope did not recover: %v", err)
+			}
+			if n, err := d.Count(gvr, nil); err != nil || n != 0 {
+				t.Fatalf("recovered count unavailable: %d, %v", n, err)
+			}
+			if n, ok := d.CountWatched(nil)[gvr]; !ok || n != 0 {
+				t.Fatalf("recovered watched count unavailable: %d, %v", n, ok)
+			}
+		})
+	}
+}
+
 func TestProbeStartupQueueDoesNotConsumeWalkBudget(t *testing.T) {
 	const limit, kinds = 2, 12
 	gvrs := make([]schema.GroupVersionResource, kinds)

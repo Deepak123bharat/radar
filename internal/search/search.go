@@ -448,8 +448,11 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 			nsObservation := p.DynamicObservation(gvr, ns)
 			outsideScope := outside(ns, nsObservation)
 			if len(q.KindFilter) > 0 && !nsObservation.ProbeRetrying && (warm || outsideScope) {
-				if err := p.WarmDynamic(warmCtx, gvr, ns); err != nil {
-					reason := dynamicObservationReason(p.DynamicObservation(gvr, ns))
+				err := p.WarmDynamic(warmCtx, gvr, ns)
+				nsObservation = p.DynamicObservation(gvr, ns)
+				outsideScope = outside(ns, nsObservation)
+				if err != nil {
+					reason := dynamicObservationReason(nsObservation)
 					if reason == "" || reason == readreason.KindNotWatched {
 						reason = listErrorReason(err)
 					}
@@ -464,9 +467,6 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 					if ns != "" || !outsideScope {
 						continue
 					}
-				} else {
-					nsObservation = p.DynamicObservation(gvr, ns)
-					outsideScope = outside(ns, nsObservation)
 				}
 			}
 			if nsObservation.ProbeRetrying || len(nsObservation.UnansweredNamespaces) > 0 || nsObservation.ReasonCode == "scope_probe_incomplete" {

@@ -628,6 +628,9 @@ func probeUnanswered(err error) bool {
 // namespace requests must not have counts withheld waiting for an
 // all-namespaces read that their UI never issues. Caller must hold d.mu.
 func (d *DynamicResourceCache) fanoutSettledLocked(gvr schema.GroupVersionResource) bool {
+	if r := d.probeRetries[gvr]; r != nil && !r.settled() {
+		return false
+	}
 	if d.fallbackResolved[gvr] {
 		return true
 	}
