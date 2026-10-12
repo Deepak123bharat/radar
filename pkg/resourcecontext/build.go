@@ -324,7 +324,7 @@ func Build(ctx context.Context, obj runtime.Object, opts Options) *ResourceConte
 		rc.ServiceSummary = buildServiceSummary(ctx, svc, opts.ServiceBackends, opts.AccessChecker, omitted)
 	}
 	rc.Reflection = buildReflection(ctx, obj, opts.Reflections, opts.AccessChecker, omitted)
-	rc.ReferencedBy = buildReferencedBy(ctx, obj, opts.Provider, opts.AccessChecker, omitted)
+	rc.ReferencedBy = buildReferencedBy(ctx, obj, opts.Provider, rel, opts.AccessChecker, omitted)
 	if uses := buildUsesFromWorkload(ctx, obj, opts.AccessChecker, omitted); uses != nil {
 		rc.Uses = uses
 	}
@@ -580,7 +580,39 @@ const (
 	maxReferencedByPathsPerRef = 8
 )
 
-func buildReferencedBy(ctx context.Context, obj runtime.Object, provider topology.ResourceProvider, ac RefAccessChecker, omitted *omittedTracker) *ReferencedBy {
+func buildReferencedBy(ctx context.Context, obj runtime.Object, provider topology.ResourceProvider, rel *topology.Relationships, ac RefAccessChecker, omitted *omittedTracker) *ReferencedBy {
+	if node, ok := obj.(*corev1.Node); ok {
+		if rel != nil && rel.PodPlacementObserved {
+			if rel.PodPlacementUnavailable {
+				omitted.add("referencedBy", OmittedUnavailable)
+				return nil
+			}
+			var refs []ReferenceUse
+			for _, pod := range rel.Pods {
+				if pod.Kind == "Pod" && pod.Group == "" {
+					refs = append(refs, ReferenceUse{Kind: "Pod", Namespace: pod.Namespace, Name: pod.Name, Paths: []string{"spec.nodeName"}})
+				}
+			}
+			return filterReferenceUses(ctx, refs, ac, omitted)
+		}
+		if provider == nil {
+			omitted.add("referencedBy", OmittedUnavailable)
+			return nil
+		}
+		pods, err := provider.Pods()
+		if err != nil {
+			omitted.add("referencedBy", OmittedUnavailable)
+			return nil
+		}
+		var refs []ReferenceUse
+		for _, pod := range pods {
+			if pod == nil || pod.Spec.NodeName != node.Name || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+				continue
+			}
+			refs = append(refs, ReferenceUse{Kind: "Pod", Namespace: pod.Namespace, Name: pod.Name, Paths: []string{"spec.nodeName"}})
+		}
+		return filterReferenceUses(ctx, refs, ac, omitted)
+	}
 	if provider == nil {
 		return nil
 	}
@@ -679,6 +711,10 @@ func buildReferencedBy(ctx context.Context, obj runtime.Object, provider topolog
 		}
 	}
 
+	return filterReferenceUses(ctx, refs, ac, omitted)
+}
+
+func filterReferenceUses(ctx context.Context, refs []ReferenceUse, ac RefAccessChecker, omitted *omittedTracker) *ReferencedBy {
 	if len(refs) == 0 {
 		return nil
 	}
