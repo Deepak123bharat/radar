@@ -17,8 +17,9 @@ describe('searchCoverageNote', () => {
     expect(searchCoverageNote([entry('Secret', 'collector_access_denied')], named)?.text).toBe("Radar isn't allowed to read Secrets on this cluster.")
   })
 
-  it('flags a typo', () => {
+  it('flags a typo, unless API groups went undiscovered', () => {
     expect(searchCoverageNote([entry('Deploymnet', 'unknown_kind')], named)?.text).toBe('No kind named Deploymnet. Check the spelling.')
+    expect(searchCoverageNote([entry('Certificate', 'unknown_kind'), entry('*', 'read_error')], named)?.text).toBe("No kind named Certificate found, but some API groups couldn't be read.")
   })
 
   it('points an unsearchable kind at its list, as an action when the host can open it', () => {

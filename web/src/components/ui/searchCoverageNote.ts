@@ -46,7 +46,11 @@ export function searchCoverageNote(unsearched: SearchCoverageEntry[] | undefined
   }
   const unknown = named('unknown_kind')
   if (unknown.length) {
-    say(`No ${unknown.length === 1 ? 'kind' : 'kinds'} named ${joinNames(unknown, 'or')}. Check the spelling.`)
+    const noun = `No ${unknown.length === 1 ? 'kind' : 'kinds'} named ${joinNames(unknown, 'or')}`
+    // A read_error "*" without a count: some API groups failed discovery, so
+    // the kind may exist there.
+    const groupsUnread = unsearched.some((e) => e.kind === '*' && e.reason === 'read_error' && !e.count)
+    say(groupsUnread ? `${noun} found, but some API groups couldn't be read.` : `${noun}. Check the spelling.`)
   }
   const unsupported = unsearched.filter((e) => e.kind !== '*' && e.reason === 'collection_not_supported')
   if (unsupported.length) {

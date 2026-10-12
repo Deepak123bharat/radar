@@ -636,7 +636,7 @@ function OmnibarNoteRow({ note: { text, action }, onAction }: { note: OmnibarNot
       <span>
         {text}
         {action && (
-          <button type="button" onMouseDown={(e) => { e.preventDefault(); onAction(action) }} className="ml-1.5 text-[var(--color-brand)] hover:underline">
+          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => onAction(action)} className="ml-1.5 text-[var(--color-brand)] hover:underline">
             {action.label}
           </button>
         )}
