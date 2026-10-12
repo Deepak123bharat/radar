@@ -19,6 +19,9 @@ export interface SearchCoverageNoteOptions {
   hits?: { kind: string; group?: string }[]
   /** Re-querying a still-loading search ran out of budget. */
   pendingExhausted?: boolean
+  /** The caller can see every namespace (no auth), so a named namespace left
+   *  out for the caller's access can only be one that doesn't exist. */
+  seesAllNamespaces?: boolean
   /** Returns how to open a kind's resource list, or undefined when the host can't. */
   openKindList?: (kind: string, group: string) => (() => void) | undefined
 }
@@ -67,8 +70,9 @@ function failedKinds(entries: SearchCoverageEntry[], label: (e: SearchCoverageEn
   return { text: `${shown.join(', ')} and ${more} more ${more === 1 ? 'kind' : 'kinds'}`, one: false }
 }
 
-// Radar's ⌘K note for one search: what happened to the kinds the query named,
-// whether results are still loading, and which kinds failed to read. Access
+// Radar's ⌘K note for one search: what happened to the kinds and namespaces
+// the query named, whether results are still loading, and which kinds failed
+// to read. Access
 // and setup never come up on a broad search (Radar doesn't report them). An
 // older Radar sends no `unsearched`, and gets no note.
 export function searchCoverageNote(unsearched: SearchCoverageEntry[] | undefined, opts: SearchCoverageNoteOptions): OmnibarNote | undefined {
@@ -100,6 +104,22 @@ export function searchCoverageNote(unsearched: SearchCoverageEntry[] | undefined
     sentences.push(openList
       ? { text: `${what} can't be searched.`, action: { label: pointer, onSelect: openList } }
       : { text: `${what} can't be searched. ${pointer}` })
+  }
+  // Namespace entries name the namespaces an ns: term asked for that weren't
+  // searched; their reason says why.
+  const namespaces = (reasons: string[]) => [...new Set(unsearched.filter((e) => reasons.includes(e.reason)).flatMap((e) => e.namespaces ?? []))].sort()
+  const quoted = (list: string[]) => joinNames(list.map((ns) => `'${ns}'`), 'and')
+  const missing = namespaces(['namespace_excluded'])
+  if (missing.length) {
+    const one = missing.length === 1
+    say(opts.seesAllNamespaces
+      ? `${one ? 'Namespace' : 'Namespaces'} ${quoted(missing)} ${one ? "doesn't" : "don't"} exist on this cluster.`
+      : `${one ? 'Namespace' : 'Namespaces'} ${quoted(missing)} ${one ? "wasn't" : "weren't"} found in what you can see.`)
+  }
+  const outside = namespaces(['namespace_scope_limited', 'collector_scope_limited'])
+  if (outside.length) {
+    const one = outside.length === 1
+    say(`${one ? 'Namespace' : 'Namespaces'} ${quoted(outside)} ${one ? "wasn't" : "weren't"} searched: Radar here watches only some namespaces.`)
   }
   const denied = named('rbac_denied')
   if (denied.length) say(`Your access doesn't include all ${names(denied, 'or')}.`)

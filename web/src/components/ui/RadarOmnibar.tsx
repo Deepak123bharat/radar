@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useMemo, useState } from 'react'
 import { Omnibar, type OmnibarHandle } from './Omnibar'
-import { useSearch, useNamespaceScope, useContexts, type SearchHit, type SearchResult } from '../../api/client'
+import { useSearch, useNamespaceScope, useContexts, useCapabilities, type SearchHit, type SearchResult } from '../../api/client'
 import { useAPIResources } from '../../api/apiResources'
 import { loadRecentResources, recordRecentResource } from '../../hooks/useRecentResources'
 import { useCommandItems, type CommandItemCallbacks } from './command-items'
@@ -39,6 +39,7 @@ export const RadarOmnibar = forwardRef<OmnibarHandle, RadarOmnibarProps>(functio
   useEffect(() => { if (!open) setExhaustedQuery(null) }, [open])
 
   const { data: nsScope } = useNamespaceScope()
+  const { data: capabilities } = useCapabilities()
   const { data: apiResources } = useAPIResources()
   const { data: contexts } = useContexts()
   const contextKey = useMemo(() => contexts?.find((c) => c.isCurrent)?.name ?? '', [contexts])
@@ -53,6 +54,7 @@ export const RadarOmnibar = forwardRef<OmnibarHandle, RadarOmnibarProps>(functio
   const note = searchCoverageNote(searchData?.unsearched, {
     hits: searchData?.hits,
     pendingExhausted: exhaustedQuery === query,
+    seesAllNamespaces: capabilities?.authEnabled === false,
     openKindList: (kind, group) => {
       const resource = apiResources?.find((r) => r.kind === kind && r.group === group)
       return resource ? () => onNavigateKind(resource.name, resource.group) : undefined

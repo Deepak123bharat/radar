@@ -69,8 +69,15 @@ describe('searchCoverageNote', () => {
     )
   })
 
-  it('leaves namespaces and unknown reasons to other surfaces', () => {
-    expect(searchCoverageNote([{ kind: '*', group: '', reason: 'namespace_excluded', namespaces: ['payments'] }], {})).toBeUndefined()
+  it('says why a namespace the query named was not searched', () => {
+    const ns = (reason: string, namespaces: string[]) => ({ kind: '*', group: '', reason, namespaces })
+    expect(searchCoverageNote([ns('collector_scope_limited', ['rel-owner'])], {})?.text).toBe("Namespace 'rel-owner' wasn't searched: Radar here watches only some namespaces.")
+    expect(searchCoverageNote([ns('namespace_scope_limited', ['billing']), ns('collector_scope_limited', ['audit'])], {})?.text).toBe("Namespaces 'audit' and 'billing' weren't searched: Radar here watches only some namespaces.")
+    expect(searchCoverageNote([ns('namespace_excluded', ['payments-prd'])], { seesAllNamespaces: true })?.text).toBe("Namespace 'payments-prd' doesn't exist on this cluster.")
+    expect(searchCoverageNote([ns('namespace_excluded', ['payments-prd'])], {})?.text).toBe("Namespace 'payments-prd' wasn't found in what you can see.")
+  })
+
+  it('ignores reasons it does not know', () => {
     expect(searchCoverageNote([entry('Widget', 'reason_from_the_future')], {})).toBeUndefined()
   })
 

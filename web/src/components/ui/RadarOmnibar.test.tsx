@@ -13,6 +13,7 @@ vi.mock('../../api/client', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   useNamespaceScope: () => ({ data: undefined }),
   useContexts: () => ({ data: [] }),
+  useCapabilities: () => ({ data: undefined }),
 }))
 
 import { RadarOmnibar } from './RadarOmnibar'
