@@ -43,6 +43,11 @@ func TestGitOpsConditionsFixtureThroughIssues(t *testing.T) {
 	}
 	provider := &CacheProvider{dynamic: cache, discovery: k8s.GetResourceDiscovery()}
 	problems := provider.DetectGitOpsProblems([]string{app.GetNamespace()})
+	for _, problem := range problems {
+		if problem.Reason == "RepeatedResourceWarning" && problem.Severity != "info" {
+			t.Fatalf("repeated render must be info: %+v", problem)
+		}
+	}
 	p := &fakeProvider{
 		gitopsProblems: problems,
 		dynamic:        map[schema.GroupVersionResource][]*unstructured.Unstructured{gvr: {app}},
@@ -52,9 +57,17 @@ func TestGitOpsConditionsFixtureThroughIssues(t *testing.T) {
 	initialIDs := map[bool]map[string]string{}
 	for _, grouped := range []bool{false, true} {
 		initialIDs[grouped] = map[string]string{}
-		rows := Compose(p, Filters{Limit: NoLimit, Grouped: grouped})
-		if len(rows) != 4 {
-			t.Fatalf("grouped=%v: want 4 independent issues, got %+v", grouped, rows)
+		rows, stats := ComposeWithStats(p, Filters{Limit: NoLimit, Grouped: grouped})
+		response := NewListResponse(rows, stats)
+		if response.Total != 3 || response.TotalMatched != 3 {
+			t.Fatalf("repeated info must not count toward totals: %+v", response)
+		}
+		warnings, warningStats := ComposeWithStats(p, Filters{Limit: NoLimit, Grouped: grouped, Severities: []Severity{SeverityWarning}})
+		if len(warnings) != 2 || warningStats.TotalMatched != 2 {
+			t.Fatalf("want only shared/orphaned in warning totals: %+v, %+v", warnings, warningStats)
+		}
+		if len(rows) != 3 {
+			t.Fatalf("grouped=%v: want 3 operational issues, got %+v", grouped, rows)
 		}
 		seen := map[string]bool{}
 		for _, row := range rows {
@@ -68,10 +81,17 @@ func TestGitOpsConditionsFixtureThroughIssues(t *testing.T) {
 			}
 			switch row.Reason {
 			case "AutoSyncBlockedEmpty":
-				if row.Category != issuesapi.CategoryGitOpsSyncFailed || row.Severity != SeverityCritical || !strings.Contains(row.Action, "confirm") || row.RemediationKind != "" {
+				if row.ActionPrimary == "" || row.ActionSecondaryTitle != "If the empty render is intended" || len(row.ActionSecondary) != 2 || row.Action != row.ActionPrimary+" "+strings.Join(row.ActionSecondary, " ") {
+					t.Fatalf("lost split or complete guidance: %+v", row)
+				}
+				wire, err := json.Marshal(response)
+				if err != nil || !strings.Contains(string(wire), `"action_primary":`) || !strings.Contains(string(wire), `"action_secondary":`) || !strings.Contains(string(wire), "syncPolicy.automated.allowEmpty: true") {
+					t.Fatalf("API/MCP response must include all guidance: %s, %v", wire, err)
+				}
+				if row.Category != issuesapi.CategoryGitOpsSyncFailed || row.Severity != SeverityCritical || !strings.Contains(row.Action, "A sync with Prune enabled") || row.RemediationKind != "" {
 					t.Fatalf("lost safe blocked-auto-sync diagnosis: %+v", row)
 				}
-			case "SharedResourceWarning", "RepeatedResourceWarning", "OrphanedResourceWarning":
+			case "SharedResourceWarning", "OrphanedResourceWarning":
 				if row.Category != issuesapi.CategoryGitOpsResourceWarning || row.Severity != SeverityWarning || row.Action == "" {
 					t.Fatalf("lost warning: %+v", row)
 				}
@@ -84,6 +104,14 @@ func TestGitOpsConditionsFixtureThroughIssues(t *testing.T) {
 	detail := insights.Build(app, nil, nil)
 	if len(detail.Issues) != 4 {
 		t.Fatalf("detail must retain one condition row each, got %+v", detail.Issues)
+	}
+	for _, issue := range detail.Issues {
+		if issue.Reason == "RepeatedResourceWarning" && issue.Severity != insights.SeverityInfo {
+			t.Fatalf("detail must retain repeated as info: %+v", issue)
+		}
+		if issue.Reason == "AutoSyncBlockedEmpty" && (issue.ActionPrimary == "" || len(issue.ActionSecondary) != 2 || issue.Action != issue.ActionPrimary+" "+strings.Join(issue.ActionSecondary, " ")) {
+			t.Fatalf("detail insights lost complete guidance: %+v", issue)
+		}
 	}
 	current, err := client.Resource(gvr).Namespace(app.GetNamespace()).Get(t.Context(), app.GetName(), metav1.GetOptions{})
 	if err != nil {
@@ -120,7 +148,7 @@ func TestGitOpsConditionsFixtureThroughIssues(t *testing.T) {
 	}
 	for _, grouped := range []bool{false, true} {
 		rows := Compose(p, Filters{Limit: NoLimit, Grouped: grouped})
-		if len(rows) != 4 {
+		if len(rows) != 3 {
 			t.Fatalf("grouped=%v: warning explosion: %+v", grouped, rows)
 		}
 		for _, row := range rows {

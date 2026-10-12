@@ -1,4 +1,5 @@
 import { AlertTriangle, ArrowUpDown, ChevronDown, ChevronRight, ChevronUp, CircleAlert, Clock3, GitBranch, GitCommit, Info, Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { IssueGuidance } from '../../issues/IssueGuidance'
 import { PaneLoader } from '../../ui/PaneLoader'
 import { clsx } from 'clsx'
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
@@ -378,7 +379,7 @@ function GitOpsLifecycleBanner({ issue }: { issue: GitOpsIssue }) {
           </div>
           <p className="mt-1 text-[13px] text-theme-text-secondary">{issue.message}</p>
           {issue.cause && <p className="mt-1 text-[12px] text-orange-300/90">{issue.cause}</p>}
-          <IssueNextStep action={issue.action} className="mt-1" />
+          <IssueNextStep issue={issue} className="mt-1" />
         </div>
       </div>
     </div>
@@ -499,7 +500,7 @@ function GitOpsFailureCard({
             </div>
           )}
           {body && <p className="mt-1 text-[13px] text-theme-text-secondary">{body}</p>}
-          <IssueNextStep action={issue.action} className="mt-1" />
+          <IssueNextStep issue={issue} className="mt-1" />
           {ref && (
             <dl className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-[12px]">
               <div className="flex gap-1.5">
@@ -644,11 +645,13 @@ function GitOpsCompactIssueStack({ issues, onSelectIssue }: { issues: GitOpsIssu
           )}
           {canExpand && <CollapseChevron open={expanded} className="h-3.5 w-3.5" />}
         </div>
-        {headline.cause && (
-          <p className="truncate pl-[22px] text-[11px] text-theme-text-tertiary">{headline.cause}</p>
-        )}
-        <IssueNextStep action={headline.action} className="pl-[22px]" />
       </button>
+      {(headline.cause || headline.action) && (
+        <div className="px-4 pb-2 pl-[38px]">
+          {headline.cause && <p className="text-[11px] text-theme-text-tertiary">{headline.cause}</p>}
+          <IssueNextStep issue={headline} />
+        </div>
+      )}
       {canExpand && (
         <Collapse open={expanded}>
         <div className="divide-y divide-theme-border border-t border-theme-border bg-theme-base/40">
@@ -658,33 +661,34 @@ function GitOpsCompactIssueStack({ issues, onSelectIssue }: { issues: GitOpsIssu
             const actionable = !!(onSelectIssue && ref)
             const rawMessage = issue.rawMessage && issue.rawMessage !== issue.message ? issue.rawMessage : ''
             return (
-              <button
-                key={`${issue.reason}-${index}`}
-                type="button"
-                onClick={() => actionable && onSelectIssue?.(issue)}
-                disabled={!actionable}
-                className={clsx(
-                  'group flex w-full items-start gap-2 px-4 py-2 text-left text-xs transition-colors',
-                  actionable ? 'hover:bg-theme-hover/50' : 'cursor-default',
-                )}
-              >
-                {t.icon}
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className={clsx('font-semibold', t.text)}>{issue.reason}</span>
-                    <span className="text-[10px] uppercase tracking-wide text-theme-text-tertiary">{issue.scope}</span>
+              <div key={`${issue.reason}-${index}`}>
+                <button
+                  type="button"
+                  onClick={() => actionable && onSelectIssue?.(issue)}
+                  disabled={!actionable}
+                  className={clsx(
+                    'group flex w-full items-start gap-2 px-4 py-2 text-left text-xs transition-colors',
+                    actionable ? 'hover:bg-theme-hover/50' : 'cursor-default',
+                  )}
+                >
+                  {t.icon}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className={clsx('font-semibold', t.text)}>{issue.reason}</span>
+                      <span className="text-[10px] uppercase tracking-wide text-theme-text-tertiary">{issue.scope}</span>
+                    </div>
+                    <p className="mt-0.5 text-theme-text-secondary">{issue.message}</p>
+                    {issue.cause && <p className="mt-0.5 text-[11px] text-theme-text-tertiary">{issue.cause}</p>}
+                    {rawMessage && <p className="mt-0.5 break-words font-mono text-[11px] text-theme-text-tertiary">{rawMessage}</p>}
                   </div>
-                  <p className="mt-0.5 text-theme-text-secondary">{issue.message}</p>
-                  {issue.cause && <p className="mt-0.5 text-[11px] text-theme-text-tertiary">{issue.cause}</p>}
-                  {rawMessage && <p className="mt-0.5 break-words font-mono text-[11px] text-theme-text-tertiary">{rawMessage}</p>}
-                  <IssueNextStep action={issue.action} className="mt-0.5" />
-                </div>
-                {actionable && ref && (
-                  <span className="shrink-0 self-center text-[11px] font-medium text-theme-text-secondary opacity-70 transition-opacity group-hover:opacity-100">
-                    Open {refText(ref)} →
-                  </span>
-                )}
-              </button>
+                  {actionable && ref && (
+                    <span className="shrink-0 self-center text-[11px] font-medium text-theme-text-secondary opacity-70 transition-opacity group-hover:opacity-100">
+                      Open {refText(ref)} →
+                    </span>
+                  )}
+                </button>
+                <IssueNextStep issue={issue} className="px-4 pb-2 pl-[38px]" />
+              </div>
             )
           })}
         </div>
@@ -697,9 +701,8 @@ function GitOpsCompactIssueStack({ issues, onSelectIssue }: { issues: GitOpsIssu
 // IssueNextStep is an issue's next step, styled alike on every surface of the
 // band. Wrapped, never truncated: a next step often ends in the caveat that
 // makes it safe (what not to sync), which truncation would cut.
-function IssueNextStep({ action, className }: { action?: string; className?: string }) {
-  if (!action) return null
-  return <p className={clsx('text-[11px] text-theme-text-tertiary', className)}>{action}</p>
+function IssueNextStep({ issue, className }: { issue: GitOpsIssue; className?: string }) {
+  return <IssueGuidance action={issue.action} primary={issue.actionPrimary} secondaryTitle={issue.actionSecondaryTitle} secondary={issue.actionSecondary} className={clsx('text-[11px] text-theme-text-tertiary', className)} />
 }
 
 // firstSentence/remainderAfterFirstSentence split a string at the first

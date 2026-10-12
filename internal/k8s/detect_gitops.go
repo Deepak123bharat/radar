@@ -494,6 +494,9 @@ func applyArgoOperationDiagnosis(d *Detection, app *unstructured.Unstructured, m
 		d.Message = parsed.Summary
 	}
 	d.Action = parsed.Action
+	d.ActionPrimary = parsed.ActionPrimary
+	d.ActionSecondaryTitle = parsed.ActionSecondaryTitle
+	d.ActionSecondary = parsed.ActionSecondary
 	if !gitops.IsInClusterDestination(app) {
 		var remoteAction string
 		parsed, remoteAction = diagnose.WithoutLocalRemediation(parsed)

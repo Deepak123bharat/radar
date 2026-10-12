@@ -260,6 +260,8 @@ func TestSeverityForConditionType(t *testing.T) {
 		{"InvalidSpecError", "critical", true},
 		{"OrphanedResourceWarning", "warning", true},
 		{"SharedResourceWarning", "warning", true},
+		{"RepeatedResourceWarning", "info", true},
+		{"OtherWarning", "warning", true},
 		{"SomeUnrelatedInfo", "info", false},
 		{"", "info", false},
 	}
@@ -309,8 +311,14 @@ func TestParseArgoOperationError_EmptyAutoSync(t *testing.T) {
 	if got.Reason != ReasonAutoSyncBlockedEmpty || !strings.HasPrefix(got.Summary, "Auto-sync blocked") || strings.Contains(got.Summary, "abc123") {
 		t.Fatalf("summary must lead with the meaning: %+v", got)
 	}
-	if !strings.Contains(got.Action, "manual sync with pruning would delete every managed resource") {
+	if !strings.Contains(got.Action, "A sync with Prune enabled would delete every managed resource") {
 		t.Fatalf("guard advice must warn against a manual sync: %q", got.Action)
+	}
+	if got.ActionSecondaryTitle != "If the empty render is intended" || len(got.ActionSecondary) != 2 || got.Action != got.ActionPrimary+" "+strings.Join(got.ActionSecondary, " ") {
+		t.Fatalf("must retain complete guidance plus its presentation: %+v", got)
+	}
+	if !strings.Contains(got.ActionSecondary[0], "resources finalizer decides") || !strings.Contains(got.ActionSecondary[0], "ApplicationSet generator") || !strings.Contains(got.ActionSecondary[1], "syncPolicy.automated.allowEmpty: true") || !strings.Contains(got.ActionSecondary[1], "all future syncs") {
+		t.Fatalf("missing intended-render paths: %+v", got)
 	}
 	if got.RemediationKind != "" {
 		t.Fatalf("must not disable the empty-state guard: %+v", got)
@@ -332,11 +340,11 @@ func TestParseArgoOperationError_EmptyAutoSyncPrecision(t *testing.T) {
 
 func TestEmptyAutoSyncAdviceOrderAndSafety(t *testing.T) {
 	action := ParseArgoOperationError("Skipping sync attempt to [abc]: auto-sync will wipe out all resources").Action
-	source, removal, allow := strings.Index(action, "source path"), strings.Index(action, "delete this Application"), strings.Index(action, "allowEmpty: true")
+	source, removal, allow := strings.Index(action, "source path"), strings.Index(action, "delete the Application"), strings.Index(action, "allowEmpty: true")
 	if source < 0 || removal <= source || allow <= removal {
 		t.Fatalf("intent then likely causes then removal then allowEmpty: %s", action)
 	}
-	for _, required := range []string{"confirm intent", "targetRevision", "Helm values", "include/exclude", "resources finalizer", "remove it from the ApplicationSet generator", "all future syncs", "expected to render empty"} {
+	for _, required := range []string{"A sync with Prune enabled would delete every managed resource", "targetRevision", "Helm values", "include/exclude", "resources finalizer", "remove it from the ApplicationSet generator", "all future syncs", "If it should render empty"} {
 		if !strings.Contains(action, required) {
 			t.Errorf("missing %q: %s", required, action)
 		}

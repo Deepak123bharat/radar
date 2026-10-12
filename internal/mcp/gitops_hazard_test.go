@@ -54,7 +54,27 @@ func TestGitOpsEmptyRenderHazardRemainsSelfContainedInMCP(t *testing.T) {
 	if err := json.Unmarshal([]byte(extractText(t, result)), &response); err != nil {
 		t.Fatal(err)
 	}
+	if len(response.Issues) != 4 {
+		t.Fatalf("want operation, empty guard, shared and orphaned; info must be omitted: %+v", response.Issues)
+	}
+	foundOperation, foundGuard := false, false
 	for _, issue := range response.Issues {
+		switch issue.Reason {
+		case "RepeatedResourceWarning":
+			t.Fatalf("MCP operational issues must omit repeated-resource info: %+v", issue)
+		case "SharedResourceWarning", "OrphanedResourceWarning":
+			if issue.Severity != issues.SeverityWarning {
+				t.Fatalf("shared/orphaned must stay warning: %+v", issue)
+			}
+		case "AutoSyncBlockedEmpty":
+			foundGuard = true
+			if issue.ActionPrimary == "" || issue.ActionSecondaryTitle != "If the empty render is intended" || len(issue.ActionSecondary) != 2 || issue.Action != issue.ActionPrimary+" "+strings.Join(issue.ActionSecondary, " ") {
+				t.Fatalf("MCP must retain split and complete guard guidance: %+v", issue)
+			}
+			if !strings.Contains(issue.Action, "ApplicationSet generator") || !strings.Contains(issue.Action, "resources finalizer decides") || !strings.Contains(issue.Action, "syncPolicy.automated.allowEmpty: true") || !strings.Contains(issue.Action, "all future syncs") {
+				t.Fatalf("MCP must retain both intended-render paths: %+v", issue)
+			}
+		}
 		if issue.Reason != "OperationFailed" {
 			continue
 		}
@@ -62,7 +82,9 @@ func TestGitOpsEmptyRenderHazardRemainsSelfContainedInMCP(t *testing.T) {
 		if !strings.Contains(issue.Action, hazard) || !strings.Contains(issue.Action, "Check the source path") || issue.RemediationKind != "" {
 			t.Fatalf("MCP issue lost self-contained hazard guidance: %+v", issue)
 		}
-		return
+		foundOperation = true
 	}
-	t.Fatalf("MCP response omitted the failed operation: %+v", response.Issues)
+	if !foundOperation || !foundGuard {
+		t.Fatalf("MCP response omitted operation or guard: %+v", response.Issues)
+	}
 }

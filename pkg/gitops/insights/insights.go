@@ -168,6 +168,10 @@ type Issue struct {
 	RawMessage string   `json:"rawMessage,omitempty"`
 	Refs       []Ref    `json:"refs,omitempty"`
 	Action     string   `json:"action,omitempty"`
+	// Presentation fields split optional guidance; Action remains complete for all consumers.
+	ActionPrimary        string   `json:"actionPrimary,omitempty"`
+	ActionSecondaryTitle string   `json:"actionSecondaryTitle,omitempty"`
+	ActionSecondary      []string `json:"actionSecondary,omitempty"`
 	// Hazard, set on a failed operation, warns that syncing again is unsafe: it
 	// would prune every managed resource or take resources over from another
 	// Application. It is kept apart from Action because the failure's Cause can
@@ -552,16 +556,19 @@ func buildIssues(root *unstructured.Unstructured, resourceTree *gitopstree.Resou
 				}
 			}
 			issue := Issue{
-				Severity:    SeverityCritical,
-				Scope:       ScopeOperation,
-				Reason:      phase,
-				Message:     fallback(msg, "Last sync operation failed"),
-				RawMessage:  rawMsg,
-				Action:      action,
-				Cause:       parsed.Cause,
-				RetryCount:  parsed.RetryCount,
-				Stuck:       parsed.Stuck,
-				Remediation: remediationFromParsed(parsed),
+				Severity:             SeverityCritical,
+				Scope:                ScopeOperation,
+				Reason:               phase,
+				Message:              fallback(msg, "Last sync operation failed"),
+				RawMessage:           rawMsg,
+				Action:               action,
+				ActionPrimary:        parsed.ActionPrimary,
+				ActionSecondaryTitle: parsed.ActionSecondaryTitle,
+				ActionSecondary:      parsed.ActionSecondary,
+				Cause:                parsed.Cause,
+				RetryCount:           parsed.RetryCount,
+				Stuck:                parsed.Stuck,
+				Remediation:          remediationFromParsed(parsed),
 			}
 			// The one-click fix retries the sync, which would now prune
 			// everything or take over shared resources.
@@ -2151,6 +2158,8 @@ func argoApplicationConditions(root *unstructured.Unstructured) []Issue {
 			severity = SeverityWarning
 		}
 		cause := ""
+		actionPrimary, actionSecondaryTitle := "", ""
+		var actionSecondary []string
 		var remediation *Remediation
 		action := diagnose.ArgoConditionAction(typ, gitops.ArgoCLIName(root), []string{msg})
 		if typ == argoSyncErrorConditionType {
@@ -2173,6 +2182,7 @@ func argoApplicationConditions(root *unstructured.Unstructured) []Issue {
 				}
 			}
 			cause = parsed.Cause
+			actionPrimary, actionSecondaryTitle, actionSecondary = parsed.ActionPrimary, parsed.ActionSecondaryTitle, parsed.ActionSecondary
 			remediation = remediationFromParsed(parsed)
 			if parsed.Action != "" {
 				action = parsed.Action
@@ -2184,14 +2194,17 @@ func argoApplicationConditions(root *unstructured.Unstructured) []Issue {
 			}
 		}
 		out = append(out, Issue{
-			Remediation: remediation,
-			Severity:    severity,
-			Scope:       ScopeCondition,
-			Cause:       cause,
-			Reason:      fallback(typ, "Condition"),
-			Message:     fallback(msg, typ),
-			RawMessage:  rawMsg,
-			Action:      action,
+			Remediation:          remediation,
+			Severity:             severity,
+			Scope:                ScopeCondition,
+			Cause:                cause,
+			Reason:               fallback(typ, "Condition"),
+			Message:              fallback(msg, typ),
+			RawMessage:           rawMsg,
+			Action:               action,
+			ActionPrimary:        actionPrimary,
+			ActionSecondaryTitle: actionSecondaryTitle,
+			ActionSecondary:      actionSecondary,
 		})
 	}
 	return out

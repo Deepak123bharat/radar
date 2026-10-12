@@ -11,7 +11,7 @@ const guard: GitOpsIssue = {
   message: 'Auto-sync blocked: the rendered desired state is empty',
   rawMessage: 'Skipping sync attempt to [8088f4c]: auto-sync will wipe out all resources',
   cause: 'Argo CD refuses to auto-sync because syncing to an empty desired state would prune every managed resource.',
-  action: 'First confirm intent: a manual sync with pruning would delete every managed resource.',
+  action: 'A sync with Prune enabled would delete every managed resource.',
 }
 
 // The band's top row is the most severe issue. Its next step must be visible

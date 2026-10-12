@@ -960,7 +960,7 @@ func TestDetectArgoAppProblems_EmptyAutoSyncCondition(t *testing.T) {
 			if !strings.HasPrefix(d.Message, "Auto-sync blocked: the rendered desired state is empty") {
 				t.Errorf("message must lead with the meaning: %q", d.Message)
 			}
-			if !strings.Contains(d.Cause, "empty desired state") || !strings.Contains(d.Action, "confirm") || !strings.Contains(d.Action, "syncPolicy.automated.allowEmpty: true") || !strings.Contains(d.Action, "ApplicationSet") || !strings.Contains(d.Action, "source path") || strings.Contains(d.Action, "retry") {
+			if !strings.Contains(d.Cause, "empty desired state") || !strings.Contains(d.Action, "A sync with Prune enabled") || !strings.Contains(d.Action, "syncPolicy.automated.allowEmpty: true") || !strings.Contains(d.Action, "ApplicationSet") || !strings.Contains(d.Action, "source path") || strings.Contains(d.Action, "retry") {
 				t.Errorf("missing safe, specific advice: %+v", d)
 			}
 			if d.RemediationKind != "" || d.RemediationTarget != "" {
@@ -1006,7 +1006,11 @@ func TestDetectArgoAppProblems_ResourceWarnings(t *testing.T) {
 				if d.Reason == tc.primary {
 					continue
 				}
-				if d.Severity != "warning" || d.Action == "" || d.Message == "" {
+				wantSeverity := "warning"
+				if d.Reason == "RepeatedResourceWarning" {
+					wantSeverity = "info"
+				}
+				if d.Severity != wantSeverity || d.Action == "" || d.Message == "" {
 					t.Errorf("lost warning guidance: %+v", d)
 				}
 				if d.Reason == "SharedResourceWarning" && (!strings.Contains(d.Message, conditions[0].(map[string]any)["message"].(string)) || d.DurationSeconds != 180) {

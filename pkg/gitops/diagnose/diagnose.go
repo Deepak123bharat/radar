@@ -34,13 +34,16 @@ type ParsedFailure struct {
 	// Summary is a meaning-first headline for a diagnosis whose controller
 	// message leads with noise (a revision SHA). Callers that show it keep the
 	// original message as the raw error.
-	Summary      string
-	Action       string // operator guidance; empty when the caller should use its default next step
-	Cause        string // plain-English root cause; empty if unrecognized
-	AffectedKind string
-	AffectedName string
-	RetryCount   int
-	Stuck        bool
+	Summary              string
+	Action               string // complete operator guidance; empty when the caller should use its default next step
+	ActionPrimary        string
+	ActionSecondaryTitle string
+	ActionSecondary      []string
+	Cause                string // plain-English root cause; empty if unrecognized
+	AffectedKind         string
+	AffectedName         string
+	RetryCount           int
+	Stuck                bool
 	// RemediationKind is non-empty only for patterns with an unambiguous,
 	// safe one-click fix. Today the sole value is RemediationCreateNamespace
 	// ("create-namespace"), which must equal the insights/issues remediation
@@ -130,7 +133,13 @@ func ParseArgoOperationError(msg string) ParsedFailure {
 		out.Reason = ReasonAutoSyncBlockedEmpty
 		out.Summary = "Auto-sync blocked: the rendered desired state is empty"
 		out.Cause = "Argo CD refuses to auto-sync because syncing to an empty desired state would prune every managed resource."
-		out.Action = "First confirm intent: a manual sync with pruning would delete every managed resource. Check the source path, targetRevision, Helm values, and Kustomize or directory include/exclude settings for an unintended empty render. If this Application should be removed, delete this Application (its resources finalizer determines whether managed resources are pruned), or remove it from the ApplicationSet generator. Only if this Application is expected to render empty, set syncPolicy.automated.allowEmpty: true in the Application or its ApplicationSet template; this disables the empty-state guard for all future syncs."
+		out.ActionPrimary = "A sync with Prune enabled would delete every managed resource. Check the source path, targetRevision, Helm values, and Kustomize or directory include/exclude settings — an empty render is usually one of these."
+		out.ActionSecondaryTitle = "If the empty render is intended"
+		out.ActionSecondary = []string{
+			"If this Application should go away: delete the Application (its resources finalizer decides whether managed resources are pruned), or remove it from the ApplicationSet generator.",
+			"If it should render empty: set syncPolicy.automated.allowEmpty: true in the Application or its ApplicationSet template. This turns off the empty-render guard for all future syncs.",
+		}
+		out.Action = out.ActionPrimary + " " + strings.Join(out.ActionSecondary, " ")
 	}
 	for _, p := range argoErrorPatterns {
 		if out.Cause == "" && p.match.MatchString(msg) {
@@ -323,11 +332,14 @@ func IsArgoFailedAttemptCondition(message, operationMessage string) bool {
 // SeverityForConditionType maps an Argo Application status.conditions[].type to
 // a neutral severity token ("critical"|"warning"|"info"). Follows Argo's own
 // convention: types ending in "Error" are critical, "Warning" types are
-// warning, everything else is info. `recognized` is false for the info default
+// warning except RepeatedResourceWarning (an override can be intentional).
+// Everything else is info. `recognized` is false for the info default
 // so callers can elide unknown/empty condition types when they carry no
 // message.
 func SeverityForConditionType(condType string) (token string, recognized bool) {
 	switch {
+	case condType == "RepeatedResourceWarning":
+		return "info", true
 	case strings.HasSuffix(condType, "Error"):
 		return "critical", true
 	case strings.HasSuffix(condType, "Warning"):

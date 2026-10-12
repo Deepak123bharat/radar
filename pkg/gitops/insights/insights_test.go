@@ -1871,7 +1871,7 @@ func TestBuildIssuesArgoEmptyAutoSyncAdvice(t *testing.T) {
 			for _, d := range got {
 				if d.Reason == "AutoSyncBlockedEmpty" {
 					found = true
-					if d.Scope != ScopeCondition || !strings.Contains(d.Cause, "empty desired state") || !strings.Contains(d.Action, "confirm") || !strings.Contains(d.Action, "allowEmpty") || strings.Contains(d.Action, "retry") || d.Remediation != nil {
+					if d.Scope != ScopeCondition || !strings.Contains(d.Cause, "empty desired state") || !strings.Contains(d.Action, "A sync with Prune enabled") || !strings.Contains(d.Action, "allowEmpty") || strings.Contains(d.Action, "retry") || d.Remediation != nil {
 						t.Fatalf("expected condition-only safe advice, got %+v", d)
 					}
 					if !strings.HasPrefix(d.Message, "Auto-sync blocked") || d.RawMessage != message {
