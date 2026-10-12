@@ -64,9 +64,9 @@ export function validateRFC1123Label(input: string): ValidationResult {
 }
 
 /**
- * Validates a Kubernetes RFC 1123 subdomain (labels joined by dots).
- * Used for Helm chart names, image registries — anything that allows
- * dotted segments. NOT for pod/namespace names; use the label form.
+ * Matches Kubernetes IsDNS1123Subdomain: the whole name is capped at 253
+ * characters, without a separate 63-character cap on dot-separated parts.
+ * Namespace names use validateRFC1123Label instead.
  */
 export function validateRFC1123Subdomain(input: string): ValidationResult {
   if (input.length === 0) {
@@ -88,18 +88,6 @@ export function validateRFC1123Subdomain(input: string): ValidationResult {
     return {
       valid: false,
       error: 'must contain only lowercase letters, numbers, hyphens, and dots, and each segment must start/end with a letter or number',
-    }
-  }
-  // Per-label cap: K8s' IsDNS1123Subdomain enforces ≤ 63 chars
-  // PER dot-separated label on top of the 253-char total. The
-  // regex above doesn't catch that; without this check a single
-  // 200-char label passes here and only fails server-side.
-  for (const label of input.split('.')) {
-    if (label.length > RFC1123_LABEL_MAX) {
-      return {
-        valid: false,
-        error: `each dot-separated label must be at most ${RFC1123_LABEL_MAX} characters (got ${label.length} for "${label}")`,
-      }
     }
   }
   return { valid: true }
