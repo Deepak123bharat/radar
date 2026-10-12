@@ -2,8 +2,11 @@ package k8s
 
 import (
 	"fmt"
+
 	"sort"
 	"strings"
+
+	"github.com/skyhook-io/radar/pkg/resourceid"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -119,9 +122,13 @@ func CanonicalWorkloadKind(kind string) string {
 // that lister is unavailable the answer is ErrWorkloadAccessDenied rather
 // than a silently empty set.
 func workloadOwnershipTest(cache *ResourceCache, kind, namespace, name string, expectedUID types.UID) (func(*corev1.Pod) bool, error) {
+	expectedGroup := resourceid.GroupForBuiltinKind(kind)
+	if kind == "Rollout" || kind == "Workflow" {
+		expectedGroup = "argoproj.io"
+	}
 	direct := func(pod *corev1.Pod) bool {
 		owner := metav1.GetControllerOf(pod)
-		return owner != nil && owner.Kind == kind && owner.Name == name && (expectedUID == "" || (owner.UID == expectedUID && GroupFromAPIVersion(owner.APIVersion) == ownerGroup(kind)))
+		return owner != nil && owner.Kind == kind && owner.Name == name && (expectedUID == "" || (owner.UID == expectedUID && resourceid.GroupFromAPIVersion(owner.APIVersion) == expectedGroup))
 	}
 	switch kind {
 	case "Deployment", "Rollout":
@@ -138,11 +145,11 @@ func workloadOwnershipTest(cache *ResourceCache, kind, namespace, name string, e
 				return false
 			}
 			rs, err := rsLister.ReplicaSets(pod.Namespace).Get(owner.Name)
-			if err != nil || (expectedUID != "" && (owner.UID != rs.UID || GroupFromAPIVersion(owner.APIVersion) != "apps")) {
+			if err != nil || (expectedUID != "" && (owner.UID != rs.UID || resourceid.GroupFromAPIVersion(owner.APIVersion) != "apps")) {
 				return false
 			}
 			rsOwner := metav1.GetControllerOf(rs)
-			return rsOwner != nil && rsOwner.Kind == kind && rsOwner.Name == name && (expectedUID == "" || (rsOwner.UID == expectedUID && GroupFromAPIVersion(rsOwner.APIVersion) == ownerGroup(kind)))
+			return rsOwner != nil && rsOwner.Kind == kind && rsOwner.Name == name && (expectedUID == "" || (rsOwner.UID == expectedUID && resourceid.GroupFromAPIVersion(rsOwner.APIVersion) == expectedGroup))
 		}, nil
 	case "CronJob":
 		jobLister := cache.Jobs()
@@ -158,11 +165,11 @@ func workloadOwnershipTest(cache *ResourceCache, kind, namespace, name string, e
 				return false
 			}
 			job, err := jobLister.Jobs(pod.Namespace).Get(owner.Name)
-			if err != nil || (expectedUID != "" && (owner.UID != job.UID || GroupFromAPIVersion(owner.APIVersion) != "batch")) {
+			if err != nil || (expectedUID != "" && (owner.UID != job.UID || resourceid.GroupFromAPIVersion(owner.APIVersion) != "batch")) {
 				return false
 			}
 			jobOwner := metav1.GetControllerOf(job)
-			return jobOwner != nil && jobOwner.Kind == "CronJob" && jobOwner.Name == name && (expectedUID == "" || (jobOwner.UID == expectedUID && GroupFromAPIVersion(jobOwner.APIVersion) == "batch"))
+			return jobOwner != nil && jobOwner.Kind == "CronJob" && jobOwner.Name == name && (expectedUID == "" || (jobOwner.UID == expectedUID && resourceid.GroupFromAPIVersion(jobOwner.APIVersion) == "batch"))
 		}, nil
 	default:
 		return direct, nil
@@ -227,15 +234,4 @@ func DirectlyOwnedPods(cache *ResourceCache, namespace, name, group, kind string
 		}
 	}
 	return result, nil
-}
-
-func ownerGroup(kind string) string {
-	switch kind {
-	case "Rollout", "Workflow":
-		return "argoproj.io"
-	case "Job", "CronJob":
-		return "batch"
-	default:
-		return "apps"
-	}
 }
