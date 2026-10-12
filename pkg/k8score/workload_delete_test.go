@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
@@ -88,5 +89,22 @@ func TestForceDeleteSkipsTheFinalizerPatchWhenThereAreNone(t *testing.T) {
 
 	if err := NewWorkloadManager(client, discovery).DeleteResource(context.Background(), DeleteResourceOptions{Kind: "Pod", Namespace: "team", Name: "stuck", Force: true}); err != nil {
 		t.Fatalf("force delete of a Pod without finalizers failed on a rejected patch: %v", err)
+	}
+}
+
+func TestNormalDeleteAcceptsAsynchronousFinalization(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"}
+	obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "argoproj.io/v1alpha1", "kind": "Application", "metadata": map[string]any{"name": "app", "namespace": "gitops", "finalizers": []any{"resources-finalizer.argocd.argoproj.io"}}}}
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "ApplicationList"}, obj)
+	client.PrependReactor("delete", "applications", func(action k8stesting.Action) (bool, runtime.Object, error) { return true, nil, nil })
+	discovery := &ResourceDiscovery{resourceMap: make(map[string]APIResource), gvrMap: make(map[string]schema.GroupVersionResource)}
+	discovery.AddAPIResource(APIResource{Group: gvr.Group, Version: gvr.Version, Kind: "Application", Name: gvr.Resource, Namespaced: true, Verbs: []string{"get", "delete"}})
+	client.PrependReactor("get", "applications", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		held := obj.DeepCopy()
+		held.SetDeletionTimestamp(&metav1.Time{Time: time.Now()})
+		return true, held, nil
+	})
+	if err := NewWorkloadManager(client, discovery).DeleteResource(context.Background(), DeleteResourceOptions{Group: gvr.Group, Kind: "Application", Namespace: "gitops", Name: "app"}); err != nil {
+		t.Fatalf("accepted deletion returned an error: %v", err)
 	}
 }

@@ -648,18 +648,6 @@ func (m *WorkloadManager) DeleteResource(ctx context.Context, opts DeleteResourc
 		return fmt.Errorf("failed to delete resource: %w", err)
 	}
 
-	if !opts.Force {
-		var obj *unstructured.Unstructured
-		if opts.Namespace != "" {
-			obj, _ = m.dynClient.Resource(gvr).Namespace(opts.Namespace).Get(ctx, opts.Name, metav1.GetOptions{})
-		} else {
-			obj, _ = m.dynClient.Resource(gvr).Get(ctx, opts.Name, metav1.GetOptions{})
-		}
-		if obj != nil && obj.GetDeletionTimestamp() != nil && len(obj.GetFinalizers()) > 0 {
-			return fmt.Errorf("resource is stuck in Terminating state due to finalizers — use force delete to remove it")
-		}
-	}
-
 	return nil
 }
 

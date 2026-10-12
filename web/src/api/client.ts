@@ -4379,7 +4379,7 @@ export function useDeleteResource() {
     },
     meta: {
       errorMessage: "Failed to delete resource",
-      successMessage: "Resource deleted",
+      successMessage: "Deletion requested",
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({
