@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -129,5 +130,31 @@ func TestUnansweredWalkIsNotADenial(t *testing.T) {
 	}
 	if got := d.Observation(gvr); got.State != DynamicObservationDeferred || got.ReasonCode != "scope_probe_incomplete" {
 		t.Fatalf("unanswered walk observation = %+v", got)
+	}
+}
+
+// A probe still in flight when the walk's budget runs out answers nothing,
+// even if it comes back Forbidden: with another candidate unanswered, the walk
+// is incomplete, not a denial.
+func TestWalkOutOfTimeIsNotADenial(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "WidgetList"})
+	dyn.PrependReactor("list", "widgets", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		switch action.GetNamespace() {
+		case "team-a":
+			return true, nil, errClientRateLimited
+		case "team-slow":
+			time.Sleep(7 * time.Second) // past the two-candidate walk budget
+		}
+		return true, nil, apierrors.NewForbidden(gvr.GroupResource(), "", errors.New("denied"))
+	})
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{DynamicClient: dyn, NamespaceFallbacks: []string{"team-a", "team-slow"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.Stop)
+	scopes, complete, err := d.probeScopes(gvr, "")
+	if len(scopes) != 0 || complete || err == nil || apierrors.IsForbidden(err) {
+		t.Fatalf("scopes=%v complete=%v err=%v; want an incomplete walk that is not a denial", scopes, complete, err)
 	}
 }

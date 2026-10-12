@@ -685,9 +685,10 @@ func (d *DynamicResourceCache) probeScopes(gvr schema.GroupVersionResource, pref
 		nsCancel()
 		switch {
 		case ctx.Err() != nil:
-			// The probe ran into the shared deadline. Treat the walk as
-			// incomplete so it retries on the next read.
-			complete, unanswered = false, probeErr
+			// The probe ran into the shared deadline, so whatever it returned
+			// is no answer. Treat the walk as incomplete so it retries on the
+			// next read.
+			complete, unanswered = false, ctx.Err()
 			return false, probeErr
 		case IsClientRateLimited(probeErr):
 		case probeUnanswered(probeErr):
