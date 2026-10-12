@@ -1077,12 +1077,14 @@ function costRefetchInterval(
   };
 }
 
-export function useOpenCostSummary(enabled = true) {
+export function useOpenCostSummary(enabled = true, namespaces: string[] = []) {
   const clusterInfo = useClusterInfo();
+  const params =
+    namespaces.length > 0 ? `?namespaces=${namespaces.join(",")}` : "";
   return useQuery<OpenCostSummary>({
-    queryKey: ["opencost-summary"],
+    queryKey: ["opencost-summary", namespaces],
     enabled,
-    queryFn: () => fetchJSON("/opencost/summary"),
+    queryFn: () => fetchJSON(`/opencost/summary${params}`),
     refetchInterval: costRefetchInterval(
       COST_REFRESH_INTERVAL_MS,
       clusterInfo.data?.context,
