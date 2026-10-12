@@ -510,12 +510,13 @@ reference permissions independently. Monitoring uses `monitors` and
 policies use `stagedPolicies` rather than `selectedBy`. Cluster API Clusters
 expose their `healthChecks`; a MachineHealthCheck's Cluster is a dependency.
 
-A policy's `protects` context is a deterministic sample of up to 50 candidate
-workload references. Each candidate is permission-checked, so denied entries
-can leave a smaller sample. When candidates exceed that budget, the existing
-`omitted` entry `{field: "protects", reason: "budget_exceeded"}` records that
-more targets may exist. No pre-authorization total is exposed. Resource drawers
-retain the full visible relationship list; this bound applies to agent context.
+A policy's `protects` context contains up to 50 authorized workload references,
+in deterministic order. Evaluation checks at most 50 distinct API group/kind/
+namespace scopes; repeated targets in an already-checked scope reuse that result.
+If either budget leaves targets unexamined, the existing `omitted` entry
+`{field: "protects", reason: "budget_exceeded"}` records that more targets may
+exist. No pre-authorization total is exposed. Resource drawers retain the full
+visible relationship list; these bounds apply to agent context.
 
 ### Write Tools
 

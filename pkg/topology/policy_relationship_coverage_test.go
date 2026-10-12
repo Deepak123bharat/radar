@@ -227,3 +227,16 @@ func TestPolicyProtectsUsesVisibleCachedTargetsWithoutEdges(t *testing.T) {
 		})
 	}
 }
+
+func TestManagementProjectionSkipsBroadPolicyTargets(t *testing.T) {
+	graph := &Topology{Nodes: []Node{
+		{ID: "networkpolicy/app/all", Kind: KindNetworkPolicy, Name: "all", Data: map[string]any{"namespace": "app", "apiVersion": "networking.k8s.io/v1", "matchesAllPods": true}},
+		{ID: "deployment/app/web", Kind: KindDeployment, Name: "web", Data: map[string]any{"namespace": "app", "apiVersion": "apps/v1"}},
+		{ID: "kustomization/app/config", Kind: KindKustomization, Name: "config", Data: map[string]any{"namespace": "app", "apiVersion": "kustomize.toolkit.fluxcd.io/v1"}},
+	}, Edges: []Edge{{Source: "kustomization/app/config", Target: "networkpolicy/app/all", Type: EdgeManages}}}
+	full := GetRelationships("NetworkPolicy", "app", "all", graph, nil, nil)
+	summary := GetManagementRelationshipsWithObject("NetworkPolicy", "app", "all", nil, graph, nil, nil, IndexByResource(graph))
+	if full == nil || summary == nil || len(full.Protects) != 1 || len(summary.Protects) != 0 || summary.Owner == nil || *summary.Owner != *full.Owner {
+		t.Fatalf("management projection diverged: full=%+v summary=%+v", full, summary)
+	}
+}

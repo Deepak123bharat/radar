@@ -336,6 +336,20 @@ func GetRelationshipsWithIndex(kind, namespace, name string, topo *Topology, pro
 // obj is nil, behavior matches the pre-refactor path: lookupObjectMetadata
 // is called, with the group-collision risk noted above.
 func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Topology, provider ResourceProvider, dp DynamicProvider, idx *RelationshipsIndex) *Relationships {
+	return getRelationshipsWithObject(kind, namespace, name, obj, topo, provider, dp, idx, true)
+}
+
+// GetManagementRelationshipsWithObject serves summary rows without expanding
+// policy target lists that summaries do not consume.
+func GetManagementRelationshipsWithObject(kind, namespace, name string, obj any, topo *Topology, provider ResourceProvider, dp DynamicProvider, idx *RelationshipsIndex) *Relationships {
+	rel := getRelationshipsWithObject(kind, namespace, name, obj, topo, provider, dp, idx, false)
+	if rel == nil {
+		return nil
+	}
+	return &Relationships{Owner: rel.Owner, ManagedBy: rel.ManagedBy}
+}
+
+func getRelationshipsWithObject(kind, namespace, name string, obj any, topo *Topology, provider ResourceProvider, dp DynamicProvider, idx *RelationshipsIndex, includePolicyTargets bool) *Relationships {
 	if topo == nil {
 		return nil
 	}
@@ -567,7 +581,7 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 		}
 	}
 
-	if policy := nodeByID[nodeID]; policy != nil {
+	if policy := nodeByID[nodeID]; includePolicyTargets && policy != nil {
 		var targets []*Node
 		if policy.Data["matchesAllPods"] == true && (policy.Kind == KindNetworkPolicy && nodeGroup(policy) == "networking.k8s.io" ||
 			(policy.Kind == KindCiliumNetworkPolicy || policy.Kind == KindCiliumClusterwideNetworkPolicy) && nodeGroup(policy) == "cilium.io") {

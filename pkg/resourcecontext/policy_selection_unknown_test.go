@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
+	"testing"
+
 	"github.com/skyhook-io/radar/pkg/topology"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"strings"
-	"testing"
 )
 
 func TestPolicySelectionUncertaintyReachesAgentContext(t *testing.T) {
@@ -70,22 +72,22 @@ func (c *policyTargetCheckCounter) CanRead(ctx context.Context, group, kind, nam
 	return c.allow
 }
 
-func TestPolicyTargetContextBoundsCandidatesAndPreservesUncertainty(t *testing.T) {
+func TestPolicyTargetContextBoundsDistinctScopesAndPreservesUncertainty(t *testing.T) {
 	for _, allow := range []bool{false, true} {
 		t.Run(fmt.Sprint(allow), func(t *testing.T) {
-			refs := make([]topology.ResourceRef, 0, maxPolicyTargetCandidates+10)
-			for i := maxPolicyTargetCandidates + 9; i >= 0; i-- {
+			refs := make([]topology.ResourceRef, 0, maxPolicyTargetScopes+10)
+			for i := maxPolicyTargetScopes + 9; i >= 0; i-- {
 				refs = append(refs, topology.ResourceRef{Kind: "Deployment", Group: "apps", Namespace: fmt.Sprintf("ns-%03d", i), Name: "web"})
 			}
 			counter := &policyTargetCheckCounter{allow: allow}
 			obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": map[string]any{"name": "all", "namespace": "app"}}}
 			rc := Build(context.Background(), obj, Options{Relationships: &topology.Relationships{Protects: refs}, AccessChecker: counter})
-			if counter.calls != maxPolicyTargetCandidates {
+			if counter.calls != maxPolicyTargetScopes {
 				t.Fatalf("permission checks=%d", counter.calls)
 			}
 			want := 0
 			if allow {
-				want = maxPolicyTargetCandidates
+				want = maxPolicyTargetRefs
 			}
 			if len(rc.Protects) != want {
 				t.Fatalf("targets=%d want=%d", len(rc.Protects), want)
@@ -104,6 +106,54 @@ func TestPolicyTargetContextBoundsCandidatesAndPreservesUncertainty(t *testing.T
 			}
 			if refs[0].Namespace != "ns-059" {
 				t.Fatal("mutated shared relationship input")
+			}
+		})
+	}
+}
+
+type namespaceTargetCheckCounter struct {
+	calls     int
+	namespace string
+}
+
+func (c *namespaceTargetCheckCounter) CanRead(ctx context.Context, group, kind, namespace string) bool {
+	c.calls++
+	return namespace == c.namespace
+}
+
+func TestPolicyTargetContextDoesNotSpendBudgetOnRepeatedDeniedScope(t *testing.T) {
+	refs := []topology.ResourceRef{{Kind: "Deployment", Group: "apps", Namespace: "payments", Name: "web"}}
+	for i := 0; i < 100; i++ {
+		refs = append(refs, topology.ResourceRef{Kind: "DaemonSet", Group: "apps", Namespace: "infra", Name: fmt.Sprint(i)})
+	}
+	counter := &namespaceTargetCheckCounter{namespace: "payments"}
+	obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "cilium.io/v2", "kind": "CiliumClusterwideNetworkPolicy", "metadata": map[string]any{"name": "all"}}}
+	rc := Build(context.Background(), obj, Options{Relationships: &topology.Relationships{Protects: refs}, AccessChecker: counter})
+	if counter.calls != 2 || len(rc.Protects) != 1 || rc.Protects[0].Namespace != "payments" {
+		t.Fatalf("denied prefix hid authorized targets: checks=%d context=%+v", counter.calls, rc)
+	}
+	for _, omission := range rc.Omitted {
+		if omission.Field == "protects" && omission.Reason == OmittedBudgetExceeded {
+			t.Fatal("complete scoped evaluation marked truncated")
+		}
+	}
+}
+
+func TestPolicyTargetContextOutputBudgetWithinOneAuthorizedScope(t *testing.T) {
+	for _, count := range []int{maxPolicyTargetRefs, maxPolicyTargetRefs + 1} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			refs := make([]topology.ResourceRef, count)
+			for i := range refs {
+				refs[i] = topology.ResourceRef{Group: "apps", Kind: "Deployment", Namespace: "app", Name: fmt.Sprintf("web-%03d", i)}
+			}
+			counter := &policyTargetCheckCounter{allow: true}
+			obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": map[string]any{"name": "all", "namespace": "app"}}}
+			rc := Build(context.Background(), obj, Options{Relationships: &topology.Relationships{Protects: refs}, AccessChecker: counter})
+			if len(rc.Protects) != maxPolicyTargetRefs || counter.calls != 1 {
+				t.Fatalf("output or scope bound wrong: targets=%d checks=%d", len(rc.Protects), counter.calls)
+			}
+			if slices.Contains(rc.Omitted, OmittedField{Field: "protects", Reason: OmittedBudgetExceeded}) != (count > maxPolicyTargetRefs) {
+				t.Fatalf("exact-limit completeness wrong: count=%d omitted=%+v", count, rc.Omitted)
 			}
 		})
 	}

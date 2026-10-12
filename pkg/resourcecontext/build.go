@@ -258,14 +258,30 @@ func Build(ctx context.Context, obj runtime.Object, opts Options) *ResourceConte
 			toContextRefs(selected),
 			"selectedBy", omitted)
 
-		// Bound candidates before authorization so a mostly-denied broad policy
-		// cannot force an unbounded number of permission checks.
 		policyTargets := toContextRefs(rel.Protects)
-		if len(policyTargets) > maxPolicyTargetCandidates {
-			policyTargets = policyTargets[:maxPolicyTargetCandidates]
-			omitted.add("protects", OmittedBudgetExceeded)
+		type targetScope struct{ group, kind, namespace string }
+		allowedScopes := map[targetScope]bool{}
+		for _, target := range policyTargets {
+			if len(rc.Protects) == maxPolicyTargetRefs {
+				omitted.add("protects", OmittedBudgetExceeded)
+				break
+			}
+			scope := targetScope{target.Group, target.Kind, target.Namespace}
+			allowed, checked := allowedScopes[scope]
+			if !checked {
+				if len(allowedScopes) == maxPolicyTargetScopes {
+					omitted.add("protects", OmittedBudgetExceeded)
+					break
+				}
+				allowed = checkRef(ctx, opts.AccessChecker, &target)
+				allowedScopes[scope] = allowed
+			}
+			if !allowed {
+				omitted.add("protects", OmittedRBACDenied)
+				continue
+			}
+			rc.Protects = append(rc.Protects, target)
 		}
-		rc.Protects = filterRefs(ctx, opts.AccessChecker, policyTargets, "protects", omitted)
 		rc.HealthChecks = filterRefs(ctx, opts.AccessChecker, toContextRefs(rel.HealthChecks), "healthChecks", omitted)
 		rc.StagedPolicies = filterRefs(ctx, opts.AccessChecker, toContextRefs(rel.StagedPolicies), "stagedPolicies", omitted)
 		rc.Monitors = filterRefs(ctx, opts.AccessChecker, toContextRefs(rel.Monitors), "monitors", omitted)
@@ -584,7 +600,8 @@ func buildUsesFromWorkload(ctx context.Context, obj runtime.Object, ac RefAccess
 }
 
 const (
-	maxPolicyTargetCandidates  = 50
+	maxPolicyTargetRefs        = 50
+	maxPolicyTargetScopes      = 50
 	maxReferencedByItems       = 20
 	maxReferencedByPathsPerRef = 8
 )
