@@ -367,12 +367,6 @@ func TestDeferredKindsSeparateSetupFromFailure(t *testing.T) {
 				t.Fatalf("broad: %+v warmed=%v", res.Unsearched, p.warmed)
 			}
 			res, _ = Search(context.Background(), p, Parse("kind:Widget"), Options{})
-			if tc.code == "scope_probe_incomplete" {
-				if !res.Partial || len(p.warmed) != 0 || !reflect.DeepEqual(reasonsOf(res), []string{"read_error"}) {
-					t.Fatalf("unanswered probe was warmed by search: %+v warmed=%v", res.Unsearched, p.warmed)
-				}
-				return
-			}
 			if res.Partial || len(p.warmed) != 1 {
 				t.Fatalf("named kind was not warmed: %+v warmed=%v", res.Unsearched, p.warmed)
 			}

@@ -320,7 +320,7 @@ type DynamicResourceObservation struct {
 	Truncated  bool                    `json:"truncated,omitempty"`  // Incomplete namespace probing, beyond intentional scope limits.
 	ObservedAt *time.Time              `json:"observedAt,omitempty"` // Age of a retained probe decision, not resource freshness.
 	// These probe fields are cache/search bookkeeping, not HTTP observation fields.
-	// UnansweredNamespaces are fallback candidates whose access check got no
+	// UnansweredNamespaces are namespaces whose access check got no
 	// answer (rate-limited or out of time): neither watched nor known to be
 	// outside Radar's access.
 	UnansweredNamespaces []string `json:"-"`

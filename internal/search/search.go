@@ -394,7 +394,7 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		// A kind: term warms a kind Radar isn't watching, including one whose
 		// deferred probe or watch start failed, instead of reporting it.
 		probeGap := observation.ProbeRetrying || len(observation.UnansweredNamespaces) > 0 || observation.ReasonCode == "scope_probe_incomplete"
-		warm := !probeGap && len(q.KindFilter) > 0 && (reason == readreason.KindNotWatched || observation.State == k8score.DynamicObservationDeferred)
+		warm := !observation.ProbeRetrying && len(q.KindFilter) > 0 && (probeGap || reason == readreason.KindNotWatched || observation.State == k8score.DynamicObservationDeferred)
 		// Namespace informers sync independently, so while one is still
 		// loading the others can answer: their readiness is judged per
 		// namespace below.
@@ -447,17 +447,7 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		for _, ns := range namespaces {
 			nsObservation := p.DynamicObservation(gvr, ns)
 			outsideScope := outside(ns, nsObservation)
-			if nsObservation.ProbeRetrying || len(nsObservation.UnansweredNamespaces) > 0 || nsObservation.ReasonCode == "scope_probe_incomplete" {
-				cov.kind(kind, gvr.Group, dynamicObservationReason(nsObservation))
-				if ns != "" || !outsideScope {
-					continue
-				}
-				for _, watchedNS := range nsObservation.Namespaces {
-					read(watchedNS, p.DynamicObservation(gvr, watchedNS))
-				}
-				continue
-			}
-			if len(q.KindFilter) > 0 && (warm || outsideScope) {
+			if len(q.KindFilter) > 0 && !nsObservation.ProbeRetrying && (warm || outsideScope) {
 				if err := p.WarmDynamic(warmCtx, gvr, ns); err != nil {
 					reason := dynamicObservationReason(p.DynamicObservation(gvr, ns))
 					if reason == "" || reason == readreason.KindNotWatched {
@@ -478,6 +468,16 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 					nsObservation = p.DynamicObservation(gvr, ns)
 					outsideScope = outside(ns, nsObservation)
 				}
+			}
+			if nsObservation.ProbeRetrying || len(nsObservation.UnansweredNamespaces) > 0 || nsObservation.ReasonCode == "scope_probe_incomplete" {
+				cov.kind(kind, gvr.Group, dynamicObservationReason(nsObservation))
+				if ns != "" || !outsideScope {
+					continue
+				}
+				for _, watchedNS := range nsObservation.Namespaces {
+					read(watchedNS, p.DynamicObservation(gvr, watchedNS))
+				}
+				continue
 			}
 			if !outsideScope {
 				read(ns, nsObservation)

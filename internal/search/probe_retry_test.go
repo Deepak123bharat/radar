@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -60,8 +61,12 @@ func TestSearchProbeRetryCoverage(t *testing.T) {
 			if tc.reason != "" {
 				want = capNamed("Widget", 8, 7, 7, tc.reason)
 			}
-			if !reflect.DeepEqual(res.Unsearched, want) || len(p.warmed) > 0 {
-				t.Fatalf("named: %+v warm=%v want=%+v", res, p.warmed, want)
+			wantWarm := 0
+			if tc.reason == readreason.ReadError {
+				want, wantWarm = []UnsearchedKind{}, 1
+			}
+			if !reflect.DeepEqual(res.Unsearched, want) || len(p.warmed) != wantWarm {
+				t.Fatalf("named: %+v warm=%v want=%+v wantWarm=%d", res, p.warmed, want, wantWarm)
 			}
 			res, _ = Search(context.Background(), p, Parse("robusta"), Options{CanReadClusterScoped: func(string, string, string) (bool, bool) { return false, true }})
 			if res.Partial {
@@ -166,5 +171,124 @@ func TestSearchProbeRetryForbiddenBecomesCollectorScope(t *testing.T) {
 		if !reflect.DeepEqual(res.Unsearched, tc.want) || res.Partial != (len(tc.want) > 0) {
 			t.Fatalf("%s: %+v want %+v", tc.query, res, tc.want)
 		}
+	}
+}
+
+func TestSearchExhaustedNamedKindRecovers(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	var allowed atomic.Bool
+	var lists atomic.Int32
+	obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "example.io/v1", "kind": "Widget", "metadata": map[string]any{"name": "robusta"}}}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "WidgetList"}, obj)
+	dyn.PrependReactor("list", "widgets", func(ktesting.Action) (bool, runtime.Object, error) {
+		lists.Add(1)
+		if !allowed.Load() {
+			return true, nil, fmt.Errorf("client rate limiter Wait returned an error: rate: Wait(n=1) would exceed context deadline")
+		}
+		return false, nil, nil
+	})
+	discovery, err := k8score.NewResourceDiscovery(fake.NewClientset().Discovery())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dc, err := k8score.NewDynamicResourceCache(k8score.DynamicCacheConfig{DynamicClient: dyn, Discovery: discovery, ProbeRetryBackoff: []time.Duration{time.Millisecond}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(dc.Stop)
+	completeCRDDiscovery(t, dc)
+	discovery.AddAPIResource(k8score.APIResource{Group: gvr.Group, Version: gvr.Version, Name: gvr.Resource, Kind: "Widget", Namespaced: false, Verbs: []string{"get", "list", "watch"}})
+	if err := dc.EnsureWatching(gvr); !k8score.IsClientRateLimited(err) {
+		t.Fatalf("initial walk: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for dc.Observation(gvr).ProbeRetrying && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if o := dc.Observation(gvr); o.ProbeRetrying || o.ReasonCode != "scope_probe_incomplete" {
+		t.Fatalf("retry did not exhaust: %+v", o)
+	}
+	p := &probeRetryProvider{&CacheProvider{dynamic: &k8s.DynamicResourceCache{DynamicResourceCache: dc}, discovery: &k8s.ResourceDiscovery{ResourceDiscovery: discovery}}}
+	skipTyped := map[string]bool{}
+	for _, kind := range typedKinds {
+		skipTyped[kind.Kind] = true
+	}
+	opts := Options{Include: IncludeNone, SkipKinds: skipTyped}
+	before := lists.Load()
+	allowed.Store(true)
+	res, err := Search(t.Context(), p, Parse("robusta"), opts)
+	if err != nil || !res.Partial || lists.Load() != before || !reflect.DeepEqual(res.Unsearched, []UnsearchedKind{{Kind: "Widget", Group: gvr.Group, Reason: readreason.ReadError}}) {
+		t.Fatalf("broad search warmed or lost the exhausted error: %+v err=%v lists=%d", res, err, lists.Load())
+	}
+	res, err = Search(t.Context(), p, Parse("kind:Widget robusta"), opts)
+	if err != nil || res.Partial || !reflect.DeepEqual(hitNames(res), []string{"Widget//robusta"}) || dc.Observation(gvr).ProbeRetrying {
+		t.Fatalf("named search did not warm and recover: %+v err=%v", res, err)
+	}
+}
+
+func TestSearchExplicitNamespaceRetryScope(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	objects := []runtime.Object{}
+	for _, ns := range []string{"a", "b"} {
+		objects = append(objects, &unstructured.Unstructured{Object: map[string]any{"apiVersion": "example.io/v1", "kind": "Widget", "metadata": map[string]any{"name": "robusta-" + ns, "namespace": ns}}})
+	}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "WidgetList"}, objects...)
+	var bRefused = true
+	var aAllowed atomic.Bool
+	dyn.PrependReactor("list", "widgets", func(action ktesting.Action) (bool, runtime.Object, error) {
+		if action.GetNamespace() == "" {
+			return true, nil, apierrors.NewForbidden(gvr.GroupResource(), "", fmt.Errorf("collector scope"))
+		}
+		if action.GetNamespace() == "b" && bRefused {
+			bRefused = false
+			return true, nil, fmt.Errorf("client rate limiter Wait returned an error: rate: Wait(n=1) would exceed context deadline")
+		}
+		if action.GetNamespace() == "a" && !aAllowed.Load() {
+			return true, nil, fmt.Errorf("client rate limiter Wait returned an error: rate: Wait(n=1) would exceed context deadline")
+		}
+		return false, nil, nil
+	})
+	discovery, err := k8score.NewResourceDiscovery(fake.NewClientset().Discovery())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dc, err := k8score.NewDynamicResourceCache(k8score.DynamicCacheConfig{DynamicClient: dyn, Discovery: discovery, NamespaceFallbacks: []string{"a", "b"}, ProbeRetryBackoff: []time.Duration{time.Millisecond, 300 * time.Millisecond}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(dc.Stop)
+	completeCRDDiscovery(t, dc)
+	discovery.AddAPIResource(k8score.APIResource{Group: gvr.Group, Version: gvr.Version, Name: gvr.Resource, Kind: "Widget", Namespaced: true, Verbs: []string{"get", "list", "watch"}})
+	if err := dc.EnsureWatchingContext(t.Context(), gvr, "b"); !k8score.IsClientRateLimited(err) {
+		t.Fatalf("initial explicit read: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for !dc.HasCoveringInformer(gvr, "b") && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !dc.HasCoveringInformer(gvr, "b") || !dc.WaitForSync(gvr, time.Second) {
+		t.Fatal("b did not recover")
+	}
+	p := &probeRetryProvider{&CacheProvider{dynamic: &k8s.DynamicResourceCache{DynamicResourceCache: dc}, discovery: &k8s.ResourceDiscovery{ResourceDiscovery: discovery}}}
+	skipTyped := map[string]bool{}
+	for _, kind := range typedKinds {
+		skipTyped[kind.Kind] = true
+	}
+	opts := Options{Include: IncludeNone, SkipKinds: skipTyped}
+	res, err := Search(t.Context(), p, Parse("robusta"), opts)
+	if err != nil || !res.Partial || !reflect.DeepEqual(hitNames(res), []string{"Widget/b/robusta-b"}) {
+		t.Fatalf("scope settled while a remained unwatched: %+v err=%v", res, err)
+	}
+	aAllowed.Store(true)
+	deadline = time.Now().Add(time.Second)
+	for dc.Observation(gvr).ProbeRetrying && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !dc.HasCoveringInformer(gvr, "a") || !dc.WaitForSync(gvr, time.Second) {
+		t.Fatal("a did not eventually recover")
+	}
+	res, err = Search(t.Context(), p, Parse("robusta"), opts)
+	if err != nil || res.Partial || !reflect.DeepEqual(hitNames(res), []string{"Widget/a/robusta-a", "Widget/b/robusta-b"}) {
+		t.Fatalf("full scope did not recover: %+v err=%v", res, err)
 	}
 }

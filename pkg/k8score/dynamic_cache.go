@@ -75,6 +75,7 @@ type DynamicResourceCache struct {
 	// probeRetries tracks access checks that got no answer, which the cache
 	// re-runs itself on a bounded schedule. Guarded by mu.
 	probeRetries    map[schema.GroupVersionResource]*probeRetry
+	probeSlots      chan struct{}
 	probeCtx        context.Context
 	stopProbes      context.CancelFunc
 	stopCh          chan struct{} // global shutdown; parent of every per-informer context
@@ -134,6 +135,7 @@ func NewDynamicResourceCache(cfg DynamicCacheConfig) (*DynamicResourceCache, err
 		fanoutIncomplete: make(map[schema.GroupVersionResource]bool),
 		probeRetries:     make(map[schema.GroupVersionResource]*probeRetry),
 		probeCtx:         probeCtx,
+		probeSlots:       make(chan struct{}, 50),
 		stopProbes:       stopProbes,
 		informers:        make(map[informerKey]*informerEntry),
 		stopCh:           make(chan struct{}),
@@ -229,8 +231,8 @@ func (d *DynamicResourceCache) observation(gvr schema.GroupVersionResource, name
 			}
 		}
 		observation.UnansweredNamespaces = slices.Clone(r.unanswered)
-		observation.ProbeRetrying = r.running && (r.whole || len(r.unanswered) > 0)
-		if r.whole && !observation.ProbeRetrying {
+		observation.ProbeRetrying = r.running && !r.settled()
+		if (r.whole || namespace == "" && !r.fullWalk) && !observation.ProbeRetrying {
 			observation.ReasonCode = "scope_probe_incomplete"
 		}
 	}()
@@ -409,8 +411,9 @@ func (d *DynamicResourceCache) EnsureWatchingContext(ctx context.Context, gvr sc
 		if preferredNS == "" {
 			d.mu.RLock()
 			r := d.probeRetries[gvr]
+			retrying := r != nil && r.running
 			d.mu.RUnlock()
-			if r != nil {
+			if retrying {
 				if len(d.readEntries(gvr, "")) > 0 {
 					return nil, nil
 				}
@@ -422,13 +425,7 @@ func (d *DynamicResourceCache) EnsureWatchingContext(ctx context.Context, gvr sc
 		}
 		o := d.walkScopes(gvr, preferredNS)
 		scopes, complete, err := o.scopes, o.complete, o.err
-		if preferredNS == "" || !complete {
-			defer d.noteWalk(gvr, o)
-		} else if len(scopes) > 0 && scopes[0] == "" {
-			defer d.noteAnswered(gvr, "")
-		} else {
-			defer d.noteAnswered(gvr, preferredNS)
-		}
+		defer d.noteWalk(gvr, o)
 		if err != nil {
 			if isAuthProbeError(err) {
 				d.retainDeniedObservation(gvr, preferredNS, complete)
@@ -437,23 +434,12 @@ func (d *DynamicResourceCache) EnsureWatchingContext(ctx context.Context, gvr sc
 			}
 			return nil, fmt.Errorf("no access to %s.%s/%s: %w", gvr.Resource, gvr.Group, gvr.Version, err)
 		}
-		if preferredNS == "" {
-			d.mu.Lock()
-			d.fanoutIncomplete[gvr] = !complete
-			d.mu.Unlock()
-		}
 		for _, scopeNS := range scopes {
 			if err := d.startWatching(gvr, scopeNS); err != nil {
 				truncated := preferredNS == "" && len(scopes) > 0 && scopes[0] != "" && (!complete || d.config.NamespaceFallbacksTruncated)
 				d.retainObservation(gvr, DynamicObservationDeferred, "watch_start_failed", truncated)
 				return nil, err
 			}
-		}
-		if preferredNS == "" && complete {
-			// A settled fallback scope serves subsequent reads without re-probing.
-			d.mu.Lock()
-			d.fallbackResolved[gvr] = true
-			d.mu.Unlock()
 		}
 		return nil, nil
 	})
@@ -681,10 +667,13 @@ type probeOutcome struct {
 	scopes    []string
 	complete  bool
 	err       error
-	// unanswered are fallback candidates whose check got no answer; whole
+	// unanswered are namespaces whose check got no answer; whole
 	// means the cluster-wide check itself got none, so no candidate was tried.
-	unanswered []string
-	whole      bool
+	unanswered      []string
+	whole           bool
+	fullWalk        bool
+	clusterAnswered bool
+	answered        []string
 }
 
 func (d *DynamicResourceCache) walkScopes(gvr schema.GroupVersionResource, preferredNS string) probeOutcome {
@@ -692,14 +681,37 @@ func (d *DynamicResourceCache) walkScopes(gvr schema.GroupVersionResource, prefe
 }
 
 func (d *DynamicResourceCache) walkScopesContext(parent context.Context, gvr schema.GroupVersionResource, preferredNS string) (outcome probeOutcome) {
+	select {
+	case d.probeSlots <- struct{}{}:
+		defer func() { <-d.probeSlots }()
+	case <-parent.Done():
+		return probeOutcome{startedAt: time.Now(), whole: true, err: parent.Err()}
+	}
 	startedAt := time.Now()
-	defer func() { outcome.startedAt = startedAt }()
+	clusterAnswered := false
+	defer func() {
+		outcome.startedAt = startedAt
+		outcome.clusterAnswered = clusterAnswered
+		outcome.fullWalk = outcome.fullWalk || preferredNS == "" || d.config.NamespaceScoped
+	}()
 	// The budget covers the cluster-wide probe plus the whole candidate walk;
 	// scale it with the candidate count so a 20-namespace fanout isn't judged
 	// by a budget sized for the single-fallback case, while staying bounded
 	// for the synchronous read paths that call ensureWatching.
+	fallbacks := slices.Clone(d.fallbackNamespaces())
+	if preferredNS == "" {
+		d.mu.RLock()
+		if r := d.probeRetries[gvr]; r != nil {
+			for _, ns := range r.unanswered {
+				if !slices.Contains(fallbacks, ns) {
+					fallbacks = append(fallbacks, ns)
+				}
+			}
+		}
+		d.mu.RUnlock()
+	}
 	budget := 5 * time.Second
-	if n := len(d.fallbackNamespaces()); n > 1 {
+	if n := len(fallbacks); n > 1 {
 		budget = min(5*time.Second+time.Duration(n)*500*time.Millisecond, 15*time.Second)
 	}
 	ctx, cancel := context.WithTimeout(parent, budget)
@@ -715,31 +727,33 @@ func (d *DynamicResourceCache) walkScopesContext(parent context.Context, gvr sch
 			return probeOutcome{unanswered: []string{d.config.Namespace}, err: err}
 		}
 		if err != nil {
-			return probeOutcome{complete: true, err: err}
+			return probeOutcome{complete: true, answered: []string{d.config.Namespace}, err: err}
 		}
-		return probeOutcome{scopes: []string{ns}, complete: true}
+		return probeOutcome{scopes: []string{ns}, answered: []string{ns}, complete: true}
 	}
 
 	// Cluster-wide first — one informer then serves every namespace.
 	err := d.listProbe(ctx, gvr, "")
 	if probeUnanswered(err) {
+		var unanswered []string
 		if preferredNS != "" {
-			return probeOutcome{unanswered: []string{preferredNS}, err: fmt.Errorf("%w: %w", errScopeProbeIncomplete, err)}
+			unanswered = []string{preferredNS}
 		}
-		return probeOutcome{whole: true, err: fmt.Errorf("%w: %w", errScopeProbeIncomplete, err)}
+		return probeOutcome{whole: true, unanswered: unanswered, err: fmt.Errorf("%w: %w", errScopeProbeIncomplete, err)}
 	}
+	clusterAnswered = true
 	if err == nil {
-		return probeOutcome{scopes: []string{""}, complete: true}
+		return probeOutcome{scopes: []string{""}, complete: true, fullWalk: true, answered: []string{""}}
 	}
 	if !isAuthProbeError(err) {
 		// Transient/NotFound on proxy-fronted clusters — fail open to a
 		// cluster-wide informer rather than disabling the kind; real
 		// problems surface when the informer lists.
 		log.Printf("[dynamic cache] Cluster-wide probe for %s.%s/%s returned non-auth error (allowing): %v", gvr.Resource, gvr.Group, gvr.Version, err)
-		return probeOutcome{scopes: []string{""}, complete: true}
+		return probeOutcome{scopes: []string{""}, complete: true, fullWalk: true, answered: []string{""}}
 	}
 	if !d.gvrIsNamespaced(gvr) {
-		return probeOutcome{complete: true, err: err} // cluster-scoped resource, no namespace to fall back to
+		return probeOutcome{complete: true, fullWalk: true, err: err} // cluster-scoped resource, no namespace to fall back to
 	}
 
 	if preferredNS != "" {
@@ -748,12 +762,11 @@ func (d *DynamicResourceCache) walkScopesContext(parent context.Context, gvr sch
 			return probeOutcome{unanswered: []string{preferredNS}, err: err}
 		}
 		if err != nil {
-			return probeOutcome{complete: true, err: err}
+			return probeOutcome{complete: true, answered: []string{preferredNS}, err: err}
 		}
-		return probeOutcome{scopes: []string{ns}, complete: true}
+		return probeOutcome{scopes: []string{ns}, answered: []string{ns}, complete: true}
 	}
 
-	fallbacks := d.fallbackNamespaces()
 	if len(fallbacks) == 0 {
 		return probeOutcome{complete: true, err: err}
 	}
@@ -820,29 +833,37 @@ func (d *DynamicResourceCache) walkScopesContext(parent context.Context, gvr sch
 			complete, unanswered = false, probeErr
 		}
 	}
-	var silent []string
+	var silent, answeredNamespaces []string
 	for _, ns := range fallbacks {
 		if !answered[ns] {
 			silent = append(silent, ns)
+		} else {
+			answeredNamespaces = append(answeredNamespaces, ns)
 		}
 	}
 	if len(granted) == 0 {
 		if !complete {
 			// Not every candidate answered, so this is not a denial.
-			return probeOutcome{unanswered: silent, err: fmt.Errorf("%w: %w", errScopeProbeIncomplete, cmp.Or(unanswered, ctx.Err(), err))}
+			return probeOutcome{unanswered: silent, answered: answeredNamespaces, err: fmt.Errorf("%w: %w", errScopeProbeIncomplete, cmp.Or(unanswered, ctx.Err(), err))}
 		}
-		return probeOutcome{complete: true, err: err} // original cluster-wide forbidden — no candidate granted
+		return probeOutcome{complete: true, answered: answeredNamespaces, err: err} // original cluster-wide forbidden — no candidate granted
 	}
-	return probeOutcome{scopes: granted, complete: complete, unanswered: silent}
+	return probeOutcome{scopes: granted, complete: complete, unanswered: silent, answered: answeredNamespaces}
 }
 
 type probeRetry struct {
 	unanswered []string
 	whole      bool
+	fullWalk   bool
 	running    bool
-	answered   map[string]bool
+	answered   map[string]time.Time
+	deadline   time.Time
 	cancel     context.CancelFunc
 	done       chan struct{}
+}
+
+func (r *probeRetry) settled() bool {
+	return r.fullWalk && !r.whole && len(r.unanswered) == 0
 }
 
 const probeRetryBudget = 30 * time.Second
@@ -852,48 +873,72 @@ var defaultProbeRetryBackoff = []time.Duration{time.Second, 2 * time.Second, 4 *
 func (d *DynamicResourceCache) noteWalk(gvr schema.GroupVersionResource, o probeOutcome) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if r := d.probeRetries[gvr]; r != nil {
-		if o.complete && len(o.scopes) > 0 && o.scopes[0] == "" {
-			r.unanswered, r.whole = nil, false
-			r.cancel()
-		}
-		if !r.whole && len(r.unanswered) == 0 {
-			d.settleProbeLocked(gvr)
-		} else {
-			d.fanoutIncomplete[gvr] = true
-		}
+	if d.stopped {
 		return
 	}
-	if d.stopped || len(o.unanswered) == 0 && !o.whole {
-		return
+	r := d.probeRetries[gvr]
+	if r == nil {
+		if len(o.unanswered) == 0 && !o.whole {
+			if o.fullWalk && len(o.scopes) > 0 {
+				d.fallbackResolved[gvr] = true
+				d.fanoutIncomplete[gvr] = false
+			}
+			return
+		}
+		r = &probeRetry{running: true, fullWalk: d.fallbackResolved[gvr], answered: map[string]time.Time{}, deadline: o.startedAt.Add(probeRetryBudget), done: make(chan struct{})}
+		ctx, cancel := context.WithDeadline(d.probeCtx, r.deadline)
+		r.cancel = cancel
+		d.probeRetries[gvr] = r
+		go d.retryUnanswered(ctx, gvr, r)
 	}
-	ctx, cancel := context.WithDeadline(d.probeCtx, o.startedAt.Add(probeRetryBudget))
-	r := &probeRetry{unanswered: slices.Clone(o.unanswered), whole: o.whole, running: true, answered: map[string]bool{}, cancel: cancel, done: make(chan struct{})}
-	// A namespace read can finish while the initial walk is still in flight.
+	for _, ns := range o.answered {
+		r.answered[ns] = time.Now()
+		r.unanswered = slices.DeleteFunc(r.unanswered, func(n string) bool { return n == ns })
+	}
+	for _, ns := range o.unanswered {
+		// An answer that arrived during this walk supersedes its stale gap.
+		if !r.answered[ns].After(o.startedAt) && !slices.Contains(r.unanswered, ns) {
+			r.unanswered = append(r.unanswered, ns)
+		}
+	}
+	if o.clusterAnswered {
+		r.answered[""] = time.Now()
+		r.whole = false
+	}
+	if o.fullWalk && !o.whole {
+		r.fullWalk, r.whole = true, false
+	} else if o.whole && !r.answered[""].After(o.startedAt) {
+		r.whole = true
+	}
 	for key := range d.informers {
 		if key.gvr == gvr {
 			if key.ns == "" {
-				r.unanswered, r.whole = nil, false
+				r.unanswered, r.whole, r.fullWalk = nil, false, true
 			} else {
 				r.unanswered = slices.DeleteFunc(r.unanswered, func(ns string) bool { return ns == key.ns })
 			}
 		}
 	}
-	d.probeRetries[gvr] = r
-	go d.retryUnanswered(ctx, gvr, r)
+	if r.settled() {
+		r.cancel()
+		d.settleProbeLocked(gvr)
+	} else {
+		d.fallbackResolved[gvr] = false
+		d.fanoutIncomplete[gvr] = true
+	}
 }
 
 func (d *DynamicResourceCache) noteAnswered(gvr schema.GroupVersionResource, ns string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if r := d.probeRetries[gvr]; r != nil {
-		r.answered[ns] = true
+		r.answered[ns] = time.Now()
 		if ns == "" {
-			r.unanswered, r.whole = nil, false
+			r.unanswered, r.whole, r.fullWalk = nil, false, true
 		} else {
 			r.unanswered = slices.DeleteFunc(r.unanswered, func(n string) bool { return n == ns })
 		}
-		if !r.whole && len(r.unanswered) == 0 {
+		if r.settled() {
 			r.cancel()
 			d.settleProbeLocked(gvr)
 		}
@@ -905,7 +950,7 @@ func (d *DynamicResourceCache) retryUnanswered(ctx context.Context, gvr schema.G
 		r.cancel()
 		d.mu.Lock()
 		r.running = false
-		if !r.whole && len(r.unanswered) == 0 {
+		if r.settled() {
 			d.settleProbeLocked(gvr)
 		}
 		close(r.done)
@@ -924,12 +969,13 @@ func (d *DynamicResourceCache) retryUnanswered(ctx context.Context, gvr schema.G
 		case <-timer.C:
 		}
 		d.mu.RLock()
-		pending, whole := slices.Clone(r.unanswered), r.whole
+		pending, whole, fullWalk := slices.Clone(r.unanswered), r.whole, r.fullWalk
+		settled := r.settled()
 		d.mu.RUnlock()
-		if !whole && len(pending) == 0 {
+		if settled {
 			return
 		}
-		if whole {
+		if whole || !fullWalk {
 			o := d.walkScopesContext(ctx, gvr, "")
 			if ctx.Err() != nil {
 				return
@@ -942,13 +988,7 @@ func (d *DynamicResourceCache) retryUnanswered(ctx context.Context, gvr schema.G
 			if isAuthProbeError(o.err) && o.complete {
 				d.retainDeniedObservation(gvr, "", true)
 			}
-			d.mu.Lock()
-			r.whole = o.whole
-			r.unanswered = slices.DeleteFunc(slices.Clone(o.unanswered), func(ns string) bool { return r.answered[ns] })
-			if r.answered[""] {
-				r.unanswered, r.whole = nil, false
-			}
-			d.mu.Unlock()
+			d.noteWalk(gvr, o)
 		} else {
 			deadline, _ := ctx.Deadline()
 			for i, ns := range pending {
@@ -961,10 +1001,16 @@ func (d *DynamicResourceCache) retryUnanswered(ctx context.Context, gvr schema.G
 				if !stillPending {
 					continue
 				}
+				select {
+				case d.probeSlots <- struct{}{}:
+				case <-ctx.Done():
+					return
+				}
 				probeCtx, cancel := context.WithTimeout(ctx, min(3*time.Second, time.Until(deadline)/time.Duration(len(pending)-i)))
 				probeErr := d.listProbe(probeCtx, gvr, ns)
 				unanswered := probeUnanswered(probeErr) || probeCtx.Err() != nil
 				cancel()
+				<-d.probeSlots
 				if unanswered {
 					continue
 				}
@@ -977,7 +1023,7 @@ func (d *DynamicResourceCache) retryUnanswered(ctx context.Context, gvr schema.G
 			}
 		}
 		d.mu.RLock()
-		done := !r.whole && len(r.unanswered) == 0
+		done := r.settled()
 		d.mu.RUnlock()
 		if done {
 			return
@@ -986,6 +1032,9 @@ func (d *DynamicResourceCache) retryUnanswered(ctx context.Context, gvr schema.G
 }
 
 func (d *DynamicResourceCache) settleProbeLocked(gvr schema.GroupVersionResource) {
+	if r := d.probeRetries[gvr]; r != nil && !r.settled() {
+		return
+	}
 	d.fanoutIncomplete[gvr] = false
 	if retained, ok := d.observations[gvr]; ok && retained.reasonCode == "scope_probe_incomplete" {
 		delete(d.observations, gvr)
@@ -1072,7 +1121,13 @@ func (d *DynamicResourceCache) gvrIsNamespaced(gvr schema.GroupVersionResource) 
 // whether to eager-warm high-cardinality CRDs like PolicyReports) can gate
 // informer creation on cluster size before paying the watch-layer cost.
 func (d *DynamicResourceCache) ProbeCount(gvr schema.GroupVersionResource) int {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	select {
+	case d.probeSlots <- struct{}{}:
+		defer func() { <-d.probeSlots }()
+	case <-d.probeCtx.Done():
+		return -2
+	}
+	ctx, cancel := context.WithTimeout(d.probeCtx, 5*time.Second)
 	defer cancel()
 
 	var list *unstructured.UnstructuredList
@@ -2032,7 +2087,6 @@ func (d *DynamicResourceCache) WarmupParallel(gvrs []schema.GroupVersionResource
 		return
 	}
 
-	const maxConcurrentProbes = 50
 	type probeResult struct {
 		gvr      schema.GroupVersionResource
 		scopes   []string
@@ -2041,12 +2095,9 @@ func (d *DynamicResourceCache) WarmupParallel(gvrs []schema.GroupVersionResource
 		outcome  probeOutcome
 	}
 	results := make(chan probeResult, len(gvrs))
-	sem := make(chan struct{}, maxConcurrentProbes)
 	for _, gvr := range gvrs {
 		go func(g schema.GroupVersionResource) {
-			sem <- struct{}{}
 			o := d.walkScopes(g, "")
-			<-sem
 			results <- probeResult{gvr: g, scopes: o.scopes, complete: o.complete, err: o.err, outcome: o}
 		}(gvr)
 	}
@@ -2065,9 +2116,6 @@ func (d *DynamicResourceCache) WarmupParallel(gvrs []schema.GroupVersionResource
 			d.noteWalk(r.gvr, r.outcome)
 			continue
 		}
-		d.mu.Lock()
-		d.fanoutIncomplete[r.gvr] = !r.complete
-		d.mu.Unlock()
 		allStarted := true
 		for _, scope := range r.scopes {
 			if err := d.startWatching(r.gvr, scope); err == nil {
@@ -2078,10 +2126,8 @@ func (d *DynamicResourceCache) WarmupParallel(gvrs []schema.GroupVersionResource
 				d.retainObservation(r.gvr, DynamicObservationDeferred, "watch_start_failed", truncated)
 			}
 		}
-		if allStarted && r.complete {
-			d.mu.Lock()
-			d.fallbackResolved[r.gvr] = true
-			d.mu.Unlock()
+		if !allStarted {
+			r.outcome.fullWalk = false
 		}
 		d.noteWalk(r.gvr, r.outcome)
 	}
@@ -2238,18 +2284,14 @@ func (d *DynamicResourceCache) DiscoverAllCRDs() {
 		// (≤100) are cheap to watch and give full timeline coverage. CRDs with many
 		// resources (calico policies, cilium endpoints) are deferred to on-demand.
 		const maxEagerResources = 100
-		const maxConcurrentProbes = 50
 		type probeResult struct {
 			gvr   schema.GroupVersionResource
 			count int // -1 = no access
 		}
 		results := make(chan probeResult, len(remaining))
-		sem := make(chan struct{}, maxConcurrentProbes)
 		for _, gvr := range remaining {
 			go func(g schema.GroupVersionResource) {
-				sem <- struct{}{}
 				defer func() {
-					<-sem
 					if r := recover(); r != nil {
 						log.Printf("[CRD Discovery] Panic probing %s.%s/%s: %v", g.Resource, g.Group, g.Version, r)
 						results <- probeResult{gvr: g, count: -2}
