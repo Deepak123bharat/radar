@@ -1135,6 +1135,9 @@ func handleGetResource(ctx context.Context, req *mcp.CallToolRequest, input getR
 	if truncationNote != "" {
 		warnings = append(warnings, truncationNote)
 	}
+	if warning := aicontext.PolicyTargetBudgetWarning(resourceCtx); warning != "" {
+		warnings = append(warnings, warning)
+	}
 
 	defaultConfigMapChanges := meaningfulchanges.ConfigMapKind(kind)
 	includeChanges := includes["changes"] || defaultConfigMapChanges

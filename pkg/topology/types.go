@@ -483,9 +483,10 @@ type Relationships struct {
 	StorageRefs     []ResourceRef `json:"storageRefs,omitempty"`     // PersistentVolumeClaims used by this workload
 	ScaleTarget     *ResourceRef  `json:"scaleTarget,omitempty"`     // For HPA/ScaledObject: what it scales
 	PDBs            []ResourceRef `json:"pdbs,omitempty"`            // PodDisruptionBudgets protecting this workload
-	NetworkPolicies []ResourceRef `json:"networkPolicies,omitempty"` // NetworkPolicy / CiliumNetworkPolicy / ClusterNetworkPolicy / CiliumClusterwideNetworkPolicy selecting this workload
+	NetworkPolicies []ResourceRef `json:"networkPolicies,omitempty"` // Confirmed network-policy selector matches; not a traffic-enforcement verdict.
 	// Radar could not determine whether some readable network policies apply to this resource.
 	// NetworkPolicies retains confirmed matches; absence does not establish completeness.
+	// This is not an assessment of every installed policy engine or effective traffic rules.
 	NetworkPolicyMatchesIncomplete bool `json:"networkPolicyMatchesIncomplete,omitempty"`
 	// Internal provenance is permission-filtered before enriching agent context.
 	NetworkPolicyMatchesIncompleteSources []ResourceRef `json:"-"`

@@ -49,6 +49,7 @@ type ResourceContext struct {
 	SelectedBy     []ContextRef       `json:"selectedBy,omitempty"`
 	// Radar could not determine whether some readable network policies apply to this resource.
 	// SelectedBy retains confirmed matches; absence does not establish completeness.
+	// This is not an assessment of every installed policy engine or effective traffic rules.
 	NetworkPolicyMatchesIncomplete bool               `json:"networkPolicyMatchesIncomplete,omitempty"`
 	ReferencedBy                   *ReferencedBy      `json:"referencedBy,omitempty"`
 	Uses                           *UsesBlock         `json:"uses,omitempty"`
@@ -748,8 +749,8 @@ type KyvernoFinding struct {
 	Message string `json:"message,omitempty"`
 }
 
-// OmittedField records a field that was intentionally dropped from the
-// response. See the "omitted.field path convention" in the v1 contract:
+// OmittedField records data withheld or left unexamined for a field, which may
+// still contain a partial result. See the "omitted.field path convention" in the v1 contract:
 //   - top-level field: bare name (e.g. "selectedBy")
 //   - nested: dotted path (e.g. "policySummary.kyverno")
 //   - whole resourceContext skipped: "*"

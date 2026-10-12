@@ -1493,6 +1493,16 @@ either grant is enough to read it.
 | HostEndpoint | `projectcalico.org/v3`, `crd.projectcalico.org/v1` | No | Yes | Yes |
 | Tier | `projectcalico.org/v3`, `crd.projectcalico.org/v1` | No | Yes | Yes |
 
+### Other Network-Policy Coverage Limits
+
+`ClusterNetworkPolicy` in `policy.networking.k8s.io` currently has node-only
+topology support. Radar does not evaluate its subject selectors or recover its
+target relationships, and this path does not emit `networkPolicyMatchesIncomplete`.
+An empty relationship list or an uncovered-workload count is therefore not proof
+that such a policy does not apply. This is an existing matching-coverage gap;
+supporting it would extend the confirmed-reference and uncertainty producers,
+not turn those fields into enforcement verdicts.
+
 ### Calico Coverage Limits
 
 Radar statically evaluates Calico selectors against workload pod templates and the Namespace and ServiceAccount objects it can read. The result describes declared policy coverage, not live CNI enforcement or packet-level behavior. Missing labels or RBAC-restricted resources can prevent a relationship from being inferred, and staged policies are never included in enforced coverage. The projected "if staged" figure assumes every staged policy is promoted at once; it is a projection of the declared rules, not a simulation of what the data plane would do.

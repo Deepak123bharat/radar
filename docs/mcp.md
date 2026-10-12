@@ -518,6 +518,26 @@ If either budget leaves targets unexamined, the existing `omitted` entry
 exist. No pre-authorization total is exposed. Resource drawers retain the full
 visible relationship list; these bounds apply to agent context.
 
+These limits can be reached in ordinary sizable clusters: a namespace-wide
+policy selecting more than 50 Deployments, StatefulSets and DaemonSets, or a
+clusterwide policy selecting workloads across namespaces. The limit counts
+workload objects, not Pod replicas. The permission-scope ceiling matters in
+namespace-heavy or restricted-reader clusters and can stop before a later
+readable target. Fifty is a protective default, not an empirically tuned
+coverage guarantee or a representative sample.
+
+On `protects/budget_exceeded`, MCP `get_resource` and the AI REST resource
+response add a `warnings` entry explaining that the list is incomplete. The
+policy drawer's Related Resources retains the full visible modeled target list.
+Within MCP, use `list_resources` for Deployments, StatefulSets and DaemonSets in
+namespaces of interest, then `get_resource` for each workload and inspect
+`resourceContext.selectedBy` (or `stagedPolicies` for staged policies) for that
+policy's exact group/kind/namespace/name. Preserve matching uncertainty and RBAC
+omissions. This checks the scoped, visible modeled workloads; it does not
+provide an exhaustive clusterwide query, live-Pod membership or an enforcement
+verdict. Repeating the same policy lookup or using `get_neighborhood` does not
+bypass the limit; all-workload policies intentionally omit dense graph edges.
+
 ### Write Tools
 
 | Tool | Description | Parameters |
@@ -608,3 +628,20 @@ or start watches. Verify provenance with configuration history or
 The same optional flag qualifies `relationships.networkPolicies` and workload graph `data` in REST, SSE and MCP graph/neighborhood responses. It is omitted when false. Absence is not a completeness guarantee: inaccessible policy evidence can be withheld, and unavailable topology or unmodeled integrations may provide no assessment. ResourceContext permission omissions are reported separately as `omitted: [{field: "selectedBy", reason: "rbac_denied"}]`; private policy names and provenance are not exposed. Other graph projections can report aggregate omitted detail without naming private resources.
 
 The producer currently reports Cilium selectors whose endpoint identity cannot be established from cached Kubernetes data, such as cluster identity, unsupported label sources, unreadable namespace labels, and labels affected by Cilium identity filtering. See [network policy integration limits](integrations.md#network-policies). This is incomplete policy matching, not a broken-policy or blocked-traffic verdict. The dashboard’s `unknownWorkloads` counts only workloads without any confirmed matching network policy; a workload can have confirmed coverage and still have incomplete additional matches.
+
+The contract is provider-neutral. A future CNI integration can add confirmed
+policy references to `selectedBy` and report incomplete matching through the
+same flag, without changing existing field meanings. References carry exact
+API group, Kind, namespace and name rather than a provider enum. Non-enforcing
+staged policies remain separate in `stagedPolicies`. Policies targeting Nodes
+or Services belong on those resource contexts; they must not be represented
+as selecting workload Pods merely to fit an integration.
+
+Selection is distinct from ordered rule evaluation, tier precedence, explicit
+allow/deny actions and observed enforcement. Adding those capabilities requires
+separate evidence; it must not reinterpret `selectedBy`, `protects` or the
+matching-completeness flag as a traffic decision. The flag is a one-way warning,
+not a complete inventory of supported policy engines: absent/false does not
+establish that every installed policy system was assessed. Broader integration
+coverage may require richer assessment metadata once a consumer needs it, but
+does not require replacing the current confirmed-reference contract.
