@@ -138,7 +138,7 @@ func TestIssuesDoNotSayHelmUncheckedWhenItWasNot(t *testing.T) {
 }
 
 // A caller that left gets no answer, so its read cut short is not a failure
-// to report (and must not be logged as one either).
+// to report.
 func TestIssuesDoNotSayHelmUncheckedWhenCallerLeft(t *testing.T) {
 	storage := useStalledHelmStorage(t)
 	safety := time.AfterFunc(3*time.Second, func() { close(storage.release) })
