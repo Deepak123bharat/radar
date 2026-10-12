@@ -1,7 +1,9 @@
 package configrefs
 
 import (
+	"encoding/json"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"os"
 	"testing"
 )
 
@@ -23,18 +25,28 @@ func TestKnativeReferenceAlternatives(t *testing.T) {
 }
 
 func TestContourSecretNamespaceContract(t *testing.T) {
-	for _, tc := range []struct {
-		raw, ns, name string
-		valid         bool
-	}{
-		{"tls", "app", "tls", true}, {"certs/tls.pem", "certs", "tls.pem", true},
-		{"certs/a/b", "", "", false}, {"/tls", "app", "tls", true}, {"certs/", "", "", false},
-		{"", "", "", false}, {"certs/*", "", "", false},
-	} {
-		ref, valid := ContourSecretReference(tc.raw, "app")
-		if valid != tc.valid || valid && (ref.Namespace != tc.ns || ref.Name != tc.name) {
-			t.Fatalf("%s: %+v valid=%v", tc.raw, ref, valid)
-		}
+	raw, err := os.ReadFile("testdata/contour_secret_refs.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Case             string `json:"case"`
+		Raw              string `json:"raw"`
+		DefaultNamespace string `json:"defaultNamespace"`
+		Valid            bool   `json:"valid"`
+		Namespace        string `json:"namespace"`
+		Name             string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &cases); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range cases {
+		t.Run(tc.Case, func(t *testing.T) {
+			ref, valid := ContourSecretReference(tc.Raw, tc.DefaultNamespace)
+			if valid != tc.Valid || valid && (ref.Namespace != tc.Namespace || ref.Name != tc.Name) {
+				t.Fatalf("%s: %+v valid=%v", tc.Raw, ref, valid)
+			}
+		})
 	}
 }
 

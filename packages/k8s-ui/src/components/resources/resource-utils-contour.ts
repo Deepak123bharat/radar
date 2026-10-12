@@ -44,6 +44,6 @@ export function getContourSecretReference(raw: string, defaultNamespace: string)
   const namespace = parts.length === 1 ? defaultNamespace : parts[0] || defaultNamespace
   const name = parts.length === 1 ? parts[0] : parts[1]
   const label = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/
-  if (parts.length > 2 || !namespace || namespace.length > 63 || !label.test(namespace) || !name || name.length > 253 || !name.split('.').every(part => part.length <= 63 && label.test(part))) return undefined
+  if (parts.length > 2 || !namespace || namespace.length > 63 || !label.test(namespace) || !name || name.length > 253 || !name.split('.').every(part => label.test(part))) return undefined
   return { name, namespace }
 }

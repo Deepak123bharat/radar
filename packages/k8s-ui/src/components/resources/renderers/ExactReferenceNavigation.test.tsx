@@ -66,6 +66,13 @@ describe('exact reference navigation', () => {
    for(const name of ['server','ca','crl']) {await click(container,`${prefix}${name}`);expect(navigate).toHaveBeenLastCalledWith({kind:'secrets',group:'',namespace,name})}
   })
  })
+ it('links valid long Contour Secret names',async()=>{
+  const navigate=vi.fn()
+  const name='a'.repeat(70)
+  await rendered(<ContourHTTPProxyRenderer data={{metadata:{namespace:'app'},spec:{virtualhost:{tls:{secretName:name}}}}} onNavigate={navigate}/>,async container=>{
+   await click(container,name);expect(navigate).toHaveBeenCalledWith({kind:'secrets',group:'',namespace:'app',name})
+  })
+ })
  it('uses the v1beta2 ClusterClass reference namespace',async()=>{
   const navigate=vi.fn()
   await rendered(<CAPIClusterRenderer data={{metadata:{namespace:'app'},spec:{topology:{classRef:{name:'standard',namespace:'classes'}}}}} onNavigate={navigate}/>,async container=>{

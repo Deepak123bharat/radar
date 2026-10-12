@@ -25,8 +25,17 @@ func (p *countingSecretProvider) Secrets() ([]*corev1.Secret, error) {
 
 func TestConfigSecretMetadataWithoutWorkloadSecretNodes(t *testing.T) {
 	for _, includeSecrets := range []bool{false, true} {
-		for _, available := range []bool{false, true} {
-			t.Run(fmt.Sprintf("include=%v/available=%v", includeSecrets, available), func(t *testing.T) {
+		for _, tc := range []struct {
+			available  bool
+			namespaces []string
+		}{
+			{false, []string{"app"}},
+			{true, []string{"app"}},
+			{false, []string{"app", "certs"}},
+			{true, []string{"app", "certs"}},
+		} {
+			available, namespaces := tc.available, tc.namespaces
+			t.Run(fmt.Sprintf("include=%v/available=%v/namespaces=%v", includeSecrets, available, namespaces), func(t *testing.T) {
 				kinds := map[schema.GroupVersionResource]string{}
 				resources := map[schema.GroupVersionResource][]*unstructured.Unstructured{}
 				var watched []schema.GroupVersionResource
@@ -71,7 +80,7 @@ func TestConfigSecretMetadataWithoutWorkloadSecretNodes(t *testing.T) {
 				dynamic := &genericIdentityDynamic{watched: watched, kinds: kinds, resources: resources, listCalls: map[schema.GroupVersionResource]int{}}
 				opts := DefaultBuildOptions()
 				opts.IncludeSecrets = includeSecrets
-				opts.Namespaces = []string{"app", "certs"}
+				opts.Namespaces = namespaces
 				topo, err := NewBuilder(provider).WithDynamic(dynamic).Build(opts)
 				if err != nil {
 					t.Fatal(err)
@@ -87,6 +96,17 @@ func TestConfigSecretMetadataWithoutWorkloadSecretNodes(t *testing.T) {
 				for _, ref := range references {
 					id := "secret/" + ref.namespace + "/" + ref.name
 					node := nodeByID(topo.Nodes, id)
+					if !opts.MatchesNamespaceFilter(ref.namespace) {
+						if node != nil {
+							t.Errorf("out-of-filter Secret %s was emitted", id)
+						}
+						for _, edge := range topo.Edges {
+							if edge.Target == id || edge.Source == id {
+								t.Errorf("out-of-filter Secret edge: %+v", edge)
+							}
+						}
+						continue
+					}
 					if node == nil {
 						t.Fatalf("missing referenced Secret %s", id)
 					}
