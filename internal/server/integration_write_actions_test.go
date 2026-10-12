@@ -29,6 +29,8 @@ var (
 		"portforwards", "prometheus", "resources", "settings", "trace", "traffic", "usage-data",
 		"version-check", "whats-new",
 	}
+	// Read-only queries sent as POST inside an integration family.
+	readOnlyIntegrationRoutes = []string{"POST /api/gitops/write-evidence"}
 )
 
 // integrationWriteActions returns the table actions a write route needs.
@@ -46,6 +48,8 @@ func integrationWriteActions(method, route string) ([]string, error) {
 		return nil, nil
 	case !slices.Contains(integrationRouteFamilies, family):
 		return nil, fmt.Errorf("%s: classify /api/%s as an integration or non-integration route family", action, family)
+	case slices.Contains(readOnlyIntegrationRoutes, action):
+		return nil, nil
 	case strings.Contains(route, "{action}"):
 		if family != "rollouts" {
 			return nil, fmt.Errorf("%s dispatches on {action}; enumerate its actions here", action)
@@ -101,10 +105,14 @@ func TestIntegrationWriteActionsHaveReviewedRows(t *testing.T) {
 	}
 
 	var required []string
+	seenReadOnly := map[string]bool{}
 	srv := New(Config{DevMode: true})
 	err = chi.Walk(srv.router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		if slices.Contains([]string{http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace, http.MethodConnect}, method) {
 			return nil
+		}
+		if action := method + " " + route; slices.Contains(readOnlyIntegrationRoutes, action) {
+			seenReadOnly[action] = true
 		}
 		actions, err := integrationWriteActions(method, route)
 		if err != nil {
@@ -127,5 +135,10 @@ func TestIntegrationWriteActionsHaveReviewedRows(t *testing.T) {
 	}
 	for action := range listed {
 		t.Errorf("files/integration-write-baseline.yaml lists %q, which is not a registered integration action route", action)
+	}
+	for _, action := range readOnlyIntegrationRoutes {
+		if !seenReadOnly[action] {
+			t.Errorf("readOnlyIntegrationRoutes lists %q, which is not a registered write-method route", action)
+		}
 	}
 }
