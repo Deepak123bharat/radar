@@ -95,3 +95,55 @@ it('closes bulk dialogs when the same kind switches to a custom view and keeps t
   expect(remove).not.toHaveBeenCalled()
   expect(selected).not.toHaveBeenCalled()
 })
+
+it('keeps sidebar kind shortcuts active while a custom view is shown', () => {
+  host = document.createElement('div'); document.body.append(host); root = createRoot(host)
+  const deployments: APIResource = { group: 'apps', version: 'v1', kind: 'Deployment', name: 'deployments', namespaced: true, isCrd: false, verbs: ['get', 'list'] }
+  act(() => root.render(<KeyboardShortcutProvider><ResourcesView
+    namespaces={['test']}
+    apiResources={[pods, deployments]}
+    resourceCounts={{ Pod: 1, Deployment: 1 }}
+    locationPathname="/resources/pods"
+    locationSearch=""
+    onNavigate={() => {}}
+    renderKindView={kind => <div data-testid="kind-view">Custom {kind.kind}</div>}
+  /></KeyboardShortcutProvider>))
+  expect(host.querySelector('[data-testid="kind-view"]')?.textContent).toBe('Custom Pod')
+  act(() => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: ']', bubbles: true })))
+  expect(host.querySelector('[data-testid="kind-view"]')?.textContent).not.toBe('Custom Pod')
+  act(() => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true })))
+  expect(host.querySelector('[data-testid="kind-view"]')?.textContent).toBe('Custom Pod')
+})
+
+it('skips hidden-table sort and filter aggregation for a loaded list, then resumes them with the table', () => {
+  host = document.createElement('div'); document.body.append(host); root = createRoot(host)
+  const getSortValue = vi.fn((resource: typeof pod) => resource.metadata.name)
+  const getFilterValue = vi.fn((resource: typeof pod) => resource.metadata.name)
+  const extraColumns = [{ key: 'fixture-rank', label: 'Fixture rank', render: () => null, getSortValue, getFilterValue }]
+  const list = [pod, { ...pod, metadata: { ...pod.metadata, name: 'another', uid: 'another-id' } }]
+  localStorage.setItem('radar-sort-pods', JSON.stringify({ column: 'fixture-rank', direction: 'asc' }))
+  const render = (custom: boolean, data = list) => act(() => root.render(<KeyboardShortcutProvider><ResourcesView
+    namespaces={['test']}
+    apiResources={[pods]}
+    resourceCounts={{ Pod: data.length }}
+    selectedKindQuery={{ isLoading: false, data, resourceName: 'pods', group: '' }}
+    locationPathname="/resources/pods"
+    locationSearch=""
+    onNavigate={() => {}}
+    extraLeadingColumns={extraColumns}
+    renderKindView={() => custom ? <div data-testid="kind-view">Custom</div> : null}
+  /></KeyboardShortcutProvider>))
+  render(true)
+  expect(getSortValue).not.toHaveBeenCalled()
+  expect(getFilterValue).not.toHaveBeenCalled()
+  render(false)
+  expect(getSortValue).toHaveBeenCalled()
+  expect(getFilterValue).toHaveBeenCalled()
+  getSortValue.mockClear(); getFilterValue.mockClear()
+  render(true, [...list])
+  expect(getSortValue).not.toHaveBeenCalled()
+  expect(getFilterValue).not.toHaveBeenCalled()
+  render(false)
+  expect(getSortValue).toHaveBeenCalled()
+  expect(getFilterValue).toHaveBeenCalled()
+})

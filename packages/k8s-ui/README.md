@@ -34,8 +34,8 @@ Consumers must use a bundler that supports module workers created with `new Work
 
 `ResourcesView.renderKindView(kind)` optionally replaces a kind's table while
 keeping the sidebar and resource drawer. Return `null` or `false` to use the table. Hosts
-own data fetching; table shortcuts and column preferences are inactive while a
-replacement is shown.
+own data fetching; row/search/bulk shortcuts and column preferences are inactive
+while a replacement is shown. Sidebar kind navigation remains available.
 
 `CertaintyGlyph` displays `=`, `≥`, `≤` or `?` for an exact, lower-bound,
 upper-bound or unknown value, with an accessible label and optional evidence

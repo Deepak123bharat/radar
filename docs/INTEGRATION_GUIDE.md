@@ -95,8 +95,8 @@ live in k8s-ui's `components/facts/certainty.tsx`.
 
 A host can supply k8s-ui `ResourcesView.renderKindView` to replace one kind's table
 while retaining the sidebar and drawer. Return `null` or `false` for the ordinary table. A
-replacement disables table shortcuts and column-preference loading/saving; the
-caller still owns fetching and capability decisions.
+replacement disables row/search/bulk shortcuts and column-preference loading/saving;
+sidebar kind navigation stays available. The caller owns fetching and capability decisions.
 
 ### Issues
 

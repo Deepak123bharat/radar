@@ -3427,7 +3427,8 @@ interface ResourcesViewProps {
   onCreateResource?: (kind: { name: string; kind: string; group: string } | null) => void
   /** A kind's own view, rendered in place of the table: the sidebar, kind
    *  selection and the drawer (`?resource=`) stay; the table, its toolbar and
-   *  its keyboard shortcuts do not run. Return null or false to keep the table. */
+   *  its row/search/bulk shortcuts do not run. Sidebar kind navigation stays.
+   *  Return null or false to keep the table. */
   renderKindView?: (kind: SelectedKindInfo) => React.ReactNode | null
   /** Default kind when the URL does not include one. */
   defaultKind?: SelectedKindInfo
@@ -5312,7 +5313,7 @@ export function ResourcesView({
 
   // Filter resources by search term, status, problems, and sort
   const filteredResources = useMemo(() => {
-    if (!resources) return []
+    if (!tableActive || !resources) return []
 
     let result = resources
 
@@ -5498,7 +5499,7 @@ export function ResourcesView({
     }
 
     return result
-  }, [resources, deferredSearchTerm, regexMode, searchRegex, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, labelSelector, ownerKind, ownerName, selectedKind.name, effectiveSortColumn, sortDirection, getSortValue, extraColumnsByKey, podMatchesProblemFilter])
+  }, [tableActive, resources, deferredSearchTerm, regexMode, searchRegex, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, labelSelector, ownerKind, ownerName, selectedKind.name, effectiveSortColumn, sortDirection, getSortValue, extraColumnsByKey, podMatchesProblemFilter])
 
   // For nodes table: compute the majority minor version so outliers can be highlighted
   const majorityNodeMinorVersion = useMemo(() => {
@@ -5694,7 +5695,7 @@ export function ResourcesView({
 
   // Calculate filter options with counts based on current resources (before filtering)
   const filterOptions = useMemo(() => {
-    if (!resources || resources.length === 0) return null
+    if (!tableActive || !resources || resources.length === 0) return null
 
     const kindLower = normalizeKindToPlural(selectedKind.name, selectedKind.group)
     const cellFilterKind = getCellFilterKind(selectedKind.name, selectedKind.group)
@@ -5807,7 +5808,7 @@ export function ResourcesView({
 
     if (filterableColumns.length === 0 && !problems && labelValues.length === 0) return null
     return { columns: filterableColumns, problems, labels: labelValues }
-  }, [resources, selectedKind.name, selectedKind.group, allColumns])
+  }, [tableActive, resources, selectedKind.name, selectedKind.group, allColumns])
 
   // Map filterable columns by key for O(1) lookup in header rendering
   const filterableColumnMap = useMemo(() => {
@@ -5913,7 +5914,6 @@ export function ResourcesView({
         />
       )}
 
-      {/* Main Content - the kind's own view, or the resource table */}
       {kindView !== null ? (
         <div className="flex-1 flex flex-col overflow-hidden min-w-0 bg-theme-surface">{kindView}</div>
       ) : (
