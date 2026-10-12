@@ -126,3 +126,9 @@ func preferredOwnerEdge(edges []Edge) *Edge {
 	}
 	return first
 }
+
+// IsGeneratedOwner includes member-backed aggregate traversal without making a
+// synthetic PodGroup an owner-reference resource or a garbage-collection target.
+func (e Edge) IsGeneratedOwner() bool {
+	return e.verifiedOwner() || e.Type == EdgeManages && e.OwnerAggregation != nil
+}

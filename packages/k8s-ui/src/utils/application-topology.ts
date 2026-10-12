@@ -77,6 +77,7 @@ export function collapseStableReplicaSets(topology: Topology, expandedOwners: Re
       source: ownerEdge.source,
       type: 'manages',
       ownerController: undefined,
+      ownerAggregation: undefined,
     })
   }
 

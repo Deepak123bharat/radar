@@ -187,6 +187,9 @@ type Edge struct {
 	Target        string   `json:"target"`
 	Type          EdgeType `json:"type"`
 	Label         string   `json:"label,omitempty"`
+	// OwnerAggregation classifies ownership of observed members of a synthetic group.
+	// It never makes the group a Kubernetes resource or a garbage-collection target.
+	OwnerAggregation *bool `json:"ownerAggregation,omitempty"`
 	// OwnerController is set only for an observed metadata owner reference.
 	OwnerAggregation           *bool  `json:"ownerAggregation,omitempty"` // Present and true only for member-backed display ancestry.
 	OwnerAggregationController *bool  `json:"ownerAggregationController,omitempty"`

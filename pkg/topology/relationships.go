@@ -442,7 +442,7 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 			switch {
 			case edge.verifiedOwner():
 				rel.Children = append(rel.Children, *ref)
-			case edge.SkipIfKindVisible == "":
+			case edge.SkipIfKindVisible == "" && edge.OwnerAggregation == nil:
 				rel.Manages = append(rel.Manages, *ref)
 			}
 		case EdgeExposes, EdgeRoutesTo:
@@ -507,7 +507,7 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 				if preferredOwner != nil && edge.Source == preferredOwner.Source {
 					rel.Owner = ref
 				}
-			case edge.SkipIfKindVisible == "":
+			case edge.SkipIfKindVisible == "" && edge.OwnerAggregation == nil:
 				rel.Managers = append(rel.Managers, *ref)
 			}
 		case EdgeExposes:

@@ -427,3 +427,39 @@ func TestInventoryManagerSurvivesVerifiedOwnerWalk(t *testing.T) {
 		t.Fatalf("inventory became garbage collection: %+v", preview)
 	}
 }
+
+func TestGroupedCustomOwnerIsEnrolledWithoutBecomingGroupOwnership(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "parents.example.io", Version: "v1", Resource: "widgets"}
+	parent := genericIdentityObject(gvr, "Widget", "team", "owner")
+	parent.SetUID("owner-uid")
+	dynamic := &genericIdentityDynamic{watched: []schema.GroupVersionResource{gvr}, kinds: map[schema.GroupVersionResource]string{gvr: "Widget"}, resources: map[schema.GroupVersionResource][]*unstructured.Unstructured{gvr: {parent}}, listCalls: make(map[schema.GroupVersionResource]int)}
+	provider := &mockProvider{}
+	for i := range 7 {
+		provider.pods = append(provider.pods, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("worker-%d", i), Namespace: "team", UID: types.UID(fmt.Sprintf("pod-%d", i)), Labels: map[string]string{"app": "workers"}, OwnerReferences: []metav1.OwnerReference{ownerRef("parents.example.io/v1", "Widget", "owner", "owner-uid", true)}}, Status: corev1.PodStatus{Phase: corev1.PodRunning}})
+	}
+	opts := DefaultBuildOptions()
+	topo, err := NewBuilder(provider).WithDynamic(dynamic).Build(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, edge := range topo.Edges {
+		if edge.IsGeneratedOwner() {
+			found = true
+			if edge.OwnerController != nil {
+				t.Fatalf("synthetic group became ownership: %+v", edge)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("grouped custom ownership disappeared: %+v", topo)
+	}
+	rel := GetRelationships("Widget", "team", "owner", topo, provider, dynamic)
+	if rel != nil && (len(rel.Children) != 0 || len(rel.Manages) != 0) {
+		t.Fatalf("synthetic group became a resource reference: %+v", rel)
+	}
+	preview := GetCascadeDeletePreview(ResourceRef{Group: gvr.Group, Kind: "Widget", Namespace: "team", Name: "owner"}, topo, dynamic)
+	if len(preview.Dependents) != 0 {
+		t.Fatalf("synthetic group became garbage collection: %+v", preview)
+	}
+}

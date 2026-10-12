@@ -216,7 +216,7 @@ func (b *Builder) Build(ctx context.Context, kind, namespace, name, group string
 	// bindings, a nested GitOps object's own inventory) are not generation.
 	adj := map[string][]topology.Edge{}
 	for _, e := range b.topoEdges() {
-		if e.Type != topology.EdgeManages || e.OwnerController == nil {
+		if !e.IsGeneratedOwner() {
 			continue
 		}
 		adj[e.Source] = append(adj[e.Source], e)

@@ -541,3 +541,38 @@ func TestBuild_RemoteFluxHelmReleaseRecoversNothingLocal(t *testing.T) {
 
 // observedController marks fixture edges as observed controller owner references.
 var observedController = true
+
+func TestGeneratedPodGroupSurvivesOwnerOnlyTraversal(t *testing.T) {
+	root := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "argoproj.io/v1alpha1", "kind": "Application",
+		"metadata": map[string]any{"name": "app", "namespace": "gitops"},
+		"spec":     map[string]any{"destination": map[string]any{"server": "https://kubernetes.default.svc"}},
+		"status":   map[string]any{"resources": []any{map[string]any{"group": "apps", "kind": "Deployment", "namespace": "team", "name": "web"}}},
+	}}
+	topo := &topology.Topology{Nodes: []topology.Node{
+		{ID: "deployment/team/web", Kind: topology.KindDeployment, Name: "web", Data: map[string]any{"namespace": "team", "apiVersion": "apps/v1"}},
+		{ID: "replicaset/team/web-abc", Kind: topology.KindReplicaSet, Name: "web-abc", Data: map[string]any{"namespace": "team", "apiVersion": "apps/v1"}},
+		{ID: "podgroup-workers", Kind: topology.KindPodGroup, Name: "workers", Status: topology.StatusDegraded, Data: map[string]any{"namespace": "team", "podCount": 7}},
+	}, Edges: []topology.Edge{
+		{Source: "deployment/team/web", Target: "replicaset/team/web-abc", Type: topology.EdgeManages, OwnerController: &observedController},
+		{Source: "replicaset/team/web-abc", Target: "podgroup-workers", Type: topology.EdgeManages, OwnerAggregation: &observedController},
+	}}
+	getter := &fakeDynamic{objects: map[string]*unstructured.Unstructured{refKey(ResourceRef{Group: "argoproj.io", Kind: "Application", Namespace: "gitops", Name: "app"}): root}}
+	tree, _, err := NewBuilder(getter, topo).Build(context.Background(), "Application", "gitops", "app", "argoproj.io")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNodeRole(t, tree, ResourceRef{Kind: "PodGroup", Namespace: "team", Name: "workers"}, RoleGenerated)
+	found := false
+	for _, node := range tree.Nodes {
+		if node.Ref.Kind == "PodGroup" {
+			found = true
+			if node.TopologyStatus != "degraded" {
+				t.Fatalf("group health lost: %+v", node)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("seven-replica generated group omitted")
+	}
+}
