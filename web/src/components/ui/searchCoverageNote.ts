@@ -1,6 +1,6 @@
 import { englishPlural, isEnglishPlural } from '@skyhook-io/k8s-ui'
 import type { SearchCoverageEntry } from '../../api/client'
-import type { OmnibarNote } from './Omnibar'
+import type { OmnibarNote, OmnibarNotePart } from './Omnibar'
 
 // While a search reports kinds still loading, the open omnibar re-queries every
 // PENDING_RETRY_MS for at most PENDING_RETRY_BUDGET_MS. Radar reports a kind
@@ -84,7 +84,7 @@ export function searchCoverageNote(unsearched: SearchCoverageEntry[] | undefined
   const named = (reason: string) => distinctKinds(unsearched.filter((e) => e.reason === reason))
   const names = (entries: SearchCoverageEntry[], conj: string, plural = true) => joinNames([...new Set(entries.map((e) => label(e, plural)))], conj)
 
-  const sentences: OmnibarNote[] = []
+  const sentences: OmnibarNotePart[] = []
   const say = (text: string) => sentences.push({ text })
 
   if (unsearched.some((e) => e.reason === 'kind_sync_pending')) {
@@ -151,6 +151,12 @@ export function searchCoverageNote(unsearched: SearchCoverageEntry[] | undefined
 
   if (!sentences.length) return undefined
   const shown = sentences.slice(0, MAX_SENTENCES)
+  if (shown.length > 1 && shown.some((s) => s.action)) {
+    return {
+      text: shown.map((s) => `${s.text}${s.action ? ` ${s.action.label}${s.action.suffix ?? ''}` : ''}`).join(' '),
+      parts: shown,
+    }
+  }
   return { text: shown.map((s) => s.text).join(' '), action: shown.find((s) => s.action)?.action }
 }
 

@@ -33,9 +33,14 @@ export interface OmnibarSearchResult {
 // A host-provided line about the current search (what was or wasn't searched),
 // shown muted above the results or the empty state. The host interprets its
 // own search response; the omnibar only renders the text and optional action.
-export interface OmnibarNote {
+export interface OmnibarNotePart {
   text: string
   action?: { label: string; suffix?: string; onSelect: () => void; keepOpen?: boolean }
+}
+
+export interface OmnibarNote extends OmnibarNotePart {
+  /** When supplied, renders these parts in order instead of the top-level text/action. */
+  parts?: OmnibarNotePart[]
 }
 
 // Health → dot color (summaryContext.health is the same vocabulary as the rest
@@ -642,21 +647,26 @@ export const Omnibar = forwardRef<OmnibarHandle, OmnibarProps>(function Omnibar(
   )
 })
 
-function OmnibarNoteRow({ note: { text, action }, onAction }: { note: OmnibarNote; onAction: (action: NonNullable<OmnibarNote['action']>) => void }) {
+function OmnibarNoteRow({ note, onAction }: { note: OmnibarNote; onAction: (action: NonNullable<OmnibarNote['action']>) => void }) {
   return (
     <div className="flex items-start gap-1.5 px-3 py-1.5 text-xs text-theme-text-tertiary">
       <Info className="w-3.5 h-3.5 shrink-0 mt-px" />
       <span>
-        {text}
-        {action && (
-          <>
-            {' '}
-            <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => onAction(action)} className="text-[var(--color-brand)] hover:underline">
-              {action.label}
-            </button>
-            {action.suffix}
-          </>
-        )}
+        {(note.parts ?? [note]).map(({ text, action }, index) => (
+          <span key={index}>
+            {index > 0 && ' '}
+            {text}
+            {action && (
+              <>
+                {' '}
+                <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => onAction(action)} className="text-[var(--color-brand)] hover:underline">
+                  {action.label}
+                </button>
+                {action.suffix}
+              </>
+            )}
+          </span>
+        ))}
       </span>
     </div>
   )

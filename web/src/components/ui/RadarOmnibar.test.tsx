@@ -146,14 +146,22 @@ describe('RadarOmnibar namespace notes', () => {
 })
 
 describe('RadarOmnibar read recovery', () => {
-  it('adds the suggested kind to the current query, preserves modifiers and terms, and re-checks while open', async () => {
-    unsearched = [{ kind: 'Certificate', group: 'cert-manager.io', reason: 'read_error' }]
+  it.each([
+    ['alone', []],
+    ['followed by a namespace note', [{ kind: '*', group: '', reason: 'collector_scope_limited', namespaces: ['rel-owner'] }]],
+    ['preceded by a loading note', pending],
+  ] as [string, SearchCoverageEntry[]][])('adds the suggested kind %s, preserves modifiers and terms, and re-checks while open', async (_, siblings) => {
+    unsearched = [{ kind: 'Certificate', group: 'cert-manager.io', reason: 'read_error' }, ...siblings]
     await typeQuery('ns:prod')
     act(() => host.querySelector('input')!.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true })))
     await typeQuery('label:app=web image:nginx renewal')
     expect(page()).toContain("Couldn't read Certificate; matches of that kind may be missing. Search kind:Certificate to re-check.")
     const button = [...document.body.querySelectorAll('button')].find((b) => b.textContent === 'kind:Certificate')!
     expect(button).toBeDefined()
+    const recoveryText = "Couldn't read Certificate; matches of that kind may be missing. Search kind:Certificate to re-check."
+    const siblingText = siblings === pending ? 'Still loading — results may change.' : siblings.length ? "Namespace 'rel-owner' wasn't searched: Radar here watches only some namespaces." : ''
+    expect(button.parentElement!.textContent?.trim()).toBe(recoveryText)
+    expect(button.parentElement!.parentElement!.textContent).toBe(siblings === pending ? `${siblingText} ${recoveryText}` : `${recoveryText}${siblingText ? ` ${siblingText}` : ''}`)
     act(() => button.click())
     await advance(300)
     await advance(100)

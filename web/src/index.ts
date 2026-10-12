@@ -97,6 +97,7 @@ export type {
   OmnibarRecent,
   OmnibarSearchResult,
   OmnibarNote,
+  OmnibarNotePart,
 } from './components/ui/Omnibar';
 export { bestScore } from './components/ui/command-items';
 export type { CommandItem } from './components/ui/command-items';

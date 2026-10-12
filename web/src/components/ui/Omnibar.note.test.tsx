@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { act } from 'react'
+import { act, createRef } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Omnibar, type OmnibarNote } from './Omnibar'
+import { Omnibar, type OmnibarHandle, type OmnibarNote } from './Omnibar'
+import { searchCoverageNote } from './searchCoverageNote'
 
 vi.mock('../../api/usage-data', () => ({ recordUsageEvent: vi.fn() }))
 
@@ -45,6 +46,44 @@ function typeQuery(text: string) {
 const findButton = (label: string) => [...document.body.querySelectorAll('button')].find((b) => b.textContent === label)
 
 describe('Omnibar note', () => {
+  const recoveryText = "Couldn't read Certificate; matches of that kind may be missing. Search kind:Certificate to re-check."
+  const namespace = searchCoverageNote([{ kind: '*', group: '', reason: 'collector_scope_limited', namespaces: ['rel-owner'] }], {})!
+  const loading = searchCoverageNote([{ kind: '*', group: '', reason: 'kind_sync_pending' }], {})!
+
+  it.each([
+    ['alone', [], []],
+    ['before a namespace note', [], [namespace]],
+    ['after a namespace note', [namespace], []],
+    ['before a loading note', [], [loading]],
+    ['after a loading note', [loading], []],
+    ['between loading and namespace notes', [loading], [namespace]],
+    ['between namespace and loading notes', [namespace], [loading]],
+  ] as [string, OmnibarNote[], OmnibarNote[]][])(
+    'renders the recovery action inside its sentence %s and adds its modifier', (_, before, after) => {
+      const ref = createRef<OmnibarHandle>()
+      const onQueryChange = vi.fn()
+      const recovery = searchCoverageNote([{ kind: 'Certificate', group: 'cert-manager.io', reason: 'read_error' }], {
+        recheckKind: (kind) => ref.current?.addModifier({ key: 'kind', value: kind }),
+      })!
+      const parts = [...before, recovery, ...after]
+      const expected = [...before.map((part) => part.text), recoveryText, ...after.map((part) => part.text)].join(' ')
+      act(() => {
+        root.render(<Omnibar ref={ref} onOpenResource={vi.fn()} commandItems={[]} searchData={{ hits: [] }} onQueryChange={onQueryChange} note={parts.length === 1 ? recovery : { text: expected, parts }} />)
+      })
+      typeQuery('ns:prod')
+      act(() => host.querySelector('input')!.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true })))
+      typeQuery('renewal')
+      const button = findButton('kind:Certificate')!
+      expect(button).toBeDefined()
+      expect(button.parentElement!.textContent?.trim()).toBe(recoveryText)
+      expect(button.parentElement!.parentElement!.textContent).toBe(expected)
+      act(() => button.click())
+      act(() => { vi.advanceTimersByTime(300) })
+      expect(onQueryChange).toHaveBeenLastCalledWith('ns:prod kind:Certificate renewal', true)
+      expect(host.querySelector('input')!.value).toContain('renewal')
+    },
+  )
+
   it('shows the host note under the empty results and runs its action on click, then closes', () => {
     const onSelect = vi.fn()
     render({ text: "Leases can't be searched.", action: { label: 'Open the Leases list instead.', onSelect } })

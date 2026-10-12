@@ -117,6 +117,24 @@ describe('searchCoverageNote', () => {
     )
   })
 
+  it.each([
+    [{ kind: '*', group: '', reason: 'collector_scope_limited', namespaces: ['rel-owner'] }, false],
+    [entry('*', 'kind_sync_pending'), true],
+  ])('keeps the recovery action with its sentence beside %j', (other, loadingFirst) => {
+    const recheckKind = vi.fn()
+    const recovery = searchCoverageNote([entry('Certificate', 'read_error')], { recheckKind })!
+    const sibling = searchCoverageNote([other], {})!
+    const note = searchCoverageNote([entry('Certificate', 'read_error'), other], { recheckKind })!
+    const parts = loadingFirst ? [sibling, recovery] : [recovery, sibling]
+    expect(note.parts?.map((part) => part.text)).toEqual(parts.map((part) => part.text))
+    expect(note.parts?.[loadingFirst ? 1 : 0].action).toMatchObject({ label: 'kind:Certificate', suffix: ' to re-check.', keepOpen: true })
+    expect(note.parts?.[loadingFirst ? 0 : 1].action).toBeUndefined()
+    const recoveryText = "Couldn't read Certificate; matches of that kind may be missing. Search kind:Certificate to re-check."
+    expect(note.text).toBe(loadingFirst ? `${sibling.text} ${recoveryText}` : `${recoveryText} ${sibling.text}`)
+    note.parts?.find((part) => part.action)?.action?.onSelect()
+    expect(recheckKind).toHaveBeenCalledWith('Certificate')
+  })
+
   it('ignores reasons it does not know', () => {
     expect(searchCoverageNote([entry('Widget', 'reason_from_the_future')], {})).toBeUndefined()
   })
@@ -124,7 +142,10 @@ describe('searchCoverageNote', () => {
   it('keeps to two sentences, loading first, and keeps the action only when its sentence shows', () => {
     const openKindList = () => () => {}
     const many = [entry('Secret', 'rbac_denied'), entry('Lease', 'collection_not_supported', 'coordination.k8s.io'), entry('*', 'kind_sync_pending')]
-    expect(searchCoverageNote(many, { openKindList })?.text).toBe("Still loading — results may change. Leases can't be searched.")
+    const note = searchCoverageNote(many, { openKindList })!
+    expect(note.text).toBe("Still loading — results may change. Leases can't be searched. Open the Leases list instead.")
+    expect(note.parts?.map((part) => part.text)).toEqual(['Still loading — results may change.', "Leases can't be searched."])
+    expect(note.parts?.[1].action?.label).toBe('Open the Leases list instead.')
     expect(searchCoverageNote([...many, entry('Deploymnet', 'unknown_kind')], { openKindList })).toEqual({
       text: 'Still loading — results may change. No kind named Deploymnet here — not installed, or misspelled?',
       action: undefined,
