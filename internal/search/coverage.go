@@ -255,14 +255,13 @@ func listErrorReason(err error) readreason.Code {
 	return readreason.ReadError
 }
 
-// dynamicObservationReason maps a kind's observation to a coverage reason.
-// A deferred kind is one Radar doesn't watch yet: whether it was too large to
-// watch eagerly or its access or size probe went unanswered or incomplete,
-// that is Radar's collection (setup), and a kind: term warms it, retrying the
-// probe, and reports what happens. Nothing retries it otherwise, so calling
-// it "still loading" would never come true. Only a watch that is about to
-// start is pending, and only one granted but unable to start is a failure.
 func dynamicObservationReason(observation k8score.DynamicResourceObservation) readreason.Code {
+	if observation.ProbeRetrying {
+		return readreason.KindSyncPending
+	}
+	if len(observation.UnansweredNamespaces) > 0 || observation.ReasonCode == "scope_probe_incomplete" {
+		return readreason.ReadError
+	}
 	switch observation.State {
 	case k8score.DynamicObservationSynced:
 		return ""

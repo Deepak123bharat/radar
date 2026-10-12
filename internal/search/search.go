@@ -393,11 +393,12 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		reason := dynamicObservationReason(observation)
 		// A kind: term warms a kind Radar isn't watching, including one whose
 		// deferred probe or watch start failed, instead of reporting it.
-		warm := len(q.KindFilter) > 0 && (reason == readreason.KindNotWatched || observation.State == k8score.DynamicObservationDeferred)
+		probeGap := observation.ProbeRetrying || len(observation.UnansweredNamespaces) > 0 || observation.ReasonCode == "scope_probe_incomplete"
+		warm := !probeGap && len(q.KindFilter) > 0 && (reason == readreason.KindNotWatched || observation.State == k8score.DynamicObservationDeferred)
 		// Namespace informers sync independently, so while one is still
 		// loading the others can answer: their readiness is judged per
 		// namespace below.
-		perNamespace := observation.State == k8score.DynamicObservationSyncing && observation.Scope == k8score.DynamicObservationScopeExplicitNamespaces
+		perNamespace := probeGap || (observation.State == k8score.DynamicObservationSyncing || observation.State == k8score.DynamicObservationDenied) && observation.Scope == k8score.DynamicObservationScopeExplicitNamespaces
 		settled := reason != "" && !warm && !perNamespace
 		if settled && cov.quiet(reason) {
 			continue
@@ -446,6 +447,16 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		for _, ns := range namespaces {
 			nsObservation := p.DynamicObservation(gvr, ns)
 			outsideScope := outside(ns, nsObservation)
+			if nsObservation.ProbeRetrying || len(nsObservation.UnansweredNamespaces) > 0 || nsObservation.ReasonCode == "scope_probe_incomplete" {
+				cov.kind(kind, gvr.Group, dynamicObservationReason(nsObservation))
+				if ns != "" || !outsideScope {
+					continue
+				}
+				for _, watchedNS := range nsObservation.Namespaces {
+					read(watchedNS, p.DynamicObservation(gvr, watchedNS))
+				}
+				continue
+			}
 			if len(q.KindFilter) > 0 && (warm || outsideScope) {
 				if err := p.WarmDynamic(warmCtx, gvr, ns); err != nil {
 					reason := dynamicObservationReason(p.DynamicObservation(gvr, ns))

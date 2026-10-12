@@ -343,10 +343,6 @@ func TestIncompleteDiscoveryQualifiesUnknownKinds(t *testing.T) {
 	}
 }
 
-// A kind Radar doesn't watch yet is setup, whether it was too large to watch
-// eagerly or its access or size probe went unanswered or incomplete; only a
-// granted watch that couldn't start is a failure. A kind: term warms every one
-// of them, retrying the probe.
 func TestDeferredKindsSeparateSetupFromFailure(t *testing.T) {
 	for _, tc := range []struct {
 		code, broad string
@@ -354,7 +350,7 @@ func TestDeferredKindsSeparateSetupFromFailure(t *testing.T) {
 		{"resource_count_exceeds_eager_limit", ""},
 		{"legacy_api_deferred", ""},
 		{"eager_watch_pending", "kind_sync_pending"},
-		{"scope_probe_incomplete", ""},
+		{"scope_probe_incomplete", "read_error"},
 		{"watch_start_failed", "kind_sync_failed"},
 		{"scope_probe_failed", ""},
 		{"resource_count_probe_failed", ""},
@@ -371,6 +367,12 @@ func TestDeferredKindsSeparateSetupFromFailure(t *testing.T) {
 				t.Fatalf("broad: %+v warmed=%v", res.Unsearched, p.warmed)
 			}
 			res, _ = Search(context.Background(), p, Parse("kind:Widget"), Options{})
+			if tc.code == "scope_probe_incomplete" {
+				if !res.Partial || len(p.warmed) != 0 || !reflect.DeepEqual(reasonsOf(res), []string{"read_error"}) {
+					t.Fatalf("unanswered probe was warmed by search: %+v warmed=%v", res.Unsearched, p.warmed)
+				}
+				return
+			}
 			if res.Partial || len(p.warmed) != 1 {
 				t.Fatalf("named kind was not warmed: %+v warmed=%v", res.Unsearched, p.warmed)
 			}

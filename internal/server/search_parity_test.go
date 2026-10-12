@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 	"github.com/skyhook-io/radar/internal/mcp"
 	"github.com/skyhook-io/radar/internal/search"
 	"github.com/skyhook-io/radar/internal/server"
+	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
 // REST and MCP search share one engine but each handler builds its own
@@ -32,9 +34,12 @@ import (
 func TestSearchCoverageMatchesAcrossRESTAndMCP(t *testing.T) {
 	widgets := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
 	reports := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "reports"}
-	listKinds := map[schema.GroupVersionResource]string{widgets: "WidgetList", reports: "ReportList"}
+	probes := schema.GroupVersionResource{Group: "retry.example.io", Version: "v1", Resource: "probewidgets"}
+	var probeAnswered atomic.Bool
+	listKinds := map[schema.GroupVersionResource]string{widgets: "WidgetList", reports: "ReportList", probes: "ProbeWidgetList"}
 	resources := []k8s.APIResource{
 		{Group: widgets.Group, Version: widgets.Version, Name: widgets.Resource, Kind: "Widget", Namespaced: true, Verbs: []string{"get", "list", "watch"}},
+		{Group: probes.Group, Version: probes.Version, Name: probes.Resource, Kind: "ProbeWidget", Namespaced: true, Verbs: []string{"get", "list", "watch"}},
 		{Group: reports.Group, Version: reports.Version, Name: reports.Resource, Kind: "Report", Namespaced: true, Verbs: []string{"get", "list"}},
 	}
 	// 25 cluster-scoped kinds Radar's own identity may not list: more than a
@@ -51,6 +56,15 @@ func TestSearchCoverageMatchesAcrossRESTAndMCP(t *testing.T) {
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds)
 	dyn.PrependReactor("list", "*", func(action ktesting.Action) (bool, runtime.Object, error) {
 		resource := action.GetResource()
+		if resource == probes {
+			if action.GetNamespace() == "" {
+				return true, nil, apierrors.NewForbidden(resource.GroupResource(), "", errors.New("collector scope"))
+			}
+			if !probeAnswered.Load() {
+				return true, nil, fmt.Errorf("client rate limiter Wait returned an error: rate: Wait(n=1) would exceed context deadline")
+			}
+			return false, nil, nil
+		}
 		if resource.Group != "gadgets.example.io" {
 			return false, nil, nil
 		}
@@ -61,6 +75,12 @@ func TestSearchCoverageMatchesAcrossRESTAndMCP(t *testing.T) {
 	}
 	t.Cleanup(k8s.ResetTestDynamicState)
 	dc := k8s.GetDynamicResourceCache()
+	dc.Stop()
+	core, err := k8score.NewDynamicResourceCache(k8score.DynamicCacheConfig{DynamicClient: dyn, Discovery: k8s.GetResourceDiscovery().ResourceDiscovery, NamespaceFallbacks: []string{"a"}, ProbeRetryBackoff: []time.Duration{2 * time.Second}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dc.DynamicResourceCache = core
 	for _, gvr := range gadgets {
 		if err := dc.EnsureWatching(gvr); err == nil {
 			t.Fatalf("%s: collector list should be denied", gvr.Resource)
@@ -96,17 +116,46 @@ func TestSearchCoverageMatchesAcrossRESTAndMCP(t *testing.T) {
 		deniedGadgets = append(deniedGadgets, search.UnsearchedKind{Kind: fmt.Sprintf("Gadget%02d", i), Group: "gadgets.example.io", Reason: "collector_access_denied"})
 	}
 	for _, tc := range []struct {
-		query string
-		want  []search.UnsearchedKind
+		query  string
+		want   []search.UnsearchedKind
+		before func()
 	}{
 		// Unwatched kinds, list-only APIs and kinds Radar's own identity may
 		// not list are the search's scope: a broad query names none of them.
-		{"robusta", []search.UnsearchedKind{}},
-		{"kind:Widget robusta", []search.UnsearchedKind{}},
-		{"kind:NoSuchKindXyz robusta", []search.UnsearchedKind{{Kind: "NoSuchKindXyz", Reason: "unknown_kind"}}},
-		{"kind:Report robusta", []search.UnsearchedKind{{Kind: "Report", Group: "example.io", Reason: "collection_not_supported"}}},
-		{strings.Join(gadgetTerms, " ") + " robusta", deniedGadgets},
+		{"robusta", []search.UnsearchedKind{}, nil},
+		{"kind:Widget robusta", []search.UnsearchedKind{}, nil},
+		{"kind:NoSuchKindXyz robusta", []search.UnsearchedKind{{Kind: "NoSuchKindXyz", Reason: "unknown_kind"}}, nil},
+		{"kind:Report robusta", []search.UnsearchedKind{{Kind: "Report", Group: "example.io", Reason: "collection_not_supported"}}, nil},
+		{strings.Join(gadgetTerms, " ") + " robusta", deniedGadgets, nil},
+		{"robusta", []search.UnsearchedKind{{Kind: "*", Reason: "kind_sync_pending", Count: 1}}, func() {
+			if err := dc.EnsureWatching(probes); err == nil {
+				t.Fatal("unanswered walk unexpectedly granted")
+			}
+		}},
+		{"kind:ProbeWidget robusta", []search.UnsearchedKind{{Kind: "ProbeWidget", Group: probes.Group, Reason: "kind_sync_pending"}}, nil},
+		{"robusta", []search.UnsearchedKind{{Kind: "ProbeWidget", Group: probes.Group, Reason: "read_error"}}, func() {
+			deadline := time.Now().Add(4 * time.Second)
+			for dc.Observation(probes).ProbeRetrying && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			if dc.Observation(probes).ProbeRetrying {
+				t.Fatal("retry did not exhaust")
+			}
+		}},
+		{"kind:ProbeWidget robusta", []search.UnsearchedKind{{Kind: "ProbeWidget", Group: probes.Group, Reason: "read_error"}}, nil},
+		{"robusta", []search.UnsearchedKind{}, func() {
+			probeAnswered.Store(true)
+			if err := dc.EnsureWatchingContext(t.Context(), probes, "a"); err != nil {
+				t.Fatal(err)
+			}
+			if !dc.WaitForSync(probes, time.Second) {
+				t.Fatal("answered namespace did not sync")
+			}
+		}},
 	} {
+		if tc.before != nil {
+			tc.before()
+		}
 		resp, err := http.Get(ts.URL + "/api/search?context=none&include=none&q=" + url.QueryEscape(tc.query))
 		if err != nil {
 			t.Fatal(err)
@@ -149,6 +198,14 @@ func TestSearchCoverageMatchesAcrossRESTAndMCP(t *testing.T) {
 		}
 		if (viaMCP.CoverageHint != "") != viaMCP.Partial {
 			t.Fatalf("%s: MCP partial=%v with coverageHint %q", tc.query, viaMCP.Partial, viaMCP.CoverageHint)
+		}
+		for _, gap := range tc.want {
+			if gap.Reason == "kind_sync_pending" && !strings.Contains(viaMCP.CoverageHint, "retry in a few seconds") {
+				t.Fatalf("pending hint: %q", viaMCP.CoverageHint)
+			}
+			if gap.Reason == "read_error" && viaMCP.CoverageHint != "Couldn't read ProbeWidget (retry.example.io); matches of that kind may be missing." {
+				t.Fatalf("read-error hint: %q", viaMCP.CoverageHint)
+			}
 		}
 	}
 }
