@@ -2387,7 +2387,7 @@ export function getCellFilterValue(resource: any, column: string, kind: string):
       if (kindLower === 'hpas' || kindLower === 'horizontalpodautoscalers') return getHPAStatus(resource).text
       if (kindLower === 'gateways') return getGatewayStatus(resource).text
       if (kindLower === 'gatewayclasses') return getGatewayClassStatus(resource).text
-      if (['httproutes', 'grpcroutes', 'tcproutes', 'tlsroutes', 'udproutes'].includes(kindLower)) return getRouteStatus(resource).text
+      if (['httproutes', 'grpcroutes', 'tcproutes', 'tlsroutes'].includes(kindLower) || (kindLower === 'udproutes' && resource.apiVersion?.startsWith('gateway.networking.k8s.io/'))) return getRouteStatus(resource).text
       if (kindLower === 'sealedsecrets') return getSealedSecretStatus(resource).text
       if (kindLower === 'poddisruptionbudgets') return getPDBStatus(resource).text
       if (kindLower === 'applications') return getArgoApplicationStatus(resource).text
