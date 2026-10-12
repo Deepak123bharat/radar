@@ -10,6 +10,16 @@ import { GitOpsHealthSourceNotice } from './GitOpsHealthSourceNotice'
 import { Tooltip } from '../ui/Tooltip'
 import type { GitOpsHealthStatus, GitOpsInsight, GitOpsIssue, GitOpsRemediation, SyncStatus } from '../../types'
 
+const ARGO_ACTION_LABELS: Record<string, string> = {
+  sync: 'sync',
+  refresh: 'refresh',
+  terminate: 'terminate a sync',
+  suspend: 'change auto-sync',
+  resume: 'change auto-sync',
+  rollback: 'roll back',
+  validate: 'validate',
+}
+
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -280,10 +290,16 @@ export function GitOpsDetailLayout(props: GitOpsDetailLayoutProps) {
   const rolePermissions = Object.values(props.actionPermissions || {}).filter(permission => !permission.unsupported)
   const allActionsRestricted = rolePermissions.length > 0 && rolePermissions.every(permission => permission.allowed === false)
   const deniedPermissions = uniqueGitOpsPermissions(rolePermissions.filter(permission => permission.allowed === false).flatMap(permission => permission.denied ?? []))
+  const deniedArgoActions = [...new Set(Object.entries(ARGO_ACTION_LABELS)
+    .filter(([action]) => props.actionPermissions?.[action]?.allowed === false && !props.actionPermissions[action].unsupported)
+    .map(([, label]) => label))]
+  const argoDenialReason = deniedArgoActions.length > 0
+    ? `Your role can't ${deniedArgoActions.length === 1 ? deniedArgoActions[0] : `${deniedArgoActions.slice(0, -1).join(', ')} or ${deniedArgoActions.at(-1)}`} for this Application.`
+    : undefined
   // With permission details, one merged sentence covers every denied action;
   // a host passing only reasons gets them listed as-is.
   const denialReasons = deniedPermissions.length > 0
-    ? [gitOpsDenialMessage(deniedPermissions)]
+    ? [isArgoApp && argoDenialReason ? argoDenialReason : gitOpsDenialMessage(deniedPermissions)]
     : [...new Set(Object.entries(props.actionDisabledReasons || {})
       .filter(([action]) => !props.actionPermissions?.[action]?.unsupported)
       .map(([, reason]) => reason)
@@ -384,8 +400,8 @@ export function GitOpsDetailLayout(props: GitOpsDetailLayoutProps) {
                   <Collapse open={permissionsOpen} id={permissionsDisclosure.panelId}>
                     <div className="mt-2 max-w-xl space-y-2 rounded border border-theme-border bg-theme-surface p-3">
                       {denialReasons.map(reason => <p key={reason}>{reason}</p>)}
-                      {/* The chart's write add-on covers Argo CD Applications only; stock Flux already grants admin/edit. */}
-                      <p>An admin can grant access with {props.isCloudDeployment && isArgoApp && <>the chart's <code>cloud.defaultRbac.integrationWrite.gitops.owner</code> setting (owners only) or </>}a RoleBinding{deniedGrants.length > 0 ? ' allowing:' : '.'}</p>
+                      {props.isCloudDeployment && isArgoApp && <p>For Radar Cloud owners using the default roles, run <code>helm upgrade</code> on the Radar chart to apply the Argo CD write grant. One-click upgrades update only the image.</p>}
+                      <p>{props.isCloudDeployment && isArgoApp ? 'For other roles, an admin can grant access with' : 'An admin can grant access with'} a RoleBinding{deniedGrants.length > 0 ? ' allowing:' : '.'}</p>
                       {deniedGrants.length > 0 && <ul className="list-disc space-y-1 pl-4">
                         {deniedGrants.slice(0, 4).map(grant => <li key={grant}>{grant.split(' ').map((word, index) => <span key={index}><span className="whitespace-nowrap">{word}</span>{' '}</span>)}</li>)}
                         {deniedGrants.length > 4 && <li>And {deniedGrants.length - 4} more denied permission{deniedGrants.length === 5 ? '' : 's'}.</li>}

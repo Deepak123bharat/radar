@@ -17,11 +17,7 @@ function verbsText(denials: GitOpsPermission[]): string {
   return verbs.sort((a, b) => rank(a) - rank(b)).map(verb => verb === 'get' ? 'read' : verb).join(' or ')
 }
 
-/**
- * One sentence naming each object the role can't act on. A denied read of the
- * target notes that Radar reads it with its own access, because the action is
- * offered on a page that displays that object.
- */
+/** One sentence naming each object the role can't act on. */
 export function gitOpsDenialMessage(denials: GitOpsPermission[]): string {
   const target = denials.filter(denial => !denial.source)
   const source = denials.filter(denial => denial.source)
@@ -39,7 +35,6 @@ export function gitOpsDenialMessage(denials: GitOpsPermission[]): string {
       ? ` or its source ${sourceLabel}`
       : `, or ${verbsText(source)} its source ${sourceLabel}`
   }
-  if (target.some(denial => denial.verb === 'get')) message += ' (Radar reads it with its own access)'
   return `${message}.`
 }
 

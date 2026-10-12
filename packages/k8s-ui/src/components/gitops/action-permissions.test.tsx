@@ -34,19 +34,35 @@ describe('GitOps permission gates on rendered controls', () => {
     expect(html).not.toContain('cloud.defaultRbac.integrationWrite')
     expect(html).not.toContain('Chart RBAC settings')
     expect(html).toContain('a RoleBinding')
+    const doc = new DOMParser().parseFromString(html, 'text/html')
+    expect(doc.body.textContent).toContain("Your role can't sync, refresh or change auto-sync for this Application.")
+    expect(doc.body.textContent).toContain('An admin can grant access with a RoleBinding allowing:')
+    expect(doc.body.textContent).not.toContain('helm upgrade')
     expect(html).toContain('applications.argoproj.io')
     expect(html).not.toContain('Sync with source also needs')
     for (const label of ['Sync…', 'Refresh', 'Hard refresh', 'Disable auto-sync']) {
       expect(actionButton(html, label)).toContain('disabled=""')
     }
   })
-  it('shows the Cloud chart guidance only when the host identifies a Cloud deployment', () => {
-    const html = renderToString(<GitOpsDetailLayout {...base} isCloudDeployment actionDisabledReasons={{ refresh: reason }} actionPermissions={{ refresh: argoDenial }} />)
-    expect(html).toContain('cloud.defaultRbac.integrationWrite.gitops.owner')
+  it('tells Cloud owners using default roles to upgrade the chart after an image-only upgrade', () => {
+    const html = renderToString(<GitOpsDetailLayout {...base} isCloudDeployment
+      actionDisabledReasons={{ sync: reason, refresh: reason, suspend: reason }}
+      actionPermissions={{ sync: argoDenial, refresh: argoDenial, suspend: argoDenial }} />)
+    const doc = new DOMParser().parseFromString(html, 'text/html')
+    expect(doc.body.textContent).toContain("Your role can't sync, refresh or change auto-sync for this Application.")
+    expect(doc.body.textContent).toContain('For Radar Cloud owners using the default roles, run helm upgrade on the Radar chart to apply the Argo CD write grant. One-click upgrades update only the image.')
+    expect(doc.querySelector('code')?.textContent).toBe('helm upgrade')
     expect(html).toContain('Chart RBAC settings')
     expect(html).toContain('README.md#cloud-owner-integration-writes')
-    expect(html).toContain('setting (owners only) or')
-    expect(html).toContain('a RoleBinding')
+    expect(doc.body.textContent).not.toContain('cloud.defaultRbac.integrationWrite.gitops.owner')
+  })
+  it('keeps the Cloud member grant guidance separate from the owner-only chart upgrade', () => {
+    const html = renderToString(<GitOpsDetailLayout {...base} isCloudDeployment
+      actionDisabledReasons={{ refresh: reason }} actionPermissions={{ refresh: argoDenial }} />)
+    const doc = new DOMParser().parseFromString(html, 'text/html')
+    expect(doc.body.textContent).toContain("Your role can't refresh for this Application.")
+    expect(doc.body.textContent).toContain('For other roles, an admin can grant access with a RoleBinding allowing:')
+    expect([...doc.querySelectorAll('li')].map(item => item.textContent!.trim())).toEqual(['patch applications.argoproj.io in argocd'])
   })
   it('does not point Flux denials at the chart setting, which grants Argo CD Applications only', () => {
     const kustomizationPatch = { verb: 'patch', resource: 'kustomizations', group: 'kustomize.toolkit.fluxcd.io', namespace: 'apps', kind: 'Kustomization', name: 'demo' }
@@ -59,6 +75,7 @@ describe('GitOps permission gates on rendered controls', () => {
     expect(html).toContain('Actions restricted for your role')
     expect(html).not.toContain('cloud.defaultRbac.integrationWrite')
     expect(html).not.toContain('Chart RBAC settings')
+    expect(html).not.toContain('helm upgrade')
     expect(html).toContain('a RoleBinding')
   })
   it('names only the denied cross-namespace source grants for partially allowed Flux actions', () => {
@@ -86,9 +103,18 @@ describe('GitOps permission gates on rendered controls', () => {
     const doc = new DOMParser().parseFromString(html, 'text/html')
     expect(doc.body.textContent).toContain('Actions restricted for your role')
     expect(doc.body.textContent).not.toContain('Some actions restricted')
-    expect(doc.body.textContent).toContain("Your role can't read or patch Argo CD Application demo in argocd (Radar reads it with its own access).")
+    expect(doc.body.textContent).toContain("Your role can't sync, refresh or change auto-sync for this Application.")
+    expect(doc.body.textContent).not.toContain('Radar reads it with its own access')
     expect(html).not.toContain('sync reason')
     expect([...doc.querySelectorAll('li')].map(item => item.textContent!.trim())).toEqual(['patch applications.argoproj.io in argocd', 'get applications.argoproj.io in argocd'])
+  })
+  it('names only denied Argo actions and combines both auto-sync directions', () => {
+    const html = renderToString(<GitOpsDetailLayout {...base}
+      actionPermissions={{ sync: { allowed: true }, refresh: { allowed: true }, suspend: argoDenial, resume: argoDenial, rollback: { allowed: false, unsupported: true } }} />)
+    const doc = new DOMParser().parseFromString(html, 'text/html')
+    expect(doc.body.textContent).toContain("Your role can't change auto-sync for this Application.")
+    expect(doc.body.textContent).not.toContain("Your role can't sync")
+    expect(doc.body.textContent).not.toContain('roll back')
   })
   it('keeps an unsupported action out of the role restrictions', () => {
     const html = renderToString(<GitOpsDetailLayout {...base}

@@ -29,15 +29,15 @@ describe('GitOps action permission states', () => {
     } } }, false)['sync-with-source']
     expect(reason).toBe("Your role can't patch Flux Kustomization web in apps or its source GitRepository sources/repo.")
   })
-  it('names the Argo CD Application and explains a denied read of the object on screen', () => {
+  it('names the Argo CD Application and every denied operation without an access parenthetical', () => {
     const reasons = gitOpsDisabledReasons('supported', { actions: {
       refresh: { allowed: false, denied: [{ ...argoApp, verb: 'patch' }] },
       sync: { allowed: false, denied: [{ ...argoApp, verb: 'get' }, { ...argoApp, verb: 'patch' }] },
       suspend: { allowed: false, denied: [{ ...argoApp, verb: 'get' }] },
     } }, false)
     expect(reasons.refresh).toBe("Your role can't patch Argo CD Application demo in argocd.")
-    expect(reasons.sync).toBe("Your role can't read or patch Argo CD Application demo in argocd (Radar reads it with its own access).")
-    expect(reasons.suspend).toBe("Your role can't read Argo CD Application demo in argocd (Radar reads it with its own access).")
+    expect(reasons.sync).toBe("Your role can't read or patch Argo CD Application demo in argocd.")
+    expect(reasons.suspend).toBe("Your role can't read Argo CD Application demo in argocd.")
   })
   it('disables an unsupported action with its reason, outside the role permissions', () => {
     const reason = "Sync with source doesn't support HelmRelease apps/web because it uses spec.chartRef."
@@ -48,11 +48,19 @@ describe('GitOps action permission states', () => {
   it('names both missing grants on a Flux target the role can neither read nor patch', () => {
     const denied = [{ ...kustomization, verb: 'get' }, { ...kustomization, verb: 'patch' }]
     expect(gitOpsActionPermissions('supported', { actions: { reconcile: { allowed: false, denied } } }, false)?.reconcile.denied).toEqual(denied)
-    expect(gitOpsDisabledReasons('supported', { actions: { reconcile: { allowed: false, denied } } }, false).reconcile).toBe("Your role can't read or patch Flux Kustomization web in apps (Radar reads it with its own access).")
+    expect(gitOpsDisabledReasons('supported', { actions: { reconcile: { allowed: false, denied } } }, false).reconcile).toBe("Your role can't read or patch Flux Kustomization web in apps.")
   })
   it('shares denial copy with runtime errors and keeps the raw text as detail', () => {
     const error = new GitOpsActionError({ error: 'raw', error_code: 'rbac_denied', verb: 'patch', ...gitRepository, source: undefined }, 403)
     expect(error.message).toBe("Your role can't patch Flux GitRepository repo in sources.")
+    expect(error.rawDetail).toBe('raw')
+  })
+  it('shares denied-read copy between capability checks and structured HTTP errors', () => {
+    const denied = { ...argoApp, verb: 'get' }
+    const reason = gitOpsDisabledReasons('supported', { actions: { sync: { allowed: false, denied: [denied] } } }, false).sync
+    const error = new GitOpsActionError({ error: 'raw', error_code: 'rbac_denied', ...denied }, 403)
+    expect(error.message).toBe("Your role can't read Argo CD Application demo in argocd.")
+    expect(error.message).toBe(reason)
     expect(error.rawDetail).toBe('raw')
   })
   it('labels admission denials without blaming a role', () => {
