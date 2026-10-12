@@ -379,7 +379,8 @@ export const Omnibar = forwardRef<OmnibarHandle, OmnibarProps>(function Omnibar(
   const resourcesStale = searchActive && (debounced !== queryString || isPlaceholderData || (resourceRows.length === 0 && isFetching))
   // A note describes the response it came from: hide it while the shown data
   // belongs to another query, but not during a background refetch of this one.
-  const shownNote = searchActive && !isError && debounced === queryString && !isPlaceholderData ? note : undefined
+  const currentData = searchData !== undefined && debounced === queryString && !isPlaceholderData
+  const shownNote = searchActive && !isError && currentData ? note : undefined
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Escape') { e.preventDefault(); setOpen(false); inputRef.current?.blur(); return }
@@ -495,7 +496,7 @@ export const Omnibar = forwardRef<OmnibarHandle, OmnibarProps>(function Omnibar(
                   <div className="flex items-center gap-2 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
                     <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> Search is unavailable right now.
                   </div>
-                ) : resourceRows.length === 0 && !isFetching ? (
+                ) : resourceRows.length === 0 && (!isFetching || currentData) ? (
                   <div className="px-3 py-2 text-xs text-theme-text-tertiary">
                     No resources match{freeText ? <> “{freeText}”</> : ''}.
                     {hasNsPill && (

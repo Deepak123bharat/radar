@@ -24,9 +24,9 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-function render(note: OmnibarNote | undefined, isPlaceholderData = false) {
+function render(note: OmnibarNote | undefined, { isPlaceholderData = false, isFetching = false } = {}) {
   act(() => {
-    root.render(<Omnibar onOpenResource={vi.fn()} commandItems={[]} searchData={{ hits: [] }} note={note} isPlaceholderData={isPlaceholderData} />)
+    root.render(<Omnibar onOpenResource={vi.fn()} commandItems={[]} searchData={{ hits: [] }} note={note} isPlaceholderData={isPlaceholderData} isFetching={isFetching} />)
   })
 }
 
@@ -64,8 +64,15 @@ describe('Omnibar note', () => {
   })
 
   it('hides a note that belongs to a previous query', () => {
-    render({ text: 'Still loading — results may change.' }, true)
+    render({ text: 'Still loading — results may change.' }, { isPlaceholderData: true })
     typeQuery('lease')
     expect(document.body.textContent).not.toContain('Still loading')
+  })
+
+  it('keeps the empty state and note steady while the same query re-fetches', () => {
+    render({ text: 'Still loading — results may change.' }, { isFetching: true })
+    typeQuery('lease')
+    expect(document.body.textContent).toContain('No resources match')
+    expect(document.body.textContent).toContain('Still loading — results may change.')
   })
 })
