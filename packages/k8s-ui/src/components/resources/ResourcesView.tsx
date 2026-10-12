@@ -203,7 +203,7 @@ import { GCPManagedControlPlaneCell, GCPManagedMachinePoolCell, GCPMachineCell, 
 import { AzureManagedControlPlaneCell, AzureManagedMachinePoolCell, AzureMachineCell, AzureMachineTemplateCell, AzureManagedClusterCell } from './renderers/azure-capi-cells'
 import { CalicoInfraCell, CalicoPolicyCell } from './renderers/calico-cells'
 import { isCalicoPolicyResource, isCoreNetworkPolicyKind } from './resource-utils-calico'
-import { useRegisterShortcut, useRegisterShortcuts } from '../../hooks/useKeyboardShortcuts'
+import { useRegisterShortcut, useRegisterShortcuts, type KeyboardShortcut } from '../../hooks/useKeyboardShortcuts'
 import { ResourcesSidebar } from './ResourcesSidebar'
 import type { SelectedKindInfo, SidebarCategoryWorkspace } from './ResourcesSidebar'
 import { CompareTray, togglePick, pickIndex, refToParam, SIDE_TONES, type CompareTrayPick, type NamespacedRef } from '../compare'
@@ -3425,6 +3425,10 @@ interface ResourcesViewProps {
   sidebarCategoryWorkspaces?: Record<string, SidebarCategoryWorkspace>
   /** Callback when the [+] create button is clicked. Receives the currently selected kind info. */
   onCreateResource?: (kind: { name: string; kind: string; group: string } | null) => void
+  /** A kind's own view, rendered in place of the table: the sidebar, kind
+   *  selection and the drawer (`?resource=`) stay; the table, its toolbar and
+   *  its keyboard shortcuts do not run. Return null to keep the table. */
+  renderKindView?: (kind: SelectedKindInfo) => React.ReactNode | null
   /** Default kind when the URL does not include one. */
   defaultKind?: SelectedKindInfo
   /** Columns prepended to KNOWN_COLUMNS for every kind. For example, a
@@ -3667,6 +3671,7 @@ export function ResourcesView({
   hideSidebar = false,
   sidebarCategoryWorkspaces,
   onCreateResource,
+  renderKindView,
   defaultKind = DEFAULT_KIND_INFO,
   extraLeadingColumns,
   printerTable,
@@ -3705,6 +3710,8 @@ export function ResourcesView({
     setShowBulkScaleDialog(false)
     setBulkForceDelete(false)
   }, [selectedKind.name, selectedKind.group]) // eslint-disable-line react-hooks/exhaustive-deps
+  const kindView = renderKindView?.(selectedKind) ?? null
+  const tableActive = kindView === null
   const [searchTerm, setSearchTerm] = useState(initialFilters.search)
   // Typing must never wait on the list or the router. The input renders raw
   // searchTerm; filtering consumes the deferred copy (React yields to keep
@@ -3945,6 +3952,8 @@ export function ResourcesView({
   // depends on visibleColumns) and instantly reverts the user's hide.
   const gpuAutoShownKinds = useRef<Set<string>>(new Set())
   useEffect(() => {
+    // The table's own settings: nothing to load (or clear) while a kind view replaces it.
+    if (!tableActive) return
     // Re-arm the skip-initial-save guard per kind. This effect repopulates
     // visible/widths/custom for the new kind via async setState, so the save
     // effect (also keyed to selectedKind) that runs in this same commit still
@@ -4029,10 +4038,11 @@ export function ResourcesView({
     // identity on every refetch, and re-running this effect would reset the
     // user's in-session column choices each time the list polls. The key only
     // changes when the kind changes or an operator upgrade changes the CRD.
-  }, [selectedKind.name, selectedKind.group, extraLeadingColumns, printerColumnsKey])
+  }, [selectedKind.name, selectedKind.group, extraLeadingColumns, printerColumnsKey, tableActive])
 
   // Save column settings when they change (skip the initial load of each kind)
   useEffect(() => {
+    if (!tableActive) return
     if (visibleColumns.size === 0) return // not loaded yet
     for (const k of allColumnKeys) knownColumnKeys.current.add(k)
     if (!isColumnSettingsLoaded.current) {
@@ -4049,7 +4059,7 @@ export function ResourcesView({
     // as across sessions, so a later data refresh can't override user choices.
     hadSavedColumnSettings.current = true
     // allColumnKeysSig, not allColumnKeys: see the memo above.
-  }, [visibleColumns, columnWidths, customColumns, selectedKind.name, selectedKind.group, allColumnKeysSig])
+  }, [visibleColumns, columnWidths, customColumns, selectedKind.name, selectedKind.group, allColumnKeysSig, tableActive])
 
   // Close column picker on outside click or Escape
   useEffect(() => {
@@ -4218,6 +4228,7 @@ export function ResourcesView({
     category: 'Search',
     scope: 'resources',
     handler: () => searchInputRef.current?.focus(),
+    enabled: tableActive,
   })
 
   // Keyboard navigation: highlighted row state
@@ -4317,8 +4328,7 @@ export function ResourcesView({
     onResourceClick?.(isSelected ? null : stripped)
   }, [onRowSelect, onResourceClick, selectedKind.name, selectedKind.group])
 
-  // Register navigation shortcuts
-  useRegisterShortcuts([
+  useRegisterShortcuts(([
     {
       id: 'resources-nav-down',
       keys: 'j',
@@ -4494,7 +4504,7 @@ export function ResourcesView({
         else searchInputRef.current?.blur()
       },
     },
-  ])
+  ] as KeyboardShortcut[]).map((sc) => ({ ...sc, enabled: tableActive && (sc.enabled ?? true) })))
 
   // Refs for accessing filteredResources inside shortcuts (computed later in component)
   const filteredResourceCountRef = useRef(0)
@@ -5889,7 +5899,10 @@ export function ResourcesView({
         />
       )}
 
-      {/* Main Content - Resource Table */}
+      {/* Main Content - the kind's own view, or the resource table */}
+      {kindView !== null ? (
+        <div className="flex-1 flex flex-col overflow-hidden min-w-0 bg-theme-surface">{kindView}</div>
+      ) : (
       <div className="flex-1 flex flex-col overflow-hidden min-w-0 bg-theme-surface">
         {/* Toolbar */}
         <div className="flex items-center gap-3 px-4 py-3 border-b border-theme-border bg-theme-base shrink-0">
@@ -6785,6 +6798,7 @@ export function ResourcesView({
           />
         )}
       </div>
+      )}
     </div>
 
     {/* Bulk delete confirmation */}
