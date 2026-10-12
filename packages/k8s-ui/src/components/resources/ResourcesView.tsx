@@ -3427,7 +3427,7 @@ interface ResourcesViewProps {
   onCreateResource?: (kind: { name: string; kind: string; group: string } | null) => void
   /** A kind's own view, rendered in place of the table: the sidebar, kind
    *  selection and the drawer (`?resource=`) stay; the table, its toolbar and
-   *  its keyboard shortcuts do not run. Return null to keep the table. */
+   *  its keyboard shortcuts do not run. Return null or false to keep the table. */
   renderKindView?: (kind: SelectedKindInfo) => React.ReactNode | null
   /** Default kind when the URL does not include one. */
   defaultKind?: SelectedKindInfo
@@ -3700,18 +3700,23 @@ export function ResourcesView({
       kindFromURL.name !== prev.name || kindFromURL.group !== prev.group ? kindFromURL : prev,
     )
   }, [basePath, defaultKind, locationPathname, locationSearch])
+  const contributedKindView = renderKindView?.(selectedKind)
+  const kindView = contributedKindView === false ? null : contributedKindView ?? null
+  const tableActive = kindView === null
+
   // Notify parent of selected kind changes (including initial mount)
   useEffect(() => {
     onSelectedKindChange?.(selectedKind)
+  }, [selectedKind.name, selectedKind.group]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     setBulkMode(false)
     setCheckedResources(new Set())
     setShowBulkDeleteConfirm(false)
     setShowBulkRestartConfirm(false)
     setShowBulkScaleDialog(false)
     setBulkForceDelete(false)
-  }, [selectedKind.name, selectedKind.group]) // eslint-disable-line react-hooks/exhaustive-deps
-  const kindView = renderKindView?.(selectedKind) ?? null
-  const tableActive = kindView === null
+  }, [selectedKind.name, selectedKind.group, tableActive])
   const [searchTerm, setSearchTerm] = useState(initialFilters.search)
   // Typing must never wait on the list or the router. The input renders raw
   // searchTerm; filtering consumes the deferred copy (React yields to keep
@@ -4248,7 +4253,7 @@ export function ResourcesView({
   useEffect(() => {
     setComparePicks([])
     setCompareMode(false)
-  }, [selectedKind.name, selectedKind.group])
+  }, [selectedKind.name, selectedKind.group, tableActive])
 
   const exitCompareMode = useCallback(() => {
     setCompareMode(false)
@@ -4295,6 +4300,15 @@ export function ResourcesView({
       virtuosoRef.current?.scrollToIndex({ index: highlightedIndex, align: 'center', behavior: 'auto' })
     }
   }, [highlightedIndex])
+
+  useEffect(() => {
+    if (tableActive) return
+    setHighlightedIndex(-1)
+    setShowColumnPicker(false)
+    setOpenColumnFilter(null)
+    setShowProblemsDropdown(false)
+    setShowLabelsDropdown(false)
+  }, [tableActive])
 
   // Open logs for pod / workload resources — provided via props
   const openLogs = onOpenLogs
@@ -6803,7 +6817,7 @@ export function ResourcesView({
 
     {/* Bulk delete confirmation */}
     <ConfirmDialog
-      open={showBulkDeleteConfirm}
+      open={tableActive && showBulkDeleteConfirm}
       onClose={() => { setShowBulkDeleteConfirm(false); setBulkForceDelete(false) }}
       onConfirm={() => {
         onBulkDelete?.(checkedBulkItems, {
@@ -6834,7 +6848,7 @@ export function ResourcesView({
       </label>
     </ConfirmDialog>
     <ConfirmDialog
-      open={showBulkRestartConfirm}
+      open={tableActive && showBulkRestartConfirm}
       onClose={() => setShowBulkRestartConfirm(false)}
       onConfirm={() => {
         onBulkRestart?.(checkedBulkItems, {
@@ -6853,7 +6867,7 @@ export function ResourcesView({
       isClosable
     />
     <ConfirmDialog
-      open={showBulkScaleDialog}
+      open={tableActive && showBulkScaleDialog}
       onClose={() => setShowBulkScaleDialog(false)}
       onConfirm={() => {
         onBulkScale?.(checkedBulkItems, bulkScaleReplicas, {

@@ -22,7 +22,7 @@ describe('custom resource kind view', () => {
     const selected = vi.fn()
     const storageRead = vi.spyOn(Storage.prototype, 'getItem')
     const storageWrite = vi.spyOn(Storage.prototype, 'setItem')
-    const render = (custom: boolean) => act(() => root.render(<KeyboardShortcutProvider><ResourcesView
+    const render = (custom: boolean | undefined) => act(() => root.render(<KeyboardShortcutProvider><ResourcesView
       namespaces={['test']}
       apiResources={[pods]}
       resourceCounts={{ Pod: 1 }}
@@ -31,7 +31,7 @@ describe('custom resource kind view', () => {
       locationSearch=""
       onNavigate={() => {}}
       onResourceClick={selected}
-      renderKindView={kind => custom ? <div data-testid="kind-view">Custom {kind.kind}</div> : null}
+      renderKindView={kind => custom === undefined ? false : custom ? <div data-testid="kind-view">Custom {kind.kind}</div> : null}
     /></KeyboardShortcutProvider>))
     render(true)
     expect(host.querySelector('[data-testid="kind-view"]')?.textContent).toBe('Custom Pod')
@@ -49,5 +49,49 @@ describe('custom resource kind view', () => {
     act(() => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true })))
     act(() => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
     expect(selected).toHaveBeenCalledWith(expect.objectContaining({ kind: 'pods', namespace: 'test', name: 'example' }))
+    render(undefined)
+    expect(host.querySelector('table')).not.toBeNull()
   })
+})
+
+it('closes bulk dialogs when the same kind switches to a custom view and keeps the inspected resource', async () => {
+  host = document.createElement('div'); document.body.append(host); root = createRoot(host)
+  const selected = vi.fn()
+  const remove = vi.fn()
+  const render = (custom: boolean) => act(() => root.render(<KeyboardShortcutProvider><ResourcesView
+    namespaces={['test']}
+    apiResources={[pods]}
+    resourceCounts={{ Pod: 1 }}
+    selectedKindQuery={{ isLoading: false, data: [pod], resourceName: 'pods', group: '' }}
+    selectedResource={{ kind: 'pods', group: '', namespace: 'test', name: 'example' }}
+    locationPathname="/resources/pods"
+    locationSearch=""
+    onNavigate={() => {}}
+    onResourceClick={selected}
+    onBulkDelete={remove}
+    renderKindView={() => custom ? <div data-testid="custom">Custom</div> : null}
+  /></KeyboardShortcutProvider>))
+  render(false)
+  act(() => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'b', bubbles: true })))
+  act(() => host.querySelector<HTMLInputElement>('input[title="Select all"]')!.click())
+  expect(host.textContent).toContain('1 selected')
+  act(() => [...host.querySelectorAll('button')].find(b => b.textContent?.trim() === 'Delete')!.click())
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain('Delete 1 Pod?')
+  render(true)
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)) })
+  expect(host.querySelector('[data-testid="custom"]')).not.toBeNull()
+  expect(document.querySelector('[role="dialog"]')).toBeNull()
+  render(false)
+  expect(host.textContent).not.toContain('1 selected')
+  expect(host.querySelector('input[title="Select all"]')).toBeNull()
+  expect(document.querySelector('[role="dialog"]')).toBeNull()
+  act(() => host.querySelector<SVGElement>('button .lucide-git-compare')!.closest<HTMLButtonElement>('button')!.click())
+  act(() => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true })))
+  act(() => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })))
+  expect(host.querySelector('[aria-label="Compare resources tray"]')?.textContent).toContain('example')
+  render(true)
+  render(false)
+  expect(host.querySelector('[aria-label="Compare resources tray"]')).toBeNull()
+  expect(remove).not.toHaveBeenCalled()
+  expect(selected).not.toHaveBeenCalled()
 })

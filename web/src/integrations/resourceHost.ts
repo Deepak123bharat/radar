@@ -31,9 +31,7 @@ export function hostsForResource(hosts: readonly ResourceHost[], resource: HostR
 }
 
 export function resourceHostForSlot(hosts: readonly ResourceHost[], resource: HostResource, slot: ExclusiveDetailSlot): ResourceHost | undefined {
-  const candidates = hostsForResource(hosts, resource).filter(host => host.detailOwnership?.includes(slot))
-  if (candidates.length > 1) throw new Error(`Resource host ${slot} ownership conflict: ${candidates.map(host => host.id).join(', ')}`)
-  return candidates[0]
+  return hostsForResource(hosts, resource).find(host => host.detailOwnership?.includes(slot))
 }
 
 export function composeResourceHosts(hosts: readonly ResourceHost[]): RendererOverrides {
@@ -63,8 +61,8 @@ export function composeDetailSlots(contributions: readonly { id: string; slots: 
   const summary = summaries[0]?.slots?.renderSummary
   const actions = contributions.filter(host => host.slots?.renderHeaderActions)
   const tabs = [...inheritedTabs, ...contributions.flatMap(host => host.slots?.extraTabs ?? [])]
-  const tabIds = new Set<string>()
-  for (const tab of tabs) {
+  const tabIds = new Set(inheritedTabs.map(tab => tab.id))
+  for (const tab of contributions.flatMap(host => host.slots?.extraTabs ?? [])) {
     if (tabIds.has(tab.id)) throw new Error(`Resource host tab ownership conflict: ${tab.id}`)
     tabIds.add(tab.id)
   }

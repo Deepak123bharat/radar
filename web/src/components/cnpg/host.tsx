@@ -27,7 +27,8 @@ export const cnpgResourceHost: ResourceHost = {
     const tab = params.get('tab')
     if (plural === 'clusters' && (tab === 'timeline' || tab === 'events')) params.set('tab', 'activity')
     const base = cnpgDetailPath({ plural, namespace: resource.namespace, name: resource.name })
-    return `${base}${params.size ? `?${params}` : ''}`
+    const qs = params.toString()
+    return qs ? `${base}?${qs}` : base
   },
   detailSlots: resource => ({ renderSummary: props => renderCNPGSummary({ ...props, group: resource.group }) }),
   logs: (resource, data) => kindToPluralWithGroup(resource.kind, resource.group ?? '') === 'clusters' && isApiGroup(data?.apiVersion, 'postgresql.cnpg.io')

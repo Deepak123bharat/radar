@@ -33,7 +33,7 @@ Consumers must use a bundler that supports module workers created with `new Work
 ## Resource kind views and certainty
 
 `ResourcesView.renderKindView(kind)` optionally replaces a kind's table while
-keeping the sidebar and resource drawer. Return `null` to use the table. Hosts
+keeping the sidebar and resource drawer. Return `null` or `false` to use the table. Hosts
 own data fetching; table shortcuts and column preferences are inactive while a
 replacement is shown.
 

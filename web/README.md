@@ -66,3 +66,7 @@ Host apps can override Radar's runtime behavior without passing props:
 - `setCredentialsMode(mode)` — fetch credentials mode (`same-origin` | `include` | `omit`).
 
 Call these before mounting `<RadarApp>`.
+
+The workspace host presentation uses k8s-ui exports introduced in 1.18.0.
+Publish `@skyhook-io/k8s-ui` 1.18.0 before publishing the next `radar-app` version;
+consumers must install a matching k8s-ui version.
