@@ -3287,7 +3287,9 @@ func handleSearch(ctx context.Context, req *mcp.CallToolRequest, input searchInp
 	// builder routes per-hit by scope; CanReadClusterScoped above
 	// already gates which cluster-scoped kinds are reachable.
 	if input.Context != "none" {
-		if builder := newSearchSummaryContextBuilder(ctx, scanNamespaces); builder != nil {
+		if builder := summarycontext.Within(summarycontext.SearchBudget, func() summarycontext.Builder {
+			return newSearchSummaryContextBuilder(ctx, scanNamespaces)
+		}); builder != nil {
 			opts.SummaryBuilder = search.SummaryBuilderFunc(builder)
 		}
 	}

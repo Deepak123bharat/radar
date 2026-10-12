@@ -600,6 +600,10 @@ What gets reported follows from that:
   watches a namespace on its strength, and a namespace its own credentials can't
   list stays outside its collection (silent on broad searches,
   `collector_scope_limited` when an `ns:` term names it).
+- **Search never waits on warm-up.** Kinds still loading are reported as
+  `kind_sync_pending`, and the per-hit `summaryContext` (health, issue count,
+  managedBy) is left out when it can't be built within about three seconds, as
+  right after a restart while custom-resource discovery runs.
 - **When your namespace access couldn't be determined**, namespaced kinds are not
   searched (fail closed) and the result reports `permission_check_failed` (per named
   kind, or one `*` entry), never `namespace_excluded`.

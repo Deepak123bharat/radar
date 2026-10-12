@@ -14,6 +14,7 @@ package summarycontext
 
 import (
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -33,6 +34,30 @@ import (
 // Service vs corev1 Service, or two custom CRDs both named "Cluster"
 // from different operators). Pass "" for core-group resources.
 type Builder func(obj runtime.Object, u *unstructured.Unstructured, group, kind, namespace, name string) *resourcecontext.ResourceSummaryContext
+
+// SearchBudget bounds how long search waits for its per-hit context (issue
+// index and the topology behind managedBy). Both read custom resources, which
+// right after a restart wait on Radar's custom-resource discovery for tens of
+// seconds on a CRD-heavy cluster; search answers without the context rather
+// than hold its results.
+const SearchBudget = 3 * time.Second
+
+// Within returns what build produces if it finishes within budget, and the
+// zero value otherwise. build keeps running in the background, so the caches
+// it fills are warm for a later request.
+func Within[T any](budget time.Duration, build func() T) T {
+	done := make(chan T, 1)
+	go func() { done <- build() }()
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case v := <-done:
+		return v
+	case <-timer.C:
+		var zero T
+		return zero
+	}
+}
 
 // BuilderFromIndexes assembles the per-request closure. The list path
 // passes the same index for both namespacedIdx and clusterIdx (single-
