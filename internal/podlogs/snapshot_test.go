@@ -166,3 +166,19 @@ func TestSnapshotClipUnknownTimestampStillReportsIncompleteData(t *testing.T) {
 		})
 	}
 }
+
+func TestParseLineAcceptsAllKubernetesTimestampPrecisions(t *testing.T) {
+	for _, tc := range []struct{ line, stamp, content string }{
+		{"2026-10-13T10:00:00Z hi", "2026-10-13T10:00:00Z", "hi"},
+		{"2026-10-13T10:00:00.123456789Z ", "2026-10-13T10:00:00.123456789Z", ""},
+		{"2026-10-13T10:00:00Z ", "2026-10-13T10:00:00Z", ""},
+		{"2026-10-13T10:00:00+00:00 spaced  content", "2026-10-13T10:00:00+00:00", "spaced  content"},
+		{"2026-13-99T10:00:00Z invalid", "", "2026-13-99T10:00:00Z invalid"},
+		{"unstructured log line", "", "unstructured log line"},
+	} {
+		stamp, content := ParseLine(tc.line)
+		if stamp != tc.stamp || content != tc.content {
+			t.Errorf("ParseLine(%q)=(%q,%q), want (%q,%q)", tc.line, stamp, content, tc.stamp, tc.content)
+		}
+	}
+}

@@ -22,6 +22,7 @@ func TestWorkloadLogsStream_ReopenDoesNotRepeatLines(t *testing.T) {
 		"2026-09-28T14:00:00.100000000Z first",
 		"2026-09-28T14:00:05.200000000Z second",
 		"2026-09-28T14:00:05.700000000Z third",
+		"2026-09-28T14:00:06Z hi",
 	}
 	var mu sync.Mutex
 	var sinceTimes []string
@@ -51,10 +52,10 @@ func TestWorkloadLogsStream_ReopenDoesNotRepeatLines(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(sinceTimes) < 2 || sinceTimes[0] != "" || sinceTimes[1] != "2026-09-28T14:00:05Z" {
+	if len(sinceTimes) < 2 || sinceTimes[0] != "" || sinceTimes[1] != "2026-09-28T14:00:06Z" {
 		t.Fatalf("follow requests sinceTime = %q, want a first open without it and a reopen from the last sent second", sinceTimes)
 	}
-	for _, content := range []string{"first", "second", "third"} {
+	for _, content := range []string{"first", "second", "third", "hi"} {
 		if n := strings.Count(stream, `"content":"`+content+`"`); n != 1 {
 			t.Errorf("%q sent %d times, want once:\n%s", content, n, stream)
 		}

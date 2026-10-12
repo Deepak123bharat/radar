@@ -277,14 +277,11 @@ func Sort(logs []Entry) {
 	})
 }
 
-// ParseLine extracts timestamp from a log line (format: 2024-01-20T10:30:00.123456789Z content)
 func ParseLine(line string) (timestamp, content string) {
-	// K8s timestamps are in RFC3339Nano format at the start of the line
-	if len(line) > 30 && line[4] == '-' && line[7] == '-' && line[10] == 'T' {
-		// Find the space after timestamp
-		spaceIdx := strings.Index(line, " ")
-		if spaceIdx > 20 && spaceIdx < 40 {
-			return line[:spaceIdx], line[spaceIdx+1:]
+	prefix, content, found := strings.Cut(line, " ")
+	if found {
+		if _, err := time.Parse(time.RFC3339Nano, prefix); err == nil {
+			return prefix, content
 		}
 	}
 	return "", line

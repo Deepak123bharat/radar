@@ -391,7 +391,7 @@ func (s *Server) handleCNPGClusterLogsStream(w http.ResponseWriter, r *http.Requ
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	logCh := make(chan podlogs.Entry, 1000)
-	unavailableCh := make(chan string)
+	unavailableCh := make(chan podLogSourceFailure)
 	unavailable := podlogs.UnavailableSources{}
 	var active sync.Map
 	roles := map[string]string{}
@@ -402,20 +402,25 @@ func (s *Server) handleCNPGClusterLogsStream(w http.ResponseWriter, r *http.Requ
 			roles[pod.Name] = cnpgInstanceRole(pod)
 			for _, c := range k8s.GetContainersForPod(pod, query.container, true) {
 				key := pod.Name + "/" + c
-				if _, exists := active.Load(key); exists {
-					continue
+				if value, exists := active.Load(key); exists {
+					handle := value.(*podLogStreamHandle)
+					if handle.uid == pod.UID {
+						continue
+					}
+					handle.cancel()
 				}
 				follows++
 				follow := follows
 				opts := podlogs.CursorFor(cursors, key, pod.UID, follow).RestartOptions(c, query.tailLines, query.sinceSeconds)
 				streamCtx, streamCancel := context.WithCancel(ctx)
-				handle := &cnpgStreamHandle{cancel: streamCancel}
+				handle := &podLogStreamHandle{uid: pod.UID, cancel: streamCancel}
 				active.Store(key, handle)
 				go func(podName, key string) {
+					defer streamCancel()
 					defer active.CompareAndDelete(key, handle)
 					if err := followCNPGContainerLogs(streamCtx, client, namespace, podName, opts, follow, logCh); err != nil {
 						select {
-						case unavailableCh <- key:
+						case unavailableCh <- podLogSourceFailure{key: key, uid: handle.uid}:
 						case <-streamCtx.Done():
 						}
 					}
@@ -425,9 +430,9 @@ func (s *Server) handleCNPGClusterLogsStream(w http.ResponseWriter, r *http.Requ
 	}
 	start(pods)
 
-	known := map[string]bool{}
+	known := map[string]types.UID{}
 	for _, p := range pods {
-		known[p.Name] = true
+		known[p.Name] = p.UID
 	}
 	ticker := time.NewTicker(cnpgLogDiscoveryInterval)
 	defer ticker.Stop()
@@ -435,10 +440,11 @@ func (s *Server) handleCNPGClusterLogsStream(w http.ResponseWriter, r *http.Requ
 		select {
 		case <-ctx.Done():
 			return
-		case key := <-unavailableCh:
+		case failure := <-unavailableCh:
+			key := failure.key
 			// A stream canceled during pod removal can still deliver its report.
 			podName, _, _ := strings.Cut(key, "/")
-			if known[podName] && unavailable.Add(key) {
+			if uid, seen := known[podName]; seen && uid == failure.uid && unavailable.Add(key) {
 				sendSSEEvent(w, flusher, "notice", map[string]string{"notice": unavailable.Notice()})
 			}
 		case entry := <-logCh:
@@ -471,8 +477,15 @@ func (s *Server) handleCNPGClusterLogsStream(w http.ResponseWriter, r *http.Requ
 			present := map[string]bool{}
 			for _, p := range currentPods {
 				present[p.Name] = true
-				if !known[p.Name] {
-					known[p.Name] = true
+				if previousUID, seen := known[p.Name]; !seen || previousUID != p.UID {
+					if seen {
+						stopPodLogStreams(&active, cursors, p.Name)
+						if unavailable.RemovePod(p.Name) {
+							sendSSEEvent(w, flusher, "notice", map[string]string{"notice": unavailable.Notice()})
+						}
+						sendSSEEvent(w, flusher, "pod_removed", map[string]string{"pod": p.Name, "reason": "replaced"})
+					}
+					known[p.Name] = p.UID
 					sendSSEEvent(w, flusher, "pod_added", map[string]any{"pods": []podlogs.PodInfo{podlogs.BuildPodInfo(p, time.Now())}})
 				}
 			}
@@ -481,18 +494,7 @@ func (s *Server) handleCNPGClusterLogsStream(w http.ResponseWriter, r *http.Requ
 					continue
 				}
 				delete(known, podName)
-				active.Range(func(key, value any) bool {
-					if strings.HasPrefix(key.(string), podName+"/") {
-						value.(*cnpgStreamHandle).cancel()
-						active.Delete(key)
-					}
-					return true
-				})
-				for key := range cursors {
-					if strings.HasPrefix(key, podName+"/") {
-						delete(cursors, key)
-					}
-				}
+				stopPodLogStreams(&active, cursors, podName)
 				if unavailable.RemovePod(podName) {
 					sendSSEEvent(w, flusher, "notice", map[string]string{"notice": unavailable.Notice()})
 				}
@@ -501,10 +503,6 @@ func (s *Server) handleCNPGClusterLogsStream(w http.ResponseWriter, r *http.Requ
 			start(currentPods)
 		}
 	}
-}
-
-type cnpgStreamHandle struct {
-	cancel context.CancelFunc
 }
 
 // followCNPGContainerLogs returns k8score.ErrLogsUnavailable when the node

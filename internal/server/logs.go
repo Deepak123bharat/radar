@@ -9,15 +9,42 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/podlogs"
 	"github.com/skyhook-io/radar/pkg/k8score"
 )
+
+type podLogStreamHandle struct {
+	uid    types.UID
+	cancel context.CancelFunc
+}
+
+type podLogSourceFailure struct {
+	key string
+	uid types.UID
+}
+
+func stopPodLogStreams(active *sync.Map, cursors map[string]*podlogs.StreamCursor, podName string) {
+	active.Range(func(key, value any) bool {
+		if strings.HasPrefix(key.(string), podName+"/") {
+			value.(*podLogStreamHandle).cancel()
+			active.CompareAndDelete(key, value)
+		}
+		return true
+	})
+	for key := range cursors {
+		if strings.HasPrefix(key, podName+"/") {
+			delete(cursors, key)
+		}
+	}
+}
 
 // LogsResponse is the response for non-streaming logs
 type LogsResponse struct {
@@ -208,6 +235,19 @@ func (s *Server) handlePodLogsStream(w http.ResponseWriter, r *http.Request) {
 				sendSSEError(w, flusher, k8score.ErrLogsUnavailable.Error())
 				return
 			}
+
+			line = strings.TrimSuffix(line, "\n")
+
+			if line != "" && (err == nil || err == io.EOF) {
+				// Parse timestamp and content
+				timestamp, content := podlogs.ParseLine(line)
+
+				sendSSEEvent(w, flusher, "log", map[string]string{
+					"timestamp": timestamp,
+					"content":   content,
+					"container": container,
+				})
+			}
 			if err != nil {
 				if err == io.EOF {
 					// Stream ended (pod terminated or container finished)
@@ -221,20 +261,6 @@ func (s *Server) handlePodLogsStream(w http.ResponseWriter, r *http.Request) {
 				sendSSEError(w, flusher, fmt.Sprintf("Read error: %v", err))
 				return
 			}
-
-			line = strings.TrimSuffix(line, "\n")
-			if line == "" {
-				continue
-			}
-
-			// Parse timestamp and content
-			timestamp, content := podlogs.ParseLine(line)
-
-			sendSSEEvent(w, flusher, "log", map[string]string{
-				"timestamp": timestamp,
-				"content":   content,
-				"container": container,
-			})
 		}
 	}
 }
