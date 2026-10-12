@@ -4834,7 +4834,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	// 15d. Create Traefik edges
 	// IngressRoute/TCP/UDP → Service/TraefikService (EdgeExposes)
 	// Middleware/MiddlewareTCP → IngressRoute/TCP (EdgeConfigures)
-	// TLSOption, TLSStore, ServersTransport/TCP → IngressRoute/TCP (EdgeConfigures)
+	// TLSOption, ServersTransport/TCP → IngressRoute/TCP (EdgeConfigures)
 	// TraefikService → Service/TraefikService (EdgeExposes)
 	// Child Middleware → Middleware chain (EdgeConfigures)
 	traefikEdgeSeen := make(map[string]bool) // dedup: sourceID|targetID
@@ -4979,26 +4979,8 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				}
 			}
 
-			tlsStoreName, _, _ := unstructured.NestedString(res.Object, "spec", "tls", "store", "name")
-			if tlsStoreName != "" {
-				tlsStoreNs, _, _ := unstructured.NestedString(res.Object, "spec", "tls", "store", "namespace")
-				if tlsStoreNs == "" {
-					tlsStoreNs = routeNs
-				}
-				tlsStoreID := traefikConfigIDs["tlsstore:"+tlsStoreNs+"/"+tlsStoreName]
-				if tlsStoreID != "" {
-					dedupeKey := routeID + "|" + tlsStoreID
-					if !traefikEdgeSeen[dedupeKey] {
-						traefikEdgeSeen[dedupeKey] = true
-						edges = append(edges, Edge{
-							ID:     fmt.Sprintf("%s-to-%s", tlsStoreID, routeID),
-							Source: tlsStoreID,
-							Target: routeID,
-							Type:   EdgeConfigures,
-						})
-					}
-				}
-			}
+			// spec.tls.store is not drawn: Traefik serves every route from the
+			// default TLSStore and ignores a route's store reference.
 
 			// Certificate → IngressRoute (via spec.tls.secretName matching cert-manager Certificate)
 			tlsSecretName, _, _ := unstructured.NestedString(res.Object, "spec", "tls", "secretName")
@@ -5160,14 +5142,19 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		}
 	}
 
-	// Secret → ServersTransport edges (via spec.rootCAsSecrets[] and spec.certificatesSecrets[])
+	// Secret/ConfigMap → ServersTransport/TCP edges (via configrefs.TraefikTransportRefs)
 	// Secret → TLSOption edges (via spec.clientAuth.secretNames[])
-	// Secret → TLSStore edges (via spec.defaultCertificate.secretName)
-	// Creates Secret nodes on-demand since IncludeSecrets may be false
+	// Secret → TLSStore edges (via configrefs.TraefikTLSStoreSecrets)
+	// Creates Secret and ConfigMap nodes on demand, since IncludeSecrets and
+	// IncludeConfigMaps may be false.
 	existingSecretNodes := make(map[string]bool)
+	existingConfigMapNodes := make(map[string]bool)
 	for _, node := range nodes {
-		if node.Kind == KindSecret {
+		switch node.Kind {
+		case KindSecret:
 			existingSecretNodes[node.ID] = true
+		case KindConfigMap:
+			existingConfigMapNodes[node.ID] = true
 		}
 	}
 	ensureSecretNode := func(namespace, name string) string {
@@ -5191,12 +5178,33 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			continue
 		}
 
-		// Collect secret names from rootCAsSecrets and certificatesSecrets
-		var secretNames []string
-		rootCAsSecrets, _, _ := unstructured.NestedStringSlice(st.Object, "spec", "rootCAsSecrets")
-		secretNames = append(secretNames, rootCAsSecrets...)
-		certSecrets, _, _ := unstructured.NestedStringSlice(st.Object, "spec", "certificatesSecrets")
-		secretNames = append(secretNames, certSecrets...)
+		secretNames, configMapNames := configrefs.TraefikTransportRefs(st.Object, ste.prefix == "serverstransporttcp")
+		for _, cmName := range configMapNames {
+			cmNodeID := fmt.Sprintf("configmap/%s/%s", stNs, cmName)
+			if !existingConfigMapNodes[cmNodeID] {
+				existingConfigMapNodes[cmNodeID] = true
+				nodes = append(nodes, Node{
+					ID:     cmNodeID,
+					Kind:   KindConfigMap,
+					Name:   cmName,
+					Status: StatusUnknown,
+					Data: map[string]any{
+						"namespace": stNs,
+						"labels":    map[string]string{},
+					},
+				})
+			}
+			dedupeKey := stID + "|" + cmNodeID
+			if !traefikEdgeSeen[dedupeKey] {
+				traefikEdgeSeen[dedupeKey] = true
+				edges = append(edges, Edge{
+					ID:     fmt.Sprintf("%s-to-%s", cmNodeID, stID),
+					Source: cmNodeID,
+					Target: stID,
+					Type:   EdgeConfigures,
+				})
+			}
+		}
 
 		for _, secretName := range secretNames {
 			secretNodeID := fmt.Sprintf("secret/%s/%s", stNs, secretName)
@@ -5242,7 +5250,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		}
 	}
 
-	// Secret → TLSStore edges (via spec.defaultCertificate.secretName)
+	// Secret → TLSStore edges (via spec.defaultCertificate and spec.certificates[])
 	for _, entry := range tlsStoreResources {
 		res := entry.resource
 		ns := res.GetNamespace()
@@ -5250,21 +5258,19 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		if storeID == "" {
 			continue
 		}
-		secretName, _, _ := unstructured.NestedString(res.Object, "spec", "defaultCertificate", "secretName")
-		if secretName == "" {
-			continue
-		}
-		secretNodeID := fmt.Sprintf("secret/%s/%s", ns, secretName)
-		ensureSecretNode(ns, secretName)
-		dedupeKey := storeID + "|" + secretNodeID
-		if !traefikEdgeSeen[dedupeKey] {
-			traefikEdgeSeen[dedupeKey] = true
-			edges = append(edges, Edge{
-				ID:     fmt.Sprintf("%s-to-%s", secretNodeID, storeID),
-				Source: secretNodeID,
-				Target: storeID,
-				Type:   EdgeConfigures,
-			})
+		for _, secretName := range configrefs.TraefikTLSStoreSecrets(res.Object) {
+			secretNodeID := fmt.Sprintf("secret/%s/%s", ns, secretName)
+			ensureSecretNode(ns, secretName)
+			dedupeKey := storeID + "|" + secretNodeID
+			if !traefikEdgeSeen[dedupeKey] {
+				traefikEdgeSeen[dedupeKey] = true
+				edges = append(edges, Edge{
+					ID:     fmt.Sprintf("%s-to-%s", secretNodeID, storeID),
+					Source: secretNodeID,
+					Target: storeID,
+					Type:   EdgeConfigures,
+				})
+			}
 		}
 	}
 

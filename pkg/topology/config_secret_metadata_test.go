@@ -44,6 +44,7 @@ func TestConfigSecretMetadataWithoutWorkloadSecretNodes(t *testing.T) {
 					{"serverstransport/app/transport", "app", "st-client"},
 					{"tlsoption/app/options", "app", "opt-ca"},
 					{"tlsstore/app/store", "app", "store-cert"},
+					{"tlsstore/app/store", "app", "extra-cert"},
 					{"httpproxy/app/proxy", "certs", "observed"},
 					{"httpproxy/app/local", "app", "observed"},
 				}
@@ -53,7 +54,7 @@ func TestConfigSecretMetadataWithoutWorkloadSecretNodes(t *testing.T) {
 				}{
 					{"traefik.io", "serverstransports", "ServersTransport", "transport", map[string]any{"rootCAsSecrets": []any{"st-ca", "missing"}, "certificatesSecrets": []any{"st-client"}}},
 					{"traefik.io", "tlsoptions", "TLSOption", "options", map[string]any{"clientAuth": map[string]any{"secretNames": []any{"opt-ca"}}}},
-					{"traefik.io", "tlsstores", "TLSStore", "store", map[string]any{"defaultCertificate": map[string]any{"secretName": "store-cert"}}},
+					{"traefik.io", "tlsstores", "TLSStore", "store", map[string]any{"defaultCertificate": map[string]any{"secretName": "store-cert"}, "certificates": []any{map[string]any{"secretName": "extra-cert"}, map[string]any{"secretName": "store-cert"}}}},
 					{"projectcontour.io", "httpproxies", "HTTPProxy", "proxy", map[string]any{"virtualhost": map[string]any{"tls": map[string]any{"secretName": "certs/observed"}}}},
 					{"projectcontour.io", "httpproxies", "HTTPProxy", "local", map[string]any{"virtualhost": map[string]any{"tls": map[string]any{"secretName": "/observed"}}}},
 				} {
