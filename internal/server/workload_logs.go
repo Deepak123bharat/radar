@@ -526,10 +526,11 @@ func (s *Server) handleWorkloadLogsStream(w http.ResponseWriter, r *http.Request
 
 		case entry := <-logCh:
 			key := entry.Pod + "/" + entry.Container
-			if unavailable.Remove(key) {
+			cursor := cursors[key]
+			if cursor != nil && cursor.FromCurrentPod(entry) && unavailable.Remove(key) {
 				sendSSEEvent(w, flusher, "notice", map[string]string{"notice": unavailable.Notice()})
 			}
-			if cursor := cursors[key]; cursor != nil && !cursor.Admit(entry) {
+			if cursor != nil && !cursor.Admit(entry) {
 				continue
 			}
 			sendSSEEvent(w, flusher, "log", entry)

@@ -448,10 +448,12 @@ func (s *Server) handleCNPGClusterLogsStream(w http.ResponseWriter, r *http.Requ
 				sendSSEEvent(w, flusher, "notice", map[string]string{"notice": unavailable.Notice()})
 			}
 		case entry := <-logCh:
-			if unavailable.Remove(entry.Pod + "/" + entry.Container) {
+			key := entry.Pod + "/" + entry.Container
+			cursor := cursors[key]
+			if cursor != nil && cursor.FromCurrentPod(entry) && unavailable.Remove(key) {
 				sendSSEEvent(w, flusher, "notice", map[string]string{"notice": unavailable.Notice()})
 			}
-			if cursor := cursors[entry.Pod+"/"+entry.Container]; cursor != nil && !cursor.Admit(entry) {
+			if cursor != nil && !cursor.Admit(entry) {
 				continue
 			}
 			if !query.keep(entry) {
