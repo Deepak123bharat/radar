@@ -479,3 +479,22 @@ func TestGroupedCustomOwnerIsEnrolledWithoutBecomingGroupOwnership(t *testing.T)
 		t.Fatalf("synthetic group became garbage collection: %+v", preview)
 	}
 }
+
+func TestActualPodGroupCRDKeepsItsMetadataAncestors(t *testing.T) {
+	widgets := schema.GroupVersionResource{Group: "parents.example.io", Version: "v1", Resource: "widgets"}
+	groups := schema.GroupVersionResource{Group: "scheduling.example.io", Version: "v1", Resource: "podgroups"}
+	parent := genericIdentityObject(widgets, "Widget", "team", "root")
+	parent.SetUID("root-uid")
+	group := genericIdentityObject(groups, "PodGroup", "team", "batch")
+	group.SetUID("group-uid")
+	group.SetOwnerReferences([]metav1.OwnerReference{ownerRef("parents.example.io/v1", "Widget", "root", "root-uid", true)})
+	provider := &mockProvider{pods: []*corev1.Pod{{ObjectMeta: metav1.ObjectMeta{Name: "worker", Namespace: "team", UID: "pod-uid", OwnerReferences: []metav1.OwnerReference{ownerRef("scheduling.example.io/v1", "PodGroup", "batch", "group-uid", true)}}}}}
+	dynamic := &genericIdentityDynamic{watched: []schema.GroupVersionResource{widgets, groups}, kinds: map[schema.GroupVersionResource]string{widgets: "Widget", groups: "PodGroup"}, resources: map[schema.GroupVersionResource][]*unstructured.Unstructured{widgets: {parent}, groups: {group}}, listCalls: make(map[schema.GroupVersionResource]int)}
+	topo, err := NewBuilder(provider).WithDynamic(dynamic).Build(DefaultBuildOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(topo.Nodes) != 3 {
+		t.Fatalf("actual PodGroup lost metadata ancestors: %+v", topo.Nodes)
+	}
+}
