@@ -23,6 +23,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/internal/podlogs"
 	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
@@ -39,13 +40,13 @@ const (
 // Pods and SourceLabels list only the instances that contributed a source to
 // this snapshot; SourceLabels maps a Pod to its instance role.
 type CNPGClusterLogsResponse struct {
-	UID          types.UID          `json:"uid"`
-	Pods         []WorkloadPodInfo  `json:"pods"`
-	Logs         []workloadLogEntry `json:"logs"`
-	Notice       string             `json:"notice"`
-	SourceLabels map[string]string  `json:"sourceLabels,omitempty"`
-	CapturedAt   string             `json:"capturedAt"`
-	EmptyMessage string             `json:"emptyMessage"`
+	UID          types.UID         `json:"uid"`
+	Pods         []podlogs.PodInfo `json:"pods"`
+	Logs         []podlogs.Entry   `json:"logs"`
+	Notice       string            `json:"notice"`
+	SourceLabels map[string]string `json:"sourceLabels,omitempty"`
+	CapturedAt   string            `json:"capturedAt"`
+	EmptyMessage string            `json:"emptyMessage"`
 }
 
 type cnpgLogQuery struct {
@@ -60,8 +61,8 @@ func parseCNPGLogQuery(r *http.Request, now time.Time) (cnpgLogQuery, error) {
 	q := r.URL.Query()
 	out := cnpgLogQuery{
 		container:    q.Get("container"),
-		tailLines:    parseTailLines(q.Get("tailLines"), cnpgDefaultLogTailLines),
-		sinceSeconds: parseSinceSeconds(q.Get("sinceSeconds")),
+		tailLines:    podlogs.ParseTailLines(q.Get("tailLines"), cnpgDefaultLogTailLines),
+		sinceSeconds: podlogs.ParseSinceSeconds(q.Get("sinceSeconds")),
 		pod:          q.Get("pod"),
 	}
 	if out.container == "" {
@@ -84,7 +85,7 @@ func parseCNPGLogQuery(r *http.Request, now time.Time) (cnpgLogQuery, error) {
 	return out, nil
 }
 
-func (q cnpgLogQuery) keep(entry workloadLogEntry) bool {
+func (q cnpgLogQuery) keep(entry podlogs.Entry) bool {
 	if q.sinceTime.IsZero() || entry.Timestamp == "" {
 		return true
 	}
@@ -205,7 +206,7 @@ type cnpgLogRecord struct {
 
 // annotateCNPGLogEntry fills the parsed fields of a CloudNativePG log line and
 // leaves anything that is not one untouched.
-func annotateCNPGLogEntry(entry *workloadLogEntry) {
+func annotateCNPGLogEntry(entry *podlogs.Entry) {
 	content := strings.TrimSpace(entry.Content)
 	if !strings.HasPrefix(content, "{") {
 		return
@@ -284,8 +285,8 @@ func (s *Server) handleCNPGClusterLogs(w http.ResponseWriter, r *http.Request) {
 
 	resp := CNPGClusterLogsResponse{
 		UID:          cluster.GetUID(),
-		Pods:         []WorkloadPodInfo{},
-		Logs:         []workloadLogEntry{},
+		Pods:         []podlogs.PodInfo{},
+		Logs:         []podlogs.Entry{},
 		CapturedAt:   time.Now().UTC().Format(time.RFC3339),
 		EmptyMessage: cnpgLogsEmptyMessage,
 	}
@@ -300,7 +301,7 @@ func (s *Server) handleCNPGClusterLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	snapshot := collectLogsFromPods(r.Context(), client, namespace, pods, query.container, query.tailLines, query.sinceSeconds, true)
+	snapshot := podlogs.CollectPods(r.Context(), client, namespace, pods, query.container, query.tailLines, query.sinceSeconds, true)
 	shown := []*corev1.Pod{}
 	sourceLabels := map[string]string{}
 	for _, p := range pods {
@@ -320,8 +321,8 @@ func (s *Server) handleCNPGClusterLogs(w http.ResponseWriter, r *http.Request) {
 		annotateCNPGLogEntry(&entry)
 		resp.Logs = append(resp.Logs, entry)
 	}
-	sortLogsByTimestamp(resp.Logs)
-	resp.Pods = buildPodInfos(shown)
+	podlogs.Sort(resp.Logs)
+	resp.Pods = podlogs.BuildPodInfos(shown)
 	resp.Notice = snapshot.Notice
 	if len(sourceLabels) > 0 {
 		resp.SourceLabels = sourceLabels
@@ -384,17 +385,17 @@ func (s *Server) handleCNPGClusterLogsStream(w http.ResponseWriter, r *http.Requ
 
 	uid := cluster.GetUID()
 	sendSSEEvent(w, flusher, "connected", map[string]any{
-		"cluster": name, "namespace": namespace, "uid": uid, "pods": buildPodInfos(pods),
+		"cluster": name, "namespace": namespace, "uid": uid, "pods": podlogs.BuildPodInfos(pods),
 	})
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	logCh := make(chan workloadLogEntry, 1000)
+	logCh := make(chan podlogs.Entry, 1000)
 	unavailableCh := make(chan string)
-	unavailable := unavailableSources{}
+	unavailable := podlogs.UnavailableSources{}
 	var active sync.Map
 	roles := map[string]string{}
-	cursors := map[string]*logStreamCursor{}
+	cursors := map[string]*podlogs.StreamCursor{}
 	follows := 0
 	start := func(pods []*corev1.Pod) {
 		for _, pod := range pods {
@@ -406,7 +407,7 @@ func (s *Server) handleCNPGClusterLogsStream(w http.ResponseWriter, r *http.Requ
 				}
 				follows++
 				follow := follows
-				opts := cursorFor(cursors, key, pod.UID, follow).restartOptions(c, query.tailLines, query.sinceSeconds)
+				opts := podlogs.CursorFor(cursors, key, pod.UID, follow).RestartOptions(c, query.tailLines, query.sinceSeconds)
 				streamCtx, streamCancel := context.WithCancel(ctx)
 				handle := &cnpgStreamHandle{cancel: streamCancel}
 				active.Store(key, handle)
@@ -437,14 +438,14 @@ func (s *Server) handleCNPGClusterLogsStream(w http.ResponseWriter, r *http.Requ
 		case key := <-unavailableCh:
 			// A stream canceled during pod removal can still deliver its report.
 			podName, _, _ := strings.Cut(key, "/")
-			if known[podName] && unavailable.add(key) {
-				unavailable.send(w, flusher)
+			if known[podName] && unavailable.Add(key) {
+				sendSSEEvent(w, flusher, "notice", map[string]string{"notice": unavailable.Notice()})
 			}
 		case entry := <-logCh:
-			if unavailable.remove(entry.Pod + "/" + entry.Container) {
-				unavailable.send(w, flusher)
+			if unavailable.Remove(entry.Pod + "/" + entry.Container) {
+				sendSSEEvent(w, flusher, "notice", map[string]string{"notice": unavailable.Notice()})
 			}
-			if cursor := cursors[entry.Pod+"/"+entry.Container]; cursor != nil && !cursor.admit(entry) {
+			if cursor := cursors[entry.Pod+"/"+entry.Container]; cursor != nil && !cursor.Admit(entry) {
 				continue
 			}
 			if !query.keep(entry) {
@@ -472,7 +473,7 @@ func (s *Server) handleCNPGClusterLogsStream(w http.ResponseWriter, r *http.Requ
 				present[p.Name] = true
 				if !known[p.Name] {
 					known[p.Name] = true
-					sendSSEEvent(w, flusher, "pod_added", map[string]any{"pods": []WorkloadPodInfo{buildPodInfo(p, time.Now())}})
+					sendSSEEvent(w, flusher, "pod_added", map[string]any{"pods": []podlogs.PodInfo{podlogs.BuildPodInfo(p, time.Now())}})
 				}
 			}
 			for podName := range known {
@@ -492,8 +493,8 @@ func (s *Server) handleCNPGClusterLogsStream(w http.ResponseWriter, r *http.Requ
 						delete(cursors, key)
 					}
 				}
-				if unavailable.removePod(podName) {
-					unavailable.send(w, flusher)
+				if unavailable.RemovePod(podName) {
+					sendSSEEvent(w, flusher, "notice", map[string]string{"notice": unavailable.Notice()})
 				}
 				sendSSEEvent(w, flusher, "pod_removed", map[string]string{"pod": podName, "reason": "terminated"})
 			}
@@ -508,7 +509,7 @@ type cnpgStreamHandle struct {
 
 // followCNPGContainerLogs returns k8score.ErrLogsUnavailable when the node
 // answers with its notice instead of logs, and nil for every other ending.
-func followCNPGContainerLogs(ctx context.Context, client kubernetes.Interface, namespace, podName string, opts corev1.PodLogOptions, follow int, logCh chan<- workloadLogEntry) error {
+func followCNPGContainerLogs(ctx context.Context, client kubernetes.Interface, namespace, podName string, opts corev1.PodLogOptions, follow int, logCh chan<- podlogs.Entry) error {
 	stream, err := client.CoreV1().Pods(namespace).GetLogs(podName, &opts).Stream(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -526,9 +527,9 @@ func followCNPGContainerLogs(ctx context.Context, client kubernetes.Interface, n
 			if k8score.IsLogsUnavailableNotice(line) {
 				return k8score.ErrLogsUnavailable
 			}
-			ts, content := parseLogLine(line)
+			ts, content := podlogs.ParseLine(line)
 			select {
-			case logCh <- workloadLogEntry{Pod: podName, Container: opts.Container, Timestamp: ts, Content: content, follow: follow}:
+			case logCh <- podlogs.Entry{Pod: podName, Container: opts.Container, Timestamp: ts, Content: content, Follow: follow}:
 			case <-ctx.Done():
 				return nil
 			}

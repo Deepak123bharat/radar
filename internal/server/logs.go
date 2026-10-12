@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/internal/podlogs"
 	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
@@ -44,8 +45,8 @@ func (s *Server) handlePodLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tailLines := parseTailLines(tailLinesStr, 500)
-	sinceSeconds := parseSinceSeconds(sinceSecondsStr)
+	tailLines := podlogs.ParseTailLines(tailLinesStr, 500)
+	sinceSeconds := podlogs.ParseSinceSeconds(sinceSecondsStr)
 
 	client := s.getClientForRequest(r)
 	if client == nil {
@@ -135,8 +136,8 @@ func (s *Server) handlePodLogsStream(w http.ResponseWriter, r *http.Request) {
 
 	sinceStr := r.URL.Query().Get("sinceSeconds")
 
-	tailLines := parseTailLines(tailLinesStr, 100)
-	sinceSeconds := parseSinceSeconds(sinceStr)
+	tailLines := podlogs.ParseTailLines(tailLinesStr, 100)
+	sinceSeconds := podlogs.ParseSinceSeconds(sinceStr)
 
 	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -227,7 +228,7 @@ func (s *Server) handlePodLogsStream(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Parse timestamp and content
-			timestamp, content := parseLogLine(line)
+			timestamp, content := podlogs.ParseLine(line)
 
 			sendSSEEvent(w, flusher, "log", map[string]string{
 				"timestamp": timestamp,
@@ -273,19 +274,6 @@ func (s *Server) fetchContainerLogs(ctx context.Context, client kubernetes.Inter
 // 400 BadRequest, so any other failure that mentions the phrase is left alone.
 func isNoPreviousContainer(err error) bool {
 	return apierrors.IsBadRequest(err) && strings.Contains(err.Error(), "previous terminated container")
-}
-
-// parseLogLine extracts timestamp from a log line (format: 2024-01-20T10:30:00.123456789Z content)
-func parseLogLine(line string) (timestamp, content string) {
-	// K8s timestamps are in RFC3339Nano format at the start of the line
-	if len(line) > 30 && line[4] == '-' && line[7] == '-' && line[10] == 'T' {
-		// Find the space after timestamp
-		spaceIdx := strings.Index(line, " ")
-		if spaceIdx > 20 && spaceIdx < 40 {
-			return line[:spaceIdx], line[spaceIdx+1:]
-		}
-	}
-	return "", line
 }
 
 // sendSSEEvent sends an SSE event

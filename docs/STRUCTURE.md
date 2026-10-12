@@ -49,6 +49,7 @@ radar/
 │   │   ├── tools_workloads.go # Workload-specific MCP tools
 │   │   └── resources.go       # MCP resource definitions
 │   ├── opencost/              # OpenCost integration (cost analysis)
+│   ├── podlogs/               # Shared Pod metadata, log snapshots and stream replay tracking
 │   ├── prometheus/            # Prometheus client integration
 │   ├── server/
 │   │   ├── server.go          # chi router, main REST endpoints (SOURCE OF TRUTH for routes)
