@@ -36,6 +36,17 @@ func TestCiliumSelectorEvidence(t *testing.T) {
 		{"derived spoof removed", expression("k8s:io.cilium.k8s.namespace.labels.fake", "DoesNotExist"), namespace, true, true},
 		{"cluster unknown", expression("k8s:io.cilium.k8s.policy.cluster", "NotIn", "other"), namespace, false, false},
 		{"other source unknown", expression("container:app", "DoesNotExist"), namespace, false, false},
+		{"ingress identity", expression("reserved:ingress", "Exists"), nil, false, true},
+		{"health identity", map[string]any{"matchLabels": map[string]any{"reserved:health": ""}}, nil, false, true},
+		{"host identity absent", expression("reserved:host", "DoesNotExist"), nil, true, true},
+		{"world identity exclusion", expression("reserved:world", "NotIn", ""), nil, true, true},
+		{"init identity unknown", expression("reserved:init", "Exists"), namespace, false, false},
+		{"unmanaged identity unknown", expression("reserved:unmanaged", "DoesNotExist"), namespace, false, false},
+		{"future reserved identity unknown", expression("reserved:future", "Exists"), namespace, false, false},
+		{"api server identity unknown", expression("reserved:kube-apiserver", "Exists"), namespace, false, false},
+		{"invalid reserved expression", expression("reserved:ingress", "In"), namespace, false, false},
+		{"reserved miss precedes unreadable namespace", map[string]any{"matchLabels": map[string]any{"reserved:ingress": "", "k8s:io.cilium.k8s.namespace.labels.team": "platform"}}, nil, false, true},
+		{"reserved miss despite unknown cluster", map[string]any{"matchLabels": map[string]any{"reserved:ingress": "", "k8s:io.cilium.k8s.policy.cluster": "remote"}}, nil, false, true},
 		{"filtered labels unknown", expression("pod-template-hash", "DoesNotExist"), namespace, false, false},
 		{"malformed map", map[string]any{"matchLabels": []any{"app"}}, namespace, false, false},
 		{"malformed expression", expression("app", "In", int64(42)), namespace, false, false},
@@ -48,6 +59,45 @@ func TestCiliumSelectorEvidence(t *testing.T) {
 				t.Fatalf("got %v/%v (%s), want %v/%v", matches, decided, why, tc.matches, tc.decided)
 			}
 		})
+	}
+}
+
+func TestCiliumReservedIdentityRequirementsStaySeparateFromPodLabels(t *testing.T) {
+	id := CiliumIdentityFor(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "app", Labels: map[string]string{"ingress": "", "health": "", "host": "", "world": ""}}}, nil)
+	for _, key := range []string{"host", "world", "world-ipv4", "world-ipv6", "remote-node", "health", "ingress", "none"} {
+		for _, tc := range []struct {
+			op     string
+			values []any
+			match  bool
+		}{
+			{"Exists", nil, false}, {"In", []any{""}, false},
+			{"DoesNotExist", nil, true}, {"NotIn", []any{""}, true},
+		} {
+			t.Run(key+"/"+tc.op, func(t *testing.T) {
+				sel := map[string]any{"matchExpressions": []any{map[string]any{"key": "reserved:" + key, "operator": tc.op, "values": tc.values}}}
+				matches, decided, why := CompileCiliumSelector(sel).Matches(id)
+				if matches != tc.match || !decided || why != "" {
+					t.Fatalf("got %v/%v (%s), want %v/true", matches, decided, why, tc.match)
+				}
+			})
+		}
+	}
+	for _, key := range []string{"ingress", "health", "host", "world"} {
+		matches, decided, why := CompileCiliumSelector(map[string]any{"matchLabels": map[string]any{"k8s:" + key: ""}}).Matches(id)
+		if !matches || !decided || why != "" {
+			t.Fatalf("ordinary Pod label %s lost: %v/%v (%s)", key, matches, decided, why)
+		}
+	}
+}
+
+func TestCiliumReservedIdentityShortcutDoesNotClaimHostNetworkMatches(t *testing.T) {
+	id := CiliumIdentityFor(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "app"}, Spec: corev1.PodSpec{HostNetwork: true}}, nil)
+	for _, op := range []string{"Exists", "DoesNotExist"} {
+		selector := map[string]any{"matchExpressions": []any{map[string]any{"key": "reserved:host", "operator": op}}}
+		matches, decided, why := CompileCiliumSelector(selector).Matches(id)
+		if matches || decided || why == "" {
+			t.Fatalf("host-network shortcut claimed %s: %v/%v (%s)", op, matches, decided, why)
+		}
 	}
 }
 

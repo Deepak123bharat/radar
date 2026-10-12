@@ -160,13 +160,14 @@ const (
 // Node represents a node in the topology graph
 type Node struct {
 	// Internal provenance lets permission-filtered views recompute uncertainty.
-	policySelectionUnknownSources []string
-	managedResourceKeys           map[string]bool
-	ID                            string         `json:"id"`
-	Kind                          NodeKind       `json:"kind"`
-	Name                          string         `json:"name"`
-	Status                        HealthStatus   `json:"status"`
-	Data                          map[string]any `json:"data"`
+	networkPolicyMatchesIncompleteSources []string
+	managedResourceKeys                   map[string]bool
+	gitopsManagementAuthoritative         bool
+	ID                                    string         `json:"id"`
+	Kind                                  NodeKind       `json:"kind"`
+	Name                                  string         `json:"name"`
+	Status                                HealthStatus   `json:"status"`
+	Data                                  map[string]any `json:"data"`
 }
 
 // Edge represents a connection between two nodes
@@ -270,7 +271,7 @@ func (t *Topology) StripNodeIDs(deny map[string]bool) {
 	for i := range t.Nodes {
 		node := &t.Nodes[i]
 		ns, _ := node.Data["namespace"].(string)
-		if node.Data["policyCoverageWorkloads"] != nil || (hiddenPolicyNamespaces[""] || hiddenPolicyNamespaces[ns]) && (node.Data["policyStatus"] != nil || node.Data["policySelectionUnknown"] != nil) {
+		if node.Data["policyCoverageWorkloads"] != nil || (hiddenPolicyNamespaces[""] || hiddenPolicyNamespaces[ns]) && (node.Data["policyStatus"] != nil || node.Data["networkPolicyMatchesIncomplete"] != nil) {
 			// Topology clones share node Data until a consumer modifies it.
 			node.Data = maps.Clone(node.Data)
 		}
@@ -289,21 +290,21 @@ func (t *Topology) StripNodeIDs(deny map[string]bool) {
 			// The annotation was computed before filtering. Withhold it when
 			// its evidence may include policies the caller cannot see.
 			delete(node.Data, "policyStatus")
-			delete(node.Data, "policySelectionUnknown")
+			delete(node.Data, "networkPolicyMatchesIncomplete")
 		}
-		if len(node.policySelectionUnknownSources) > 0 {
-			visible := make([]string, 0, len(node.policySelectionUnknownSources))
-			for _, id := range node.policySelectionUnknownSources {
+		if len(node.networkPolicyMatchesIncompleteSources) > 0 {
+			visible := make([]string, 0, len(node.networkPolicyMatchesIncompleteSources))
+			for _, id := range node.networkPolicyMatchesIncompleteSources {
 				if !deny[id] {
 					visible = append(visible, id)
 				}
 			}
-			node.policySelectionUnknownSources = visible
+			node.networkPolicyMatchesIncompleteSources = visible
 			node.Data = maps.Clone(node.Data)
 			if len(visible) > 0 {
-				node.Data["policySelectionUnknown"] = true
+				node.Data["networkPolicyMatchesIncomplete"] = true
 			} else {
-				delete(node.Data, "policySelectionUnknown")
+				delete(node.Data, "networkPolicyMatchesIncomplete")
 			}
 		}
 	}
@@ -461,10 +462,6 @@ type ReflectionRelationships struct {
 
 // Relationships holds computed relationships for a resource
 type Relationships struct {
-	// PolicySelectionUnknown means the list of selecting policies may be incomplete.
-	PolicySelectionUnknown bool `json:"policySelectionUnknown,omitempty"`
-	// Internal provenance is permission-filtered before enriching agent context.
-	PolicySelectionUnknownSources []ResourceRef `json:"-"`
 	// IstioServiceDomain is the configured registry domain or upstream default; omitted when unknown.
 	IstioServiceDomain string `json:"istioServiceDomain,omitempty"`
 	// Reflection distinguishes reflection links also retained in ConfigRefs/Consumers.
@@ -486,7 +483,12 @@ type Relationships struct {
 	ScaleTarget     *ResourceRef  `json:"scaleTarget,omitempty"`     // For HPA/ScaledObject: what it scales
 	PDBs            []ResourceRef `json:"pdbs,omitempty"`            // PodDisruptionBudgets protecting this workload
 	NetworkPolicies []ResourceRef `json:"networkPolicies,omitempty"` // NetworkPolicy / CiliumNetworkPolicy / ClusterNetworkPolicy / CiliumClusterwideNetworkPolicy selecting this workload
-	Pods            []ResourceRef `json:"pods,omitempty"`            // Core Pods routed to, or reached through Deployment/Node shortcuts
+	// Radar could not determine whether some readable network policies apply to this resource.
+	// NetworkPolicies retains confirmed matches; absence does not establish completeness.
+	NetworkPolicyMatchesIncomplete bool `json:"networkPolicyMatchesIncomplete,omitempty"`
+	// Internal provenance is permission-filtered before enriching agent context.
+	NetworkPolicyMatchesIncompleteSources []ResourceRef `json:"-"`
+	Pods                                  []ResourceRef `json:"pods,omitempty"` // Core Pods routed to, or reached through Deployment/Node shortcuts
 
 	// Monitors are Prometheus Operator resources scraping this target.
 	Monitors []ResourceRef `json:"monitors,omitempty"`

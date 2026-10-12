@@ -112,7 +112,7 @@ func (idx *RelationshipsIndex) AcceptsManagerHint(ref, target ResourceRef) bool 
 		return true
 	}
 	manager := idx.nodesByResourceKey[resourceid.ResourceKey(ref.Group, ref.Kind, ref.Namespace, ref.Name)]
-	if manager == nil || manager.Data["gitopsManagementAuthoritative"] != true {
+	if manager == nil || !manager.gitopsManagementAuthoritative {
 		return true
 	}
 	targetKey := resourceid.ResourceKey(target.Group, target.Kind, target.Namespace, target.Name)

@@ -734,7 +734,7 @@ export const K8sResourceNode = memo(function K8sResourceNode({
                     policyStatus === "protected"
                       ? "Selected by a network policy; enforcement is not assessed"
                       : policyStatus === "unknown"
-                        ? "Policy selection unknown: Cilium endpoint identity is incomplete"
+                        ? "Radar could not determine whether a network policy applies to this workload"
                         : "No matching network policy found"
                   }
                   position="right"

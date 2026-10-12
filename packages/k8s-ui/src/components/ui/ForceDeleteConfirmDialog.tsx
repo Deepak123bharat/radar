@@ -63,7 +63,7 @@ export function ForceDeleteConfirmDialog({
         {cascadeLoading && (
           <div className="flex items-center gap-2 text-xs text-theme-text-tertiary">
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            Checking for dependent resources...
+            Checking related resources...
           </div>
         )}
 
@@ -75,9 +75,15 @@ export function ForceDeleteConfirmDialog({
           <div className="flex items-start gap-2 rounded border border-theme-border bg-theme-elevated px-3 py-2 text-xs text-warning-text">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
-              Radar couldn&apos;t verify which dependent resources Kubernetes will also delete. Additional resources may be deleted but aren&apos;t shown here.
+              Radar couldn&apos;t resolve this resource in the topology. Related resources may be affected but aren&apos;t shown here.
             </span>
           </div>
+        )}
+
+        {!cascadeLoading && cascadeRootResolved === true && (
+          <p className="text-xs text-theme-text-secondary">
+            This preview shows visible topology relationships. Other resources may be affected.
+          </p>
         )}
 
         <label className="flex items-center gap-2 text-sm text-theme-text-secondary">

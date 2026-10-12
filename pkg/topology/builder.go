@@ -5545,7 +5545,7 @@ func addGitOpsManagedResourceEdges(
 			// Other ownership consumers must not re-infer membership from
 			// stale origin labels after this observed controller says otherwise.
 			if node := nodesByID[sourceID]; node != nil {
-				node.Data["gitopsManagementAuthoritative"] = true
+				node.gitopsManagementAuthoritative = true
 			}
 		}
 		if !local {
@@ -8714,7 +8714,7 @@ func annotateNodePolicyCoverage(
 
 	// Check policy nodes with matchesAllPods flag.
 	for _, n := range nodes {
-		if n.Data["policySelectionUnknown"] == true {
+		if n.Data["networkPolicyMatchesIncomplete"] == true {
 			unknownWorkloads[n.ID] = true
 		}
 		if n.Kind == KindCalicoStagedNetworkPolicy || n.Kind == KindCalicoStagedGlobalNetworkPolicy || n.Kind == KindCalicoStagedKubernetesNetworkPolicy {

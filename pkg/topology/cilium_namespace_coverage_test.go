@@ -66,6 +66,33 @@ func TestCiliumNamespaceSpecsAndClusterwideCoverage(t *testing.T) {
 	}
 }
 
+func TestCiliumIngressPolicyDoesNotMakeApplicationWorkloadsUnknown(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumclusterwidenetworkpolicies"}
+	policy := genericIdentityObject(gvr, "CiliumClusterwideNetworkPolicy", "", "ingress-only")
+	policy.Object["spec"] = map[string]any{"endpointSelector": map[string]any{"matchExpressions": []any{map[string]any{"key": "reserved:ingress", "operator": "Exists"}}}}
+	d := &genericIdentityDynamic{watched: []schema.GroupVersionResource{gvr}, kinds: map[schema.GroupVersionResource]string{gvr: "CiliumClusterwideNetworkPolicy"}, resources: map[schema.GroupVersionResource][]*unstructured.Unstructured{gvr: {policy}}, listCalls: map[schema.GroupVersionResource]int{}}
+	p := &mockProvider{}
+	for _, ns := range []string{"app", "other"} {
+		p.deployments = append(p.deployments, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "web"}, Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "web"}}}}})
+	}
+	opts := DefaultBuildOptions()
+	opts.ShowPolicyEffect = true
+	topo, err := NewBuilder(p).WithDynamic(d).Build(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ns := range []string{"app", "other"} {
+		node := nodeByID(topo.Nodes, "deployment/"+ns+"/web")
+		if node == nil || node.Data["networkPolicyMatchesIncomplete"] != nil || node.Data["policyStatus"] != "unprotected" {
+			t.Fatalf("ingress identity affected application %s: %+v", ns, node)
+		}
+		rel := GetRelationships("deployments", ns, "web", topo, p, d)
+		if rel != nil && (rel.NetworkPolicyMatchesIncomplete || len(rel.NetworkPolicies) > 0) {
+			t.Fatalf("ingress policy joined application %s: %+v", ns, rel)
+		}
+	}
+}
+
 // Exercise the namespaced selector hot path with many unrelated namespaces.
 func BenchmarkCiliumNamespacedPolicySelection(b *testing.B) {
 	const namespaces, workloadsPerNamespace, policiesPerNamespace = 500, 30, 6

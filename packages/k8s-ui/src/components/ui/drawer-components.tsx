@@ -836,7 +836,7 @@ export function RelatedResourcesSection({ relationships, onNavigate }: RelatedRe
     (relationships.healthChecks && relationships.healthChecks.length > 0) ||
     (relationships.stagedPolicies && relationships.stagedPolicies.length > 0) ||
     relationships.scaleTarget ||
-    relationships.policySelectionUnknown
+    relationships.networkPolicyMatchesIncomplete
 
   if (!hasRelationships) return null
 
@@ -888,8 +888,8 @@ export function RelatedResourcesSection({ relationships, onNavigate }: RelatedRe
         {relationships.networkPolicies && relationships.networkPolicies.length > 0 && (
           <RelationshipGroup label="Network Policies" refs={dedupeResourceRefs(relationships.networkPolicies)} onNavigate={onNavigate} />
         )}
-        {relationships.policySelectionUnknown && (
-          <p className="text-xs text-theme-text-secondary">Some Cilium policy selectors could not be evaluated; the list may be incomplete.</p>
+        {relationships.networkPolicyMatchesIncomplete && (
+          <p className="text-xs text-theme-text-secondary">Radar could not determine whether some Cilium network policies apply to this workload. Additional policies may apply.</p>
         )}
         {relationships.resourceClaims && relationships.resourceClaims.length > 0 && (
           <RelationshipGroup label="Resource Claims" refs={dedupeResourceRefs(relationships.resourceClaims)} onNavigate={onNavigate} />

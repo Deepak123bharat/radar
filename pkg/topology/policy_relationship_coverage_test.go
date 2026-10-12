@@ -8,7 +8,7 @@ import (
 
 func TestPolicyRelationshipsIncludeEdgeLessSelectionAndUnknown(t *testing.T) {
 	topo := &Topology{Nodes: []Node{
-		{ID: "deployment/app/web", Kind: KindDeployment, Name: "web", Data: map[string]any{"namespace": "app", "policySelectionUnknown": true}},
+		{ID: "deployment/app/web", Kind: KindDeployment, Name: "web", Data: map[string]any{"namespace": "app", "networkPolicyMatchesIncomplete": true}},
 		{ID: "networkpolicy/app/all", Kind: KindNetworkPolicy, Name: "all", Data: map[string]any{"namespace": "app", "matchesAllPods": true}},
 		{ID: "networkpolicy/other/all", Kind: KindNetworkPolicy, Name: "all", Data: map[string]any{"namespace": "other", "matchesAllPods": true}},
 		{ID: "ciliumclusterwidenetworkpolicy/all", Kind: KindCiliumClusterwideNetworkPolicy, Name: "all", Data: map[string]any{"apiVersion": "cilium.io/v2", "matchesAllPods": true}},
@@ -20,7 +20,7 @@ func TestPolicyRelationshipsIncludeEdgeLessSelectionAndUnknown(t *testing.T) {
 			idx = IndexByResource(topo)
 		}
 		rel := GetRelationshipsWithIndex("deployments", "app", "web", topo, nil, nil, idx)
-		if !rel.PolicySelectionUnknown || len(rel.NetworkPolicies) != 2 {
+		if !rel.NetworkPolicyMatchesIncomplete || len(rel.NetworkPolicies) != 2 {
 			t.Fatalf("indexed=%v: %+v", indexed, rel)
 		}
 		for _, p := range rel.NetworkPolicies {
@@ -33,7 +33,7 @@ func TestPolicyRelationshipsIncludeEdgeLessSelectionAndUnknown(t *testing.T) {
 
 func TestStripPolicyEvidenceCopiesSharedData(t *testing.T) {
 	original := &Topology{Nodes: []Node{
-		{ID: "deployment/app/web", Kind: KindDeployment, Data: map[string]any{"namespace": "app", "policyStatus": "protected", "policySelectionUnknown": true}},
+		{ID: "deployment/app/web", Kind: KindDeployment, Data: map[string]any{"namespace": "app", "policyStatus": "protected", "networkPolicyMatchesIncomplete": true}},
 		{ID: "deployment/hidden/db", Kind: KindDeployment, Data: map[string]any{"namespace": "hidden"}},
 		{ID: "calicoglobalnetworkpolicy/all", Kind: KindCalicoGlobalNetworkPolicy, Data: map[string]any{"policyCoverageWorkloads": []string{"deployment/app/web", "deployment/hidden/db"}}},
 		{ID: "ciliumnetworkpolicy/app/hidden", Kind: KindCiliumNetworkPolicy, Data: map[string]any{"namespace": "app"}},
@@ -44,18 +44,18 @@ func TestStripPolicyEvidenceCopiesSharedData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), "hidden") || strings.Contains(string(encoded), "policyStatus") || strings.Contains(string(encoded), "policySelectionUnknown") {
+	if strings.Contains(string(encoded), "hidden") || strings.Contains(string(encoded), "policyStatus") || strings.Contains(string(encoded), "networkPolicyMatchesIncomplete") {
 		t.Fatal(string(encoded))
 	}
-	if original.Nodes[0].Data["policyStatus"] != "protected" || original.Nodes[0].Data["policySelectionUnknown"] != true || len(original.Nodes[2].Data["policyCoverageWorkloads"].([]string)) != 2 {
+	if original.Nodes[0].Data["policyStatus"] != "protected" || original.Nodes[0].Data["networkPolicyMatchesIncomplete"] != true || len(original.Nodes[2].Data["policyCoverageWorkloads"].([]string)) != 2 {
 		t.Fatal("modified shared cache")
 	}
 }
 
 func TestUnknownPolicySelectionSurvivesWithoutAnyRelationships(t *testing.T) {
-	topo := &Topology{Nodes: []Node{{ID: "deployment/app/web", Kind: KindDeployment, Name: "web", Data: map[string]any{"namespace": "app", "policySelectionUnknown": true}}}}
+	topo := &Topology{Nodes: []Node{{ID: "deployment/app/web", Kind: KindDeployment, Name: "web", Data: map[string]any{"namespace": "app", "networkPolicyMatchesIncomplete": true}}}}
 	rel := GetRelationships("deployments", "app", "web", topo, nil, nil)
-	if rel == nil || !rel.PolicySelectionUnknown {
+	if rel == nil || !rel.NetworkPolicyMatchesIncomplete {
 		t.Fatal("empty edges erased uncertainty")
 	}
 }
@@ -74,7 +74,7 @@ func TestAuthorizedNeighborhoodDoesNotExposeInternalCoverageIDs(t *testing.T) {
 func TestUnknownPolicyProvenanceHonorsFilteredViews(t *testing.T) {
 	hiddenID := "ciliumclusterwidenetworkpolicy/private"
 	original := &Topology{Nodes: []Node{
-		{ID: "deployment/app/web", Kind: KindDeployment, Name: "web", policySelectionUnknownSources: []string{hiddenID}, Data: map[string]any{"namespace": "app", "policySelectionUnknown": true, "policyStatus": "unknown"}},
+		{ID: "deployment/app/web", Kind: KindDeployment, Name: "web", networkPolicyMatchesIncompleteSources: []string{hiddenID}, Data: map[string]any{"namespace": "app", "networkPolicyMatchesIncomplete": true, "policyStatus": "unknown"}},
 		{ID: hiddenID, Kind: KindCiliumClusterwideNetworkPolicy, Name: "private", Data: map[string]any{"apiVersion": "cilium.io/v2"}},
 	}}
 	sub := BuildNeighborhood(original, ResourceRef{Kind: "Deployment", Namespace: "app", Name: "web"}, NeighborhoodOptions{Allow: func(n *Node) bool { return n.Kind != KindCiliumClusterwideNetworkPolicy }})
@@ -82,22 +82,22 @@ func TestUnknownPolicyProvenanceHonorsFilteredViews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), "private") || strings.Contains(string(encoded), "policySelectionUnknown") || strings.Contains(string(encoded), "policyStatus") {
+	if strings.Contains(string(encoded), "private") || strings.Contains(string(encoded), "networkPolicyMatchesIncomplete") || strings.Contains(string(encoded), "policyStatus") {
 		t.Fatal(string(encoded))
 	}
 	filtered := &Topology{Nodes: append([]Node(nil), original.Nodes...)}
 	filtered.StripNodeIDs(map[string]bool{hiddenID: true})
-	if filtered.Nodes[0].Data["policySelectionUnknown"] != nil {
+	if filtered.Nodes[0].Data["networkPolicyMatchesIncomplete"] != nil {
 		t.Fatal("hidden provenance survived strip")
 	}
-	if original.Nodes[0].Data["policySelectionUnknown"] != true || len(original.Nodes[0].policySelectionUnknownSources) != 1 {
+	if original.Nodes[0].Data["networkPolicyMatchesIncomplete"] != true || len(original.Nodes[0].networkPolicyMatchesIncompleteSources) != 1 {
 		t.Fatal("mutated shared provenance")
 	}
 }
 
 func TestPDBDoesNotClaimNetworkPolicySelection(t *testing.T) {
 	for _, unknown := range []bool{false, true} {
-		workload := Node{ID: "deployment/app/web", Kind: KindDeployment, Data: map[string]any{"namespace": "app", "policySelectionUnknown": unknown}}
+		workload := Node{ID: "deployment/app/web", Kind: KindDeployment, Data: map[string]any{"namespace": "app", "networkPolicyMatchesIncomplete": unknown}}
 		nodes := []Node{workload, {ID: "pdb/app/availability", Kind: KindPDB}}
 		annotateNodePolicyCoverage(nodes, []Edge{{Source: "pdb/app/availability", Target: workload.ID, Type: EdgeProtects}}, nil, nil, nil, nil)
 		want := "unprotected"

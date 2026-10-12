@@ -243,10 +243,10 @@ func Build(ctx context.Context, obj runtime.Object, opts Options) *ResourceConte
 		exposes := append(exposedBy, backends...)
 		rc.Exposes = filterRefs(ctx, opts.AccessChecker, toContextRefs(exposes), "exposes", omitted)
 
-		for _, ref := range rel.PolicySelectionUnknownSources {
+		for _, ref := range rel.NetworkPolicyMatchesIncompleteSources {
 			candidate := &ContextRef{Kind: ref.Kind, Group: ref.Group, Namespace: ref.Namespace, Name: ref.Name}
 			if checkRef(ctx, opts.AccessChecker, candidate) {
-				rc.PolicySelectionUnknown = true
+				rc.NetworkPolicyMatchesIncomplete = true
 			} else {
 				omitted.add("selectedBy", OmittedRBACDenied)
 			}

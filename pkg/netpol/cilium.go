@@ -18,6 +18,7 @@ const ciliumNamespaceLabels = "io.cilium.k8s.namespace.labels."
 type CiliumIdentity struct {
 	set            labels.Set
 	namespaceKnown bool
+	hostNetwork    bool
 }
 
 func CiliumIdentityFor(pod *corev1.Pod, namespace *corev1.Namespace) CiliumIdentity {
@@ -39,17 +40,17 @@ func CiliumIdentityFor(pod *corev1.Pod, namespace *corev1.Namespace) CiliumIdent
 			set[ciliumNamespaceLabels+key] = value
 		}
 	}
-	return CiliumIdentity{set: set, namespaceKnown: namespace != nil}
+	return CiliumIdentity{set: set, namespaceKnown: namespace != nil, hostNetwork: pod.Spec.HostNetwork}
 }
 
 // CiliumSelectorMatcher preserves every AND requirement, including distinct
 // source keys that normalize to the same Kubernetes key. Compile once, match
 // many endpoints. Matches reports uncertainty separately from a definite miss.
 type CiliumSelectorMatcher struct {
-	known, namespace labels.Selector
-	unknown          string
-	invalid          bool
-	all              bool
+	known, namespace, nonPod labels.Selector
+	unknown                  string
+	invalid                  bool
+	all                      bool
 }
 
 func CompileCiliumSelector(raw map[string]any) *CiliumSelectorMatcher {
@@ -59,7 +60,7 @@ func CompileCiliumSelector(raw map[string]any) *CiliumSelectorMatcher {
 		m.invalid = true
 		return m
 	}
-	var known, namespace metav1.LabelSelector
+	var known, namespace, nonPod metav1.LabelSelector
 	add := func(requirement metav1.LabelSelectorRequirement) {
 		source, key, prefixed := strings.Cut(requirement.Key, ":")
 		if !prefixed {
@@ -67,6 +68,8 @@ func CompileCiliumSelector(raw map[string]any) *CiliumSelectorMatcher {
 		}
 		requirement.Key = key
 		switch {
+		case prefixed && source == "reserved" && ciliumNonPodIdentityKey(key):
+			nonPod.MatchExpressions = append(nonPod.MatchExpressions, requirement)
 		case prefixed && source != "k8s" && source != "any":
 			m.unknown = "selects on a label source Radar does not model"
 		case key == "io.cilium.k8s.policy.cluster":
@@ -94,6 +97,10 @@ func CompileCiliumSelector(raw map[string]any) *CiliumSelectorMatcher {
 	if err != nil {
 		m.invalid = true
 	}
+	m.nonPod, err = metav1.LabelSelectorAsSelector(&nonPod)
+	if err != nil {
+		m.invalid = true
+	}
 	m.all = len(selector.MatchLabels) == 0 && len(selector.MatchExpressions) == 0 && !m.invalid
 	return m
 }
@@ -103,6 +110,12 @@ func (m *CiliumSelectorMatcher) Matches(id CiliumIdentity) (matches, decided boo
 		return false, false, "has an endpoint selector Radar could not parse"
 	}
 	if !m.known.Matches(id.set) {
+		return false, true, ""
+	}
+	if !m.nonPod.Empty() && id.hostNetwork {
+		return false, false, "selects on a reserved identity for a host-network Pod"
+	}
+	if !m.nonPod.Matches(labels.Set{}) {
 		return false, true, ""
 	}
 	if !m.namespace.Empty() {
@@ -118,6 +131,18 @@ func (m *CiliumSelectorMatcher) Matches(id CiliumIdentity) (matches, decided boo
 		return false, false, m.unknown
 	}
 	return true, true, ""
+}
+
+// These identities describe hosts, external endpoints or Cilium infrastructure,
+// not ordinary Pod endpoints. Keep their sources separate from same-named Pod labels.
+// Init and unmanaged identities require runtime evidence Kubernetes does not supply.
+func ciliumNonPodIdentityKey(key string) bool {
+	switch key {
+	case "host", "world", "world-ipv4", "world-ipv6", "remote-node", "health", "ingress", "none":
+		return true
+	default:
+		return false
+	}
 }
 
 // These keys are excluded by Cilium's default identity-label filter. Its

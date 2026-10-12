@@ -1582,6 +1582,7 @@ type dashboardPolicyWorkload struct {
 	namespace      string
 	labels         map[string]string
 	serviceAccount string
+	hostNetwork    bool
 }
 
 func (s *Server) dashboardPolicyReadScope(r *http.Request, namespaces []string, group, resource string) (clusterWide bool, readable []string) {
@@ -1774,7 +1775,7 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 	}
 
 	workloads := make([]dashboardPolicyWorkload, 0)
-	addWorkload := func(kind, ns, name string, templateLabels map[string]string, serviceAccount string) {
+	addWorkload := func(kind, ns, name string, templateLabels map[string]string, serviceAccount string, hostNetwork bool) {
 		if serviceAccount == "" {
 			serviceAccount = "default"
 		}
@@ -1783,6 +1784,7 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 			namespace:      ns,
 			labels:         templateLabels,
 			serviceAccount: serviceAccount,
+			hostNetwork:    hostNetwork,
 		})
 	}
 
@@ -1790,13 +1792,13 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 		if allNamespaces {
 			deps, _ := depLister.List(labels.Everything())
 			for _, d := range deps {
-				addWorkload("Deployment", d.Namespace, d.Name, d.Spec.Template.Labels, d.Spec.Template.Spec.ServiceAccountName)
+				addWorkload("Deployment", d.Namespace, d.Name, d.Spec.Template.Labels, d.Spec.Template.Spec.ServiceAccountName, d.Spec.Template.Spec.HostNetwork)
 			}
 		} else {
 			for _, ns := range namespaces {
 				deps, _ := depLister.Deployments(ns).List(labels.Everything())
 				for _, d := range deps {
-					addWorkload("Deployment", d.Namespace, d.Name, d.Spec.Template.Labels, d.Spec.Template.Spec.ServiceAccountName)
+					addWorkload("Deployment", d.Namespace, d.Name, d.Spec.Template.Labels, d.Spec.Template.Spec.ServiceAccountName, d.Spec.Template.Spec.HostNetwork)
 				}
 			}
 		}
@@ -1806,13 +1808,13 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 		if allNamespaces {
 			stss, _ := stsLister.List(labels.Everything())
 			for _, s := range stss {
-				addWorkload("StatefulSet", s.Namespace, s.Name, s.Spec.Template.Labels, s.Spec.Template.Spec.ServiceAccountName)
+				addWorkload("StatefulSet", s.Namespace, s.Name, s.Spec.Template.Labels, s.Spec.Template.Spec.ServiceAccountName, s.Spec.Template.Spec.HostNetwork)
 			}
 		} else {
 			for _, ns := range namespaces {
 				stss, _ := stsLister.StatefulSets(ns).List(labels.Everything())
 				for _, s := range stss {
-					addWorkload("StatefulSet", s.Namespace, s.Name, s.Spec.Template.Labels, s.Spec.Template.Spec.ServiceAccountName)
+					addWorkload("StatefulSet", s.Namespace, s.Name, s.Spec.Template.Labels, s.Spec.Template.Spec.ServiceAccountName, s.Spec.Template.Spec.HostNetwork)
 				}
 			}
 		}
@@ -1822,13 +1824,13 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 		if allNamespaces {
 			dss, _ := dsLister.List(labels.Everything())
 			for _, d := range dss {
-				addWorkload("DaemonSet", d.Namespace, d.Name, d.Spec.Template.Labels, d.Spec.Template.Spec.ServiceAccountName)
+				addWorkload("DaemonSet", d.Namespace, d.Name, d.Spec.Template.Labels, d.Spec.Template.Spec.ServiceAccountName, d.Spec.Template.Spec.HostNetwork)
 			}
 		} else {
 			for _, ns := range namespaces {
 				dss, _ := dsLister.DaemonSets(ns).List(labels.Everything())
 				for _, d := range dss {
-					addWorkload("DaemonSet", d.Namespace, d.Name, d.Spec.Template.Labels, d.Spec.Template.Spec.ServiceAccountName)
+					addWorkload("DaemonSet", d.Namespace, d.Name, d.Spec.Template.Labels, d.Spec.Template.Spec.ServiceAccountName, d.Spec.Template.Spec.HostNetwork)
 				}
 			}
 		}
@@ -1846,7 +1848,7 @@ func (s *Server) getDashboardNetworkPolicyCoverage(r *http.Request, cache *k8s.R
 			if _, loaded := ciliumNamespaces[workload.namespace]; !loaded {
 				ciliumNamespaces[workload.namespace] = s.namespaceObject(r, cache, workload.namespace)
 			}
-			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: workload.namespace, Labels: workload.labels}, Spec: corev1.PodSpec{ServiceAccountName: workload.serviceAccount}}
+			pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: workload.namespace, Labels: workload.labels}, Spec: corev1.PodSpec{ServiceAccountName: workload.serviceAccount, HostNetwork: workload.hostNetwork}}
 			ciliumIdentities[workload.key] = netpol.CiliumIdentityFor(pod, ciliumNamespaces[workload.namespace])
 		}
 		break

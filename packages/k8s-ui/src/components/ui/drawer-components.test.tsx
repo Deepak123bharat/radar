@@ -114,6 +114,12 @@ describe('versioned dependency projections', () => {
   })
 })
 
+it('shows incomplete policy selection even when no selecting relationship is known', () => {
+  const html = renderToString(<RelatedResourcesSection relationships={{ networkPolicyMatchesIncomplete: true }} />)
+  expect(html).toContain('Related Resources')
+  expect(html).toContain('Additional policies may apply')
+})
+
 describe('namespace deletion condition polarity', () => {
   it.each([
     'NamespaceDeletionDiscoveryFailure',
@@ -126,13 +132,6 @@ describe('namespace deletion condition polarity', () => {
     expect(defaultConditionTone({ type, status: 'False' })).toBe('ok')
     expect(defaultConditionTone({ type, status: 'Unknown' })).toBe('unknown')
   })
-  })
-})
-
-it('shows incomplete policy selection even when no selecting relationship is known', () => {
- const html=renderToString(<RelatedResourcesSection relationships={{policySelectionUnknown:true}} />)
- expect(html).toContain('Related Resources')
- expect(html).toContain('the list may be incomplete')
 })
 
 describe('monitors projection', () => {

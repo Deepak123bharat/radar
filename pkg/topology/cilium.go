@@ -115,10 +115,9 @@ func (b *Builder) addCiliumPolicyNodes(nodes []Node, edges []Edge, opts BuildOpt
 				candidates = workloadsByNamespace[ns]
 			}
 			for _, workload := range candidates {
-				matches, decided, why := matcher.Selects(identities[workload.id], "")
+				matches, decided, _ := matcher.Selects(identities[workload.id], "")
 				if !decided {
 					unknownWorkloads[workload.id] = append(unknownWorkloads[workload.id], id)
-					data["policySelectionReason"] = why
 					continue
 				}
 				if matches {
@@ -130,8 +129,8 @@ func (b *Builder) addCiliumPolicyNodes(nodes []Node, edges []Edge, opts BuildOpt
 	}
 	for i := range nodes {
 		if sources := unknownWorkloads[nodes[i].ID]; len(sources) > 0 {
-			nodes[i].policySelectionUnknownSources = sources
-			nodes[i].Data["policySelectionUnknown"] = true
+			nodes[i].networkPolicyMatchesIncompleteSources = sources
+			nodes[i].Data["networkPolicyMatchesIncomplete"] = true
 		}
 	}
 

@@ -20,7 +20,7 @@ func TestObservedInventoryConstrainHintsWithoutLosingDescendants(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			topo := &Topology{Nodes: []Node{
-				{ID: "helmrelease/flux/release", Kind: KindHelmRelease, Name: "release", Data: map[string]any{"namespace": "flux", "apiVersion": "helm.toolkit.fluxcd.io/v2", "gitopsManagementAuthoritative": tc.authoritative}},
+				{ID: "helmrelease/flux/release", Kind: KindHelmRelease, Name: "release", gitopsManagementAuthoritative: tc.authoritative, Data: map[string]any{"namespace": "flux", "apiVersion": "helm.toolkit.fluxcd.io/v2"}},
 				{ID: "deployment/app/web", Kind: KindDeployment, Name: "web", Data: map[string]any{"namespace": "app"}},
 				{ID: "pod/app/generated", Kind: KindPod, Name: "generated", Data: map[string]any{"namespace": "app"}},
 			}, Edges: []Edge{{Source: "deployment/app/web", Target: "pod/app/generated", Type: EdgeManages}}}

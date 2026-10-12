@@ -642,7 +642,6 @@ export interface ResourceRef {
 export interface Relationships {
   /** Istio registry domain supplied by the producer; omitted when unknown. */
   istioServiceDomain?: string
-  policySelectionUnknown?: boolean
   reflection?: {
     source?: ResourceRef
     sourceResourceVersion?: string
@@ -672,6 +671,8 @@ export interface Relationships {
   scaleTarget?: ResourceRef
   pdbs?: ResourceRef[]              // PodDisruptionBudgets protecting this workload
   networkPolicies?: ResourceRef[]   // NetworkPolicy / CiliumNetworkPolicy / ClusterNetworkPolicy variants selecting this workload
+  /** Some readable network policies may also apply; the confirmed list can be incomplete. Absence is not a completeness guarantee. */
+  networkPolicyMatchesIncomplete?: boolean
   pods?: ResourceRef[]
   serviceAccount?: ResourceRef      // For Pods: derived from pod.spec.serviceAccountName
   node?: ResourceRef                // For scheduled Pods: derived from pod.spec.nodeName

@@ -419,3 +419,55 @@ func TestDashboardUnreadablePoliciesAreUnknownUnlessKnownPolicySelects(t *testin
 		}
 	}
 }
+
+func TestDashboardCiliumReservedIdentityPreservesHostNetworkUncertainty(t *testing.T) {
+	for _, hostNetwork := range []bool{false, true} {
+		for _, op := range []string{"Exists", "DoesNotExist"} {
+			for _, clusterWide := range []bool{false, true} {
+				name := op + "/" + map[bool]string{false: "pod-network", true: "host-network"}[hostNetwork] + "/" + map[bool]string{false: "namespace", true: "cluster"}[clusterWide]
+				t.Run(name, func(t *testing.T) {
+					dep := dashboardTestDeployment("app", "deployment", "web")
+					dep.Spec.Template.Spec.HostNetwork = hostNetwork
+					template := dep.Spec.Template
+					objects := []runtime.Object{
+						dep,
+						&appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "stateful", Namespace: "app"}, Spec: appsv1.StatefulSetSpec{Template: template}},
+						&appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: "daemon", Namespace: "app"}, Spec: appsv1.DaemonSetSpec{Template: template}},
+					}
+					core, err := k8score.NewResourceCache(k8score.CacheConfig{Client: kubernetesfake.NewSimpleClientset(objects...), ResourceTypes: map[string]bool{k8score.Deployments: true, k8score.StatefulSets: true, k8score.DaemonSets: true, k8score.NetworkPolicies: true}, DeferredTypes: map[string]bool{}, SyncTimeout: 2 * time.Second})
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(core.Stop)
+					gvr := schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}
+					policy := dashboardTestCalicoPolicy(gvr, "CiliumNetworkPolicy", "app", "reserved", map[string]any{"endpointSelector": map[string]any{"matchExpressions": []any{map[string]any{"key": "reserved:host", "operator": op}}}})
+					dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "CiliumNetworkPolicyList"}, policy)
+					if err := k8s.InitTestDynamicResourceCache(dyn, []k8s.APIResource{{Group: gvr.Group, Version: gvr.Version, Name: gvr.Resource, Kind: "CiliumNetworkPolicy", Namespaced: true, IsCRD: true, Verbs: []string{"get", "list", "watch"}}}); err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(k8s.ResetTestDynamicState)
+					if _, err := k8s.GetDynamicResourceCache().List(gvr, "app"); err != nil {
+						t.Fatal(err)
+					}
+					if !k8s.GetDynamicResourceCache().WaitForSync(gvr, 2*time.Second) {
+						t.Fatal("Cilium informer did not sync")
+					}
+					namespaces := []string{"app"}
+					if clusterWide {
+						namespaces = nil
+					}
+					got := (&Server{}).getDashboardNetworkPolicyCoverage(requestWithUser("GET", "/", nil), &k8s.ResourceCache{ResourceCache: core}, namespaces)
+					covered, unknown := 0, 0
+					if hostNetwork {
+						unknown = 3
+					} else if op == "DoesNotExist" {
+						covered = 3
+					}
+					if got == nil || got.TotalPolicies != 1 || got.TotalWorkloads != 3 || got.CoveredWorkloads != covered || got.UnknownWorkloads != unknown || got.UnknownWorkloadsIfStaged != unknown {
+						t.Fatalf("coverage=%+v, want selected=%d unknown=%d across all three workload kinds", got, covered, unknown)
+					}
+				})
+			}
+		}
+	}
+}
