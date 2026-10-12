@@ -3080,10 +3080,12 @@ func handleIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, input issuesI
 	composeFilters.Limit = issues.NoLimit
 	composeFilters.Filter = nil
 	out, stats := issues.ComposeWithStats(provider, composeFilters)
-	out, stats = issues.MergeExternalIssues(out, stats, filters, nativeHelmIssuesForContext(ctx, allowedNamespaces, filters))
+	helmIssues, helmUnchecked := nativeHelmIssuesForContext(ctx, allowedNamespaces, filters)
+	out, stats = issues.MergeExternalIssues(out, stats, filters, helmIssues)
 	// Shared base response shape (issues.ListResponse), then MCP-specific
 	// enrichments below.
 	resp := issues.NewListResponse(out, stats)
+	resp.HelmIssuesUnchecked = helmUnchecked
 	resp.ClusterContext = provider.ClusterContextForIssues(allowedNamespaces, func(group, resource string) bool {
 		return canReadInNamespace(ctx, group, resource, "kube-system", "list")
 	})
@@ -3141,13 +3143,13 @@ func handleIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, input issuesI
 	return toJSONResult(resp)
 }
 
-func nativeHelmIssuesForContext(ctx context.Context, namespaces []string, filters issues.Filters) []issues.Issue {
+func nativeHelmIssuesForContext(ctx context.Context, namespaces []string, filters issues.Filters) (found []issues.Issue, unchecked bool) {
 	if !issues.KindFilterIncludes(filters.Kinds, "HelmRelease", "helmreleases") {
-		return nil
+		return nil, false
 	}
 	helmClient := helm.GetClient()
 	if helmClient == nil {
-		return nil
+		return nil, false
 	}
 	username, groups := userFromContext(ctx)
 	helmNamespaces := namespaces
@@ -3159,9 +3161,9 @@ func nativeHelmIssuesForContext(ctx context.Context, namespaces []string, filter
 		if !errors.Is(ctx.Err(), context.Canceled) && !helm.IsForbiddenError(err) {
 			log.Printf("[mcp] Failed to list Helm releases for issue stream: %v", err)
 		}
-		return nil
+		return nil, helm.IssueReadUnchecked(ctx, err)
 	}
-	return issues.NativeHelmReleaseIssues(releases, time.Now())
+	return issues.NativeHelmReleaseIssues(releases, time.Now()), false
 }
 
 func parseSeverityList(v string) ([]issues.Severity, error) {

@@ -118,10 +118,12 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 	composeFilters.Limit = issues.NoLimit
 	composeFilters.Filter = nil
 	out, stats := issues.ComposeWithStats(provider, composeFilters)
-	out, stats = issues.MergeExternalIssues(out, stats, filters, s.nativeHelmIssuesForRequest(r, namespaces, filters))
+	helmIssues, helmUnchecked := s.nativeHelmIssuesForRequest(r, namespaces, filters)
+	out, stats = issues.MergeExternalIssues(out, stats, filters, helmIssues)
 	// Shared base response shape (issues.ListResponse); surfaces add their
 	// own enrichments after this point.
 	resp := issues.NewListResponse(out, stats)
+	resp.HelmIssuesUnchecked = helmUnchecked
 	resp.ClusterContext = provider.ClusterContextForIssues(namespaces, func(group, resource string) bool {
 		return s.canRead(r, group, resource, "kube-system", "list")
 	})
@@ -200,14 +202,15 @@ var helmIssuesDeniedLogged sync.Map
 
 // nativeHelmIssuesForRequest reads Helm release storage on the request's
 // context, so the read stops when the caller disconnects instead of running
-// to completion for nobody.
-func (s *Server) nativeHelmIssuesForRequest(r *http.Request, namespaces []string, filters issues.Filters) []issues.Issue {
+// to completion for nobody. unchecked reports a failed read whose answer
+// someone is still waiting for (see helm.IssueReadUnchecked).
+func (s *Server) nativeHelmIssuesForRequest(r *http.Request, namespaces []string, filters issues.Filters) (found []issues.Issue, unchecked bool) {
 	if !issues.KindFilterIncludes(filters.Kinds, "HelmRelease", "helmreleases") {
-		return nil
+		return nil, false
 	}
 	helmClient := helm.GetClient()
 	if helmClient == nil {
-		return nil
+		return nil, false
 	}
 	ctx := r.Context()
 	username, groups := "", []string(nil)
@@ -220,7 +223,7 @@ func (s *Server) nativeHelmIssuesForRequest(r *http.Request, namespaces []string
 		var ok bool
 		helmNamespaces, ok = s.resolveHelmNamespaces(r)
 		if !ok {
-			return nil
+			return nil, false
 		}
 	}
 	releases, err := helmClient.ListIssueReleasesAcrossNamespaces(ctx, helmNamespaces, username, groups)
@@ -238,9 +241,9 @@ func (s *Server) nativeHelmIssuesForRequest(r *http.Request, namespaces []string
 				log.Printf("[issues] Helm release issues omitted for %q: Kubernetes denied listing release Secrets", username)
 			}
 		}
-		return nil
+		return nil, helm.IssueReadUnchecked(ctx, err)
 	}
-	return issues.NativeHelmReleaseIssues(releases, time.Now())
+	return issues.NativeHelmReleaseIssues(releases, time.Now()), false
 }
 
 // handleResourceIssues serves GET /api/issues/resource/{kind}/{namespace}/{name}

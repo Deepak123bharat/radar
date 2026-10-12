@@ -611,6 +611,11 @@ type Response struct {
 	// checked first). Under truncation, an issue without correlation markers
 	// means "not checked", not "no changes".
 	CorrelationTruncated bool `json:"correlation_truncated,omitempty"`
+	// HelmIssuesUnchecked is set when the native Helm release read failed, so
+	// failed or stuck Helm releases may be missing from Issues. Not set when
+	// the caller may not list release Secrets, or when the caller left before
+	// the read finished.
+	HelmIssuesUnchecked bool `json:"helm_issues_unchecked,omitempty"`
 }
 
 type BindingType string

@@ -2,6 +2,7 @@ package helm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -58,6 +59,15 @@ func (c *Client) ListIssueReleasesAcrossNamespaces(ctx context.Context, namespac
 		return nil, err
 	}
 	return listIssueReleasesWithClients(ctx, client, labelsClient, contextName, namespaces)
+}
+
+// IssueReadUnchecked reports whether a failed ListIssueReleasesAcrossNamespaces
+// leaves the caller's Helm issues unknown. A denial is not: the caller may not
+// read release Secrets, so it sees no Helm issues, like any other kind it can't
+// list. Neither is a caller that left, since nobody gets the answer. Radar's
+// own request deadline is a failure: the caller is still waiting.
+func IssueReadUnchecked(ctx context.Context, err error) bool {
+	return err != nil && !IsForbiddenError(err) && !errors.Is(ctx.Err(), context.Canceled)
 }
 
 func listIssueReleasesWithClients(ctx context.Context, client kubernetes.Interface, labelsClient metadata.Interface, contextName string, namespaces []string) ([]HelmRelease, error) {
