@@ -17,7 +17,7 @@ export type ValidationResult =
   | { valid: false; error: string }
 
 const RFC1123_LABEL_MAX = 63
-// Kubernetes namespace / pod / service names are RFC 1123 labels:
+// Kubernetes namespace names are RFC 1123 labels:
 // lowercase alphanumeric or '-', start and end alphanumeric, ≤63 chars.
 // Source: k8s.io/apimachinery/pkg/util/validation.IsDNS1123Label.
 const RFC1123_LABEL_RE = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/
@@ -34,9 +34,7 @@ const HELM_RELEASE_NAME_MAX = 53
 // https://helm.sh/docs/chart_best_practices/conventions/#chart-names
 
 /**
- * Validates a Kubernetes RFC 1123 label. Used for namespace names,
- * pod / service / configmap / secret names — anything Kubernetes
- * accepts as a single-segment identifier.
+ * Matches Kubernetes IsDNS1123Label, including namespace names.
  */
 export function validateRFC1123Label(input: string): ValidationResult {
   if (input.length === 0) {

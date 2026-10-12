@@ -2,6 +2,7 @@ package topology
 
 import (
 	"encoding/json"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"strings"
 	"testing"
 )
@@ -141,5 +142,88 @@ func TestCachedCalicoCoverageKeepsStagedPoliciesSeparate(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestAllPodPolicySelectionRejectsCustomWorkloadKinds(t *testing.T) {
+	for _, kind := range []NodeKind{KindDeployment, KindStatefulSet, KindDaemonSet} {
+		for _, group := range []string{"apps", "custom.example.io"} {
+			t.Run(group+"/"+string(kind), func(t *testing.T) {
+				id := strings.ToLower(string(kind)) + "/app/web"
+				if group != "apps" {
+					id += "/" + group
+				}
+				graph := &Topology{Nodes: []Node{
+					{ID: id, Kind: kind, Name: "web", Data: map[string]any{"namespace": "app", "apiVersion": group + "/v1"}},
+					{ID: "networkpolicy/app/all", Kind: KindNetworkPolicy, Name: "all", Data: map[string]any{"namespace": "app", "apiVersion": "networking.k8s.io/v1", "matchesAllPods": true}},
+				}}
+				obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": group + "/v1", "kind": string(kind), "metadata": map[string]any{"namespace": "app", "name": "web"}}}
+				for _, indexed := range []bool{false, true} {
+					var idx *RelationshipsIndex
+					if indexed {
+						idx = IndexByResource(graph)
+					}
+					rel := GetRelationshipsWithObject(string(kind), "app", "web", obj, graph, nil, nil, idx)
+					if group == "apps" {
+						if rel == nil || len(rel.NetworkPolicies) != 1 {
+							t.Fatalf("lost real workload selection: %+v", rel)
+						}
+					} else if rel != nil && len(rel.NetworkPolicies) != 0 {
+						t.Fatalf("custom kind inherited Pod policies: %+v", rel)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestPolicyProtectsUsesVisibleCachedTargetsWithoutEdges(t *testing.T) {
+	for _, tc := range []struct {
+		kind               NodeKind
+		namespace, version string
+		coverage           bool
+		want               int
+	}{
+		{KindNetworkPolicy, "app", "networking.k8s.io/v1", false, 1},
+		{KindCiliumNetworkPolicy, "app", "cilium.io/v2", false, 1},
+		{KindCiliumClusterwideNetworkPolicy, "", "cilium.io/v2", false, 2},
+		{KindCalicoGlobalNetworkPolicy, "", "projectcalico.org/v3", true, 1},
+		{KindCalicoStagedGlobalNetworkPolicy, "", "projectcalico.org/v3", true, 1},
+	} {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			policy := Node{ID: "policy/" + tc.namespace + "/all", Kind: tc.kind, Name: "all", Data: map[string]any{"namespace": tc.namespace, "apiVersion": tc.version, "matchesAllPods": true}}
+			if tc.coverage {
+				policy.Data["policyCoverageWorkloads"] = []string{"deployment/other/db", "deployment/hidden/private"}
+			}
+			graph := &Topology{Nodes: []Node{
+				policy,
+				{ID: "deployment/app/web", Kind: KindDeployment, Name: "web", Data: map[string]any{"namespace": "app", "apiVersion": "apps/v1"}},
+				{ID: "deployment/other/db", Kind: KindDeployment, Name: "db", Data: map[string]any{"namespace": "other", "apiVersion": "apps/v1"}},
+				{ID: "deployment/app/shadow/custom.example.io", Kind: KindDeployment, Name: "shadow", Data: map[string]any{"namespace": "app", "apiVersion": "custom.example.io/v1"}},
+			}}
+			ref := resourceRefForNode(&policy, nil)
+			obj := &unstructured.Unstructured{Object: map[string]any{"apiVersion": tc.version, "kind": ref.Kind, "metadata": map[string]any{"namespace": tc.namespace, "name": "all"}}}
+			for _, indexed := range []bool{false, true} {
+				var idx *RelationshipsIndex
+				if indexed {
+					idx = IndexByResource(graph)
+				}
+				rel := GetRelationshipsWithObject(ref.Kind, tc.namespace, "all", obj, graph, nil, nil, idx)
+				if rel == nil || len(rel.Protects) != tc.want {
+					t.Fatalf("indexed=%v: expected %d visible targets: %+v", indexed, tc.want, rel)
+				}
+				for _, target := range rel.Protects {
+					if target.Group != "apps" || target.Name == "private" || target.Name == "shadow" {
+						t.Fatalf("selected an unavailable or custom target: %+v", target)
+					}
+					if !tc.coverage && tc.namespace != "" && target.Namespace != tc.namespace {
+						t.Fatalf("selected another namespace: %+v", target)
+					}
+				}
+			}
+			if len(graph.Edges) != 0 {
+				t.Fatal("relationship recovery added dense graph edges")
+			}
+		})
 	}
 }

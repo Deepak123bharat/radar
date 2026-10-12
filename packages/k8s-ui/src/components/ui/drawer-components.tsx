@@ -889,7 +889,7 @@ export function RelatedResourcesSection({ relationships, onNavigate }: RelatedRe
           <RelationshipGroup label="Network Policies" refs={dedupeResourceRefs(relationships.networkPolicies)} onNavigate={onNavigate} />
         )}
         {relationships.networkPolicyMatchesIncomplete && (
-          <p className="text-xs text-theme-text-secondary">Radar could not determine whether some Cilium network policies apply to this workload. Additional policies may apply.</p>
+          <NetworkPolicyMatchesIncompleteNotice />
         )}
         {relationships.resourceClaims && relationships.resourceClaims.length > 0 && (
           <RelationshipGroup label="Resource Claims" refs={dedupeResourceRefs(relationships.resourceClaims)} onNavigate={onNavigate} />
@@ -1197,4 +1197,8 @@ function formatEventTime(timestamp: string): string {
   if (diffMins < 60) return `${diffMins}m ago`
   if (diffHours < 24) return `${diffHours}h ago`
   return date.toLocaleDateString()
+}
+
+export function NetworkPolicyMatchesIncompleteNotice() {
+  return <p className="text-xs text-theme-text-secondary">Radar could not determine whether some Cilium network policies apply to this workload. Additional policies may apply.</p>
 }

@@ -24,6 +24,7 @@ type RelationshipsIndex struct {
 	nodesByResourceKey        map[string]*Node
 	allPodPoliciesByNamespace map[string][]*Node
 	coveragePoliciesByNodeID  map[string][]*Node
+	workloadsByNamespace      map[string][]*Node
 }
 
 type nodeEdgeSlots struct {
@@ -41,6 +42,7 @@ func IndexByResource(topo *Topology) *RelationshipsIndex {
 			nodesByResourceKey:        map[string]*Node{},
 			allPodPoliciesByNamespace: map[string][]*Node{},
 			coveragePoliciesByNodeID:  map[string][]*Node{},
+			workloadsByNamespace:      map[string][]*Node{},
 		}
 	}
 	idx := &RelationshipsIndex{
@@ -49,10 +51,20 @@ func IndexByResource(topo *Topology) *RelationshipsIndex {
 		nodesByResourceKey:        make(map[string]*Node, len(topo.Nodes)),
 		allPodPoliciesByNamespace: map[string][]*Node{},
 		coveragePoliciesByNodeID:  map[string][]*Node{},
+		workloadsByNamespace:      map[string][]*Node{},
 	}
 	for i := range topo.Nodes {
 		node := &topo.Nodes[i]
 		idx.nodesByID[node.ID] = node
+		if nodeGroup(node) == "apps" && (node.Kind == KindDeployment || node.Kind == KindStatefulSet || node.Kind == KindDaemonSet) {
+			if ref := resourceRefForNode(node, nil); ref != nil {
+				if ref.Namespace != "" {
+					idx.workloadsByNamespace[ref.Namespace] = append(idx.workloadsByNamespace[ref.Namespace], node)
+				}
+				// The empty-namespace bucket holds all visible workloads for clusterwide selectors.
+				idx.workloadsByNamespace[""] = append(idx.workloadsByNamespace[""], node)
+			}
+		}
 		switch node.Kind {
 		case KindNetworkPolicy, KindCiliumNetworkPolicy, KindCiliumClusterwideNetworkPolicy:
 			if node.Data["matchesAllPods"] == true {
@@ -534,7 +546,7 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 	}
 
 	// Empty selectors omit graph edges for readability but are still selecting policies.
-	if node := nodeByID[nodeID]; node != nil && (node.Kind == KindDeployment || node.Kind == KindStatefulSet || node.Kind == KindDaemonSet) {
+	if node := nodeByID[nodeID]; node != nil && nodeGroup(node) == "apps" && (node.Kind == KindDeployment || node.Kind == KindStatefulSet || node.Kind == KindDaemonSet) {
 		for _, ns := range []string{namespace, ""} {
 			for _, policy := range lookupIndex.allPodPoliciesByNamespace[ns] {
 				if ref := resourceRefForNode(policy, dp); ref != nil {
@@ -552,6 +564,31 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 					}
 				}
 				*selected = appendResourceRef(*selected, *ref)
+			}
+		}
+	}
+
+	if policy := nodeByID[nodeID]; policy != nil {
+		var targets []*Node
+		if policy.Data["matchesAllPods"] == true && (policy.Kind == KindNetworkPolicy && nodeGroup(policy) == "networking.k8s.io" ||
+			(policy.Kind == KindCiliumNetworkPolicy || policy.Kind == KindCiliumClusterwideNetworkPolicy) && nodeGroup(policy) == "cilium.io") {
+			policyNamespace := namespace
+			if policy.Kind == KindCiliumClusterwideNetworkPolicy {
+				policyNamespace = ""
+			}
+			targets = lookupIndex.workloadsByNamespace[policyNamespace]
+		} else if IsCalicoPolicyKind(policy.Kind) && isCalicoAPIGroup(nodeGroup(policy)) {
+			if ids, ok := policy.Data["policyCoverageWorkloads"].([]string); ok {
+				for _, id := range ids {
+					if target := nodeByID[id]; target != nil {
+						targets = append(targets, target)
+					}
+				}
+			}
+		}
+		for _, target := range targets {
+			if ref := resourceRefForNode(target, dp); ref != nil {
+				rel.Protects = append(rel.Protects, *ref)
 			}
 		}
 	}

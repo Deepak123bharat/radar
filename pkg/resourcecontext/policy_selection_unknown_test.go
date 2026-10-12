@@ -6,6 +6,7 @@ import (
 	"github.com/skyhook-io/radar/pkg/topology"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"strings"
 	"testing"
 )
@@ -38,5 +39,22 @@ func TestUnknownSelectionDoesNotRevealUnreadableClusterwidePolicy(t *testing.T) 
 	}
 	if strings.Contains(string(wire), "networkPolicyMatchesIncomplete") || strings.Contains(string(wire), "hidden") || !hasOmitted(rc.Omitted, "selectedBy") {
 		t.Fatalf("unreadable policy was exposed or omission was lost: %s", wire)
+	}
+}
+
+func TestAllPodPolicyTargetsReachAgentContextWithPermissions(t *testing.T) {
+	policy := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": map[string]any{"name": "all", "namespace": "app"}}}
+	graph := &topology.Topology{Nodes: []topology.Node{
+		{ID: "networkpolicy/app/all", Kind: topology.KindNetworkPolicy, Name: "all", Data: map[string]any{"namespace": "app", "apiVersion": "networking.k8s.io/v1", "matchesAllPods": true}},
+		{ID: "deployment/app/web", Kind: topology.KindDeployment, Name: "web", Data: map[string]any{"namespace": "app", "apiVersion": "apps/v1"}},
+	}}
+	rel := topology.GetRelationshipsWithObject("NetworkPolicy", "app", "all", policy, graph, nil, nil, nil)
+	full := Build(context.Background(), policy, Options{Relationships: rel, AccessChecker: allowAllChecker{}})
+	if len(full.Protects) != 1 || full.Protects[0].Kind != "Deployment" {
+		t.Fatalf("lost broad policy targets: %+v", full)
+	}
+	limited := Build(context.Background(), policy, Options{Relationships: rel, AccessChecker: denyChecker{group: "apps", kind: "Deployment", namespace: "app"}})
+	if len(limited.Protects) != 0 || !hasOmitted(limited.Omitted, "protects") {
+		t.Fatalf("policy targets ignored permissions: %+v", limited)
 	}
 }
