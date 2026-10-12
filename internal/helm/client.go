@@ -37,6 +37,7 @@ import (
 	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/releaseutil"
 	"helm.sh/helm/v3/pkg/repo"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
@@ -358,18 +359,6 @@ func (c *Client) ListReleases(ctx context.Context, namespace string) ([]HelmRele
 // every namespace is forbidden is the 403 surfaced, so the UI still shows
 // "Access Restricted" rather than a misleading empty list.
 func (c *Client) ListReleasesAcrossNamespaces(ctx context.Context, namespaces []string, username string, groups []string) ([]HelmRelease, error) {
-	return c.listReleasesAcrossNamespaces(ctx, namespaces, username, groups, true)
-}
-
-// ListIssueReleasesAcrossNamespaces is ListReleasesAcrossNamespaces without
-// the per-release resource health, which issue detection does not read.
-// Health parses every rendered manifest and looks up each object it declares,
-// so it dominates the CPU cost of a large release list.
-func (c *Client) ListIssueReleasesAcrossNamespaces(ctx context.Context, namespaces []string, username string, groups []string) ([]HelmRelease, error) {
-	return c.listReleasesAcrossNamespaces(ctx, namespaces, username, groups, false)
-}
-
-func (c *Client) listReleasesAcrossNamespaces(ctx context.Context, namespaces []string, username string, groups []string, includeResourceHealth bool) ([]HelmRelease, error) {
 	if namespaces != nil && len(namespaces) == 0 {
 		return []HelmRelease{}, nil
 	}
@@ -378,12 +367,20 @@ func (c *Client) listReleasesAcrossNamespaces(ctx context.Context, namespaces []
 	if err != nil {
 		return nil, err
 	}
-	return listReleasesAcrossNamespacesWithClient(ctx, client, contextName, namespaces, includeResourceHealth)
+	return listReleasesAcrossNamespacesWithClient(ctx, client, contextName, namespaces, true)
 }
 
 // contextName is the cluster context the read started on; a release history
 // analysed after a switch away from it records no uninstall start.
 func listReleasesAcrossNamespacesWithClient(ctx context.Context, client kubernetes.Interface, contextName string, namespaces []string, includeResourceHealth bool) ([]HelmRelease, error) {
+	return listReleaseRows(ctx, contextName, namespaces, includeResourceHealth, func(ctx context.Context, namespace string) (*helmReleaseStorageSnapshot, error) {
+		return helmReleaseStorageSnapshotWithClient(ctx, client, namespace)
+	})
+}
+
+// listReleaseRows reads one storage snapshot per namespace scope (nil means
+// one cluster-wide read) and builds a row for each release in it.
+func listReleaseRows(ctx context.Context, contextName string, namespaces []string, includeResourceHealth bool, read func(context.Context, string) (*helmReleaseStorageSnapshot, error)) ([]HelmRelease, error) {
 	scopes := namespaces
 	if scopes == nil {
 		scopes = []string{""}
@@ -396,7 +393,7 @@ func listReleasesAcrossNamespacesWithClient(ctx context.Context, client kubernet
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		snapshot, err := helmReleaseStorageSnapshotWithClient(ctx, client, ns)
+		snapshot, err := read(ctx, ns)
 		if err != nil {
 			if IsForbiddenError(err) {
 				lastForbidden = err
@@ -1524,13 +1521,18 @@ func helmReleaseStorageSnapshotWithClient(ctx context.Context, client kubernetes
 	if err != nil {
 		return nil, fmt.Errorf("failed to inspect release storage namespaces: %w", err)
 	}
+	return helmReleaseStorageSnapshotFromSecrets(ctx, secrets.Items)
+}
 
+// helmReleaseStorageSnapshotFromSecrets decodes release Secrets and groups
+// their revisions by release.
+func helmReleaseStorageSnapshotFromSecrets(ctx context.Context, secrets []corev1.Secret) (*helmReleaseStorageSnapshot, error) {
 	snapshot := &helmReleaseStorageSnapshot{
-		storageNamespaces: make(map[string]string, len(secrets.Items)),
+		storageNamespaces: make(map[string]string, len(secrets)),
 		histories:         make(map[string][]HelmRevision),
 	}
 	latestByRelease := make(map[string]*release.Release)
-	for _, secret := range secrets.Items {
+	for _, secret := range secrets {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
