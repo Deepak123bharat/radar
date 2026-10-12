@@ -58,9 +58,10 @@ type retainedObservation struct {
 // resources. It is safe for concurrent use. Application-specific callbacks
 // (timeline, metrics) are injected via DynamicCacheConfig.
 type DynamicResourceCache struct {
-	factory     dynamicinformer.DynamicSharedInformerFactory
-	nsFactories map[string]dynamicinformer.DynamicSharedInformerFactory // one per watched namespace, lazily created
-	informers   map[informerKey]*informerEntry
+	factory            dynamicinformer.DynamicSharedInformerFactory
+	nsFactories        map[string]dynamicinformer.DynamicSharedInformerFactory // one per watched namespace, lazily created
+	informers          map[informerKey]*informerEntry
+	informerGeneration uint64
 	// fallbackResolved marks GVRs whose "all namespaces" scope was already
 	// probed and fanned out across the fallback namespaces. Without it every
 	// all-namespaces read of a fallback-scoped GVR would re-probe cluster-wide
@@ -213,6 +214,23 @@ func (d *DynamicResourceCache) observation(gvr schema.GroupVersionResource, name
 	if d.stopped {
 		return DynamicResourceObservation{State: DynamicObservationUnwatched, ReasonCode: "cache_stopped"}
 	}
+	scope := dynamicObservationScope{}
+	if entry := d.informers[informerKey{gvr: gvr}]; entry != nil {
+		scope.clusterWide = true
+		scope.entries = []*informerEntry{entry}
+	} else {
+		for key, entry := range d.informers {
+			if key.gvr == gvr {
+				scope.entries = append(scope.entries, entry)
+				scope.namespaces = append(scope.namespaces, key.ns)
+			}
+		}
+		sort.Strings(scope.namespaces)
+	}
+	return d.observationLocked(gvr, namespace, scope)
+}
+
+func (d *DynamicResourceCache) observationLocked(gvr schema.GroupVersionResource, namespace string, scope dynamicObservationScope) (observation DynamicResourceObservation) {
 	defer func() {
 		r := d.probeRetries[gvr]
 		if r == nil {
@@ -237,29 +255,7 @@ func (d *DynamicResourceCache) observation(gvr schema.GroupVersionResource, name
 		}
 	}()
 
-	var (
-		entries []struct {
-			ns    string
-			entry *informerEntry
-		}
-		clusterWide bool
-		namespaces  []string
-	)
-	for key, entry := range d.informers {
-		if key.gvr != gvr {
-			continue
-		}
-		entries = append(entries, struct {
-			ns    string
-			entry *informerEntry
-		}{ns: key.ns, entry: entry})
-		if key.ns == "" {
-			clusterWide = true
-		} else {
-			namespaces = append(namespaces, key.ns)
-		}
-	}
-	if len(entries) == 0 {
+	if len(scope.entries) == 0 {
 		if retained, ok := d.observations[gvr]; ok {
 			observation = DynamicResourceObservation{State: retained.state, Truncated: retained.truncated, ReasonCode: retained.reasonCode, ObservedAt: &retained.observedAt}
 			if r := d.probeRetries[gvr]; r != nil && !r.whole && len(r.unanswered) == 0 && len(d.fallbackNamespaces()) > 0 && d.gvrIsNamespaced(gvr) {
@@ -272,15 +268,17 @@ func (d *DynamicResourceCache) observation(gvr schema.GroupVersionResource, name
 		}
 		return DynamicResourceObservation{State: DynamicObservationUnwatched, ReasonCode: "not_observed"}
 	}
-
-	readiness := entries
+	readiness := scope.entries
+	var serving [1]*informerEntry
 	if namespace != "" {
 		readiness = nil
-		for i, candidate := range entries {
-			if candidate.ns == "" || candidate.ns == namespace {
-				readiness = entries[i : i+1]
-				break
-			}
+		entry := d.informers[informerKey{gvr: gvr}]
+		if entry == nil {
+			entry = d.informers[informerKey{gvr: gvr, ns: namespace}]
+		}
+		if entry != nil {
+			serving[0] = entry
+			readiness = serving[:]
 		}
 	}
 
@@ -290,21 +288,20 @@ func (d *DynamicResourceCache) observation(gvr schema.GroupVersionResource, name
 	}
 	var oldestUnsynced *informerEntry
 	for _, candidate := range readiness {
-		if !candidate.entry.informer.HasSynced() {
-			if oldestUnsynced == nil || candidate.entry.startedAt.Before(oldestUnsynced.startedAt) {
-				oldestUnsynced = candidate.entry
+		if !candidate.informer.HasSynced() {
+			if oldestUnsynced == nil || candidate.startedAt.Before(oldestUnsynced.startedAt) {
+				oldestUnsynced = candidate
 			}
 			state = DynamicObservationSyncing
 		}
 	}
 
 	observation = DynamicResourceObservation{State: state}
-	if clusterWide {
+	if scope.clusterWide {
 		observation.Scope = DynamicObservationScopeCluster
 	} else {
-		sort.Strings(namespaces)
 		observation.Scope = DynamicObservationScopeExplicitNamespaces
-		observation.Namespaces = namespaces
+		observation.Namespaces = scope.namespaces
 		observation.Truncated = !d.config.NamespaceScoped && (d.config.NamespaceFallbacksTruncated || d.fanoutIncomplete[gvr])
 	}
 
@@ -520,6 +517,7 @@ func (d *DynamicResourceCache) startWatching(gvr schema.GroupVersionResource, sc
 			if k.gvr == gvr && k.ns != "" {
 				e.cancel()
 				delete(d.informers, k)
+				d.informerGeneration++
 			}
 		}
 	}
@@ -543,6 +541,7 @@ func (d *DynamicResourceCache) startWatching(gvr schema.GroupVersionResource, sc
 		case <-ctx.Done():
 		}
 	}()
+	d.informerGeneration++
 	d.informers[key] = &informerEntry{
 		informer:  informer,
 		cancel:    cancel,

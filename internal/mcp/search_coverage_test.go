@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -460,5 +461,52 @@ func TestCoverageHintReadRecoveryFoldAndBudget(t *testing.T) {
 	res.Unsearched = []search.UnsearchedKind{{Kind: "*", Reason: readreason.ReadError}}
 	if got := coverageHint(res, false, false); got != "Couldn't read some kinds; matches of those kinds may be missing." {
 		t.Fatalf("catalog invented a kind: %q", got)
+	}
+}
+
+func TestCoverageHintCapsNamedTargets(t *testing.T) {
+	names := make([]string, 5000)
+	entries := make([]search.UnsearchedKind, len(names))
+	for i := range names {
+		names[i] = fmt.Sprintf("target-%04d", i)
+		entries[i] = search.UnsearchedKind{Kind: names[i], Reason: readreason.UnknownKind}
+	}
+	var cases []search.Result
+	for _, reason := range []readreason.Code{readreason.UnknownKind, readreason.RBACDenied, readreason.CollectorAccessDenied, readreason.CollectionNotSupported} {
+		gaps := slices.Clone(entries)
+		for i := range gaps {
+			gaps[i].Reason = reason
+		}
+		cases = append(cases, search.Result{Partial: true, Unsearched: gaps})
+	}
+	for _, reason := range []readreason.Code{readreason.NamespaceExcluded, readreason.NamespaceScopeLimited, readreason.CollectorScopeLimited} {
+		cases = append(cases, search.Result{Partial: true, Unsearched: []search.UnsearchedKind{{Kind: "*", Reason: reason, Namespaces: names}}})
+	}
+	for _, res := range cases {
+		for _, all := range []bool{false, true} {
+			hint := coverageHint(res, all, true)
+			if !strings.Contains(hint, "and 4995 more") || strings.Contains(hint, names[5]) {
+				t.Fatalf("unbounded hint: %s", hint)
+			}
+			if len(hint) > 500 {
+				t.Fatalf("hint length: %d", len(hint))
+			}
+		}
+	}
+	if len(entries) != 5000 || len(names) != 5000 || entries[4999].Kind != names[4999] {
+		t.Fatal("structured identities changed")
+	}
+}
+
+func TestCoverageHintCapsFilterDiagnostic(t *testing.T) {
+	for _, sample := range []string{strings.Repeat("x", 10000), strings.Repeat("界", 10000), "no such key: " + strings.Repeat("x", 10000)} {
+		res := search.Result{Partial: true, FilterErrors: 1, FilterErrorSample: sample}
+		hint := coverageHint(res, false, false)
+		if !utf8.ValidString(hint) || !strings.Contains(hint, "…") || len(hint) > 350 {
+			t.Fatalf("diagnostic excerpt (%d bytes): %q", len(hint), hint)
+		}
+		if res.FilterErrorSample != sample {
+			t.Fatal("full diagnostic changed")
+		}
 	}
 }

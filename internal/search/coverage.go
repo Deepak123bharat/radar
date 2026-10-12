@@ -55,15 +55,32 @@ const maxNamedFailures = 5
 // on the cluster.
 type coverage struct {
 	namedKinds      bool
-	namedNamespaces []string
+	namedNamespaces map[string]bool
+	namespaceIndex  map[readreason.Code]map[string]bool
 	gaps            []UnsearchedKind
+	gapIndex        map[coverageKey]int
 	// unbounded marks "*" entries standing for an unknown number of kinds (the
 	// catalog itself could not be read); they carry no count.
 	unbounded map[readreason.Code]bool
 }
 
+type coverageKey struct {
+	kind, group string
+	reason      readreason.Code
+}
+
 func newCoverage(q Query) *coverage {
-	return &coverage{namedKinds: len(q.KindFilter) > 0, namedNamespaces: q.NSFilter, unbounded: map[readreason.Code]bool{}}
+	namespaces := map[string]bool{}
+	for _, ns := range q.NSFilter {
+		namespaces[ns] = true
+	}
+	return &coverage{
+		namedKinds:      len(q.KindFilter) > 0,
+		namedNamespaces: namespaces,
+		namespaceIndex:  map[readreason.Code]map[string]bool{},
+		unbounded:       map[readreason.Code]bool{},
+		gapIndex:        map[coverageKey]int{},
+	}
 }
 
 // quiet reports whether a kind-level reason goes unreported for this query,
@@ -80,11 +97,11 @@ func (c *coverage) kind(kind, group string, reason readreason.Code) *UnsearchedK
 	if c.quiet(reason) {
 		return nil
 	}
-	for i := range c.gaps {
-		if c.gaps[i].Kind == kind && c.gaps[i].Group == group && c.gaps[i].Reason == reason {
-			return &c.gaps[i]
-		}
+	key := coverageKey{kind, group, reason}
+	if i, exists := c.gapIndex[key]; exists {
+		return &c.gaps[i]
 	}
+	c.gapIndex[key] = len(c.gaps)
 	c.gaps = append(c.gaps, UnsearchedKind{Kind: kind, Group: group, Reason: reason})
 	return &c.gaps[len(c.gaps)-1]
 }
@@ -102,30 +119,30 @@ func (c *coverage) catalog(reason readreason.Code) {
 // namespaces records a namespace-level reason. Only namespaces the query names
 // are reported, merged into one entry per reason.
 func (c *coverage) namespaces(reason readreason.Code, namespaces ...string) {
-	var named []string
+	var entry *UnsearchedKind
+	seen := c.namespaceIndex[reason]
 	for _, ns := range namespaces {
-		if slices.Contains(c.namedNamespaces, ns) {
-			named = append(named, ns)
+		if !c.namedNamespaces[ns] || seen[ns] {
+			continue
 		}
-	}
-	if len(named) == 0 {
-		return
-	}
-	entry := c.star(reason)
-	for _, ns := range named {
-		if !slices.Contains(entry.Namespaces, ns) {
-			entry.Namespaces = append(entry.Namespaces, ns)
+		if entry == nil {
+			entry = c.star(reason)
 		}
+		if seen == nil {
+			seen = map[string]bool{}
+			c.namespaceIndex[reason] = seen
+		}
+		seen[ns] = true
+		entry.Namespaces = append(entry.Namespaces, ns)
 	}
-	slices.Sort(entry.Namespaces)
 }
 
 func (c *coverage) star(reason readreason.Code) *UnsearchedKind {
-	for i := range c.gaps {
-		if c.gaps[i].Kind == "*" && c.gaps[i].Reason == reason {
-			return &c.gaps[i]
-		}
+	key := coverageKey{kind: "*", reason: reason}
+	if i, exists := c.gapIndex[key]; exists {
+		return &c.gaps[i]
 	}
+	c.gapIndex[key] = len(c.gaps)
 	c.gaps = append(c.gaps, UnsearchedKind{Kind: "*", Reason: reason})
 	return &c.gaps[len(c.gaps)-1]
 }
@@ -140,6 +157,7 @@ func (c *coverage) result() []UnsearchedKind {
 	pending := map[[2]string]bool{}
 	failures := map[readreason.Code][]UnsearchedKind{}
 	for _, gap := range c.gaps {
+		slices.Sort(gap.Namespaces)
 		switch class := classify(gap.Reason); {
 		case gap.Kind == "*" || c.namedKinds || class == classScope:
 			out = append(out, gap)

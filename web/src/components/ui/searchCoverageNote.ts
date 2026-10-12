@@ -13,6 +13,7 @@ export const PENDING_RETRY_BUDGET_MS = 60000
 const FAILURE_REASONS = new Set(['kind_sync_failed', 'read_error', 'collector_unauthorized'])
 const MAX_SENTENCES = 2
 const MAX_NAMES = 3
+const MAX_TARGET_NAMES = 5
 
 export interface SearchCoverageNoteOptions {
   /** The search's hits: a kind that shares its name with a hit of another
@@ -35,6 +36,7 @@ export function kindPluralLabel(kind: string): string {
 }
 
 function joinNames(names: string[], conj: string): string {
+  if (names.length > MAX_TARGET_NAMES) return `${names.slice(0, MAX_TARGET_NAMES).join(', ')} and ${names.length - MAX_TARGET_NAMES} more`
   if (names.length <= 1) return names[0] ?? ''
   return `${names.slice(0, -1).join(', ')} ${conj} ${names[names.length - 1]}`
 }

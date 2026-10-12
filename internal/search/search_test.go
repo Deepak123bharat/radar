@@ -76,6 +76,8 @@ func (f *fakeProvider) DynamicResources() ([]schema.GroupVersionResource, error)
 func (f *fakeProvider) TypedCoverage(kind string, namespaces []string) readreason.Code {
 	return readreason.Code(f.typedReasons[kind])
 }
+func (f *fakeProvider) PrepareDynamicObservations(_ []schema.GroupVersionResource) {}
+
 func (f *fakeProvider) DynamicObservation(gvr schema.GroupVersionResource, namespace string) k8score.DynamicResourceObservation {
 	if o, ok := f.namespaceObservations[gvr][namespace]; ok && namespace != "" {
 		return o

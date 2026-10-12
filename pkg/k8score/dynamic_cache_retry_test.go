@@ -41,9 +41,13 @@ func TestProbeRetryNamespaceOutcomes(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(d.Stop)
+			view := d.NewObservationView([]schema.GroupVersionResource{gvr})
 			// Exercise startup's owner, rather than relying on a later read.
 			d.WarmupParallel([]schema.GroupVersionResource{gvr}, time.Millisecond)
 			initial := d.Observation(gvr)
+			if got := view.NamespaceObservation(gvr, ""); got.ProbeRetrying != initial.ProbeRetrying || !slices.Equal(got.UnansweredNamespaces, initial.UnansweredNamespaces) {
+				t.Fatalf("initial view: %+v; cache: %+v", got, initial)
+			}
 			if !initial.ProbeRetrying || !slices.Equal(initial.UnansweredNamespaces, []string{"b"}) {
 				t.Fatalf("retry not published: %+v", initial)
 			}
@@ -61,6 +65,13 @@ func TestProbeRetryNamespaceOutcomes(t *testing.T) {
 			got := d.Observation(gvr)
 			if got.ProbeRetrying || (len(got.UnansweredNamespaces) > 0) != tc.unresolved {
 				t.Fatalf("terminal observation: %+v", got)
+			}
+			for _, ns := range []string{"a", "b", "outside"} {
+				want := d.NamespaceObservation(gvr, ns)
+				got := view.NamespaceObservation(gvr, ns)
+				if got.Scope != want.Scope || !slices.Equal(got.Namespaces, want.Namespaces) || got.ProbeRetrying != want.ProbeRetrying || !slices.Equal(got.UnansweredNamespaces, want.UnansweredNamespaces) {
+					t.Fatalf("terminal %s view: %+v; cache: %+v", ns, got, want)
+				}
 			}
 			if d.HasCoveringInformer(gvr, "b") != (tc.allowed && !tc.unresolved) {
 				t.Fatalf("wrong namespace watch: %+v", got)

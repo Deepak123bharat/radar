@@ -52,6 +52,8 @@ type Provider interface {
 	// means the list may be incomplete; any kinds returned are still searched.
 	DynamicResources() ([]schema.GroupVersionResource, error)
 	TypedCoverage(kind string, namespaces []string) readreason.Code
+	// PrepareDynamicObservations indexes informer scopes for this search.
+	PrepareDynamicObservations(gvrs []schema.GroupVersionResource)
 	// DynamicObservation reports the kind's observation, with readiness taken
 	// from the informer serving namespace; "" means the whole kind.
 	DynamicObservation(gvr schema.GroupVersionResource, namespace string) k8score.DynamicResourceObservation
@@ -184,6 +186,9 @@ type pendingHit struct {
 }
 
 func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, error) {
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	if opts.Limit <= 0 {
 		opts.Limit = DefaultLimit
 	}
@@ -256,6 +261,9 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 
 	// Typed kinds.
 	for _, tk := range typedKinds {
+		if err := ctx.Err(); err != nil {
+			return Result{}, err
+		}
 		if !shouldScanTyped(tk.Kind, q) {
 			continue
 		}
@@ -329,6 +337,9 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		}
 		if !clusterScoped && len(q.NSFilter) > 0 {
 			for _, ns := range listNs {
+				if err := ctx.Err(); err != nil {
+					return Result{}, err
+				}
 				if p.TypedCoverage(tk.Kind, []string{ns}) == readreason.CollectorScopeLimited {
 					cov.namespaces(readreason.CollectorScopeLimited, ns)
 				}
@@ -342,6 +353,9 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		res.Searched += len(objs)
 		inScope := namespaceSet(listNs)
 		for _, obj := range objs {
+			if err := ctx.Err(); err != nil {
+				return Result{}, err
+			}
 			c, ok := fromObject(obj, tk.Kind)
 			if !ok || (inScope != nil && !inScope[c.Namespace]) {
 				continue
@@ -380,7 +394,14 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 	if catalogErr != nil && !incompleteDiscovery {
 		cov.catalog(listErrorReason(catalogErr))
 	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+	p.PrepareDynamicObservations(gvrs)
 	for _, gvr := range gvrs {
+		if err := ctx.Err(); err != nil {
+			return Result{}, err
+		}
 		kind := p.KindForGVR(gvr)
 		if kind == "" || !shouldScanCRD(kind, gvr.Group, q) {
 			continue
@@ -445,10 +466,20 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 			items = append(items, its...)
 		}
 		outside := func(ns string, nsObservation k8score.DynamicResourceObservation) bool {
-			return nsObservation.Scope == k8score.DynamicObservationScopeExplicitNamespaces && (ns == "" || !slices.Contains(nsObservation.Namespaces, ns))
+			_, covered := slices.BinarySearch(nsObservation.Namespaces, ns)
+			return nsObservation.Scope == k8score.DynamicObservationScopeExplicitNamespaces && (ns == "" || !covered)
 		}
+		// A synced cluster-wide informer covers every namespace and cannot be
+		// replaced by namespace informers. Probe gaps still need namespace-specific answers.
+		clusterWideSynced := observation.Scope == k8score.DynamicObservationScopeCluster && observation.State == k8score.DynamicObservationSynced && !probeGap
 		for _, ns := range namespaces {
-			nsObservation := p.DynamicObservation(gvr, ns)
+			if err := ctx.Err(); err != nil {
+				return Result{}, err
+			}
+			nsObservation := observation
+			if !clusterWideSynced {
+				nsObservation = p.DynamicObservation(gvr, ns)
+			}
 			outsideScope := outside(ns, nsObservation)
 			if len(q.KindFilter) > 0 && !nsObservation.ProbeRetrying && (warm || outsideScope) {
 				err := p.WarmDynamic(warmCtx, gvr, ns)
@@ -478,6 +509,9 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 					continue
 				}
 				for _, watchedNS := range nsObservation.Namespaces {
+					if err := ctx.Err(); err != nil {
+						return Result{}, err
+					}
 					read(watchedNS, p.DynamicObservation(gvr, watchedNS))
 				}
 				continue
@@ -489,6 +523,9 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 			cov.namespaces(readreason.CollectorScopeLimited, ns)
 			if ns == "" {
 				for _, watchedNS := range nsObservation.Namespaces {
+					if err := ctx.Err(); err != nil {
+						return Result{}, err
+					}
 					read(watchedNS, p.DynamicObservation(gvr, watchedNS))
 				}
 			}
@@ -499,6 +536,9 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 			inScope = namespaceSet(opts.Namespaces)
 		}
 		for _, u := range items {
+			if err := ctx.Err(); err != nil {
+				return Result{}, err
+			}
 			c := fromUnstructured(u, kind, gvr.Group)
 			if inScope != nil && !inScope[c.Namespace] {
 				continue
@@ -535,16 +575,23 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 	// groups failed discovery it is, but the failure is reported beside it:
 	// the kind may live in one of them.
 	if catalogErr == nil || incompleteDiscovery {
+		unknownKinds := map[string]bool{}
 		for _, requested := range q.KindFilter {
-			if !covered[requested] && !slices.ContainsFunc(cov.gaps, func(gap UnsearchedKind) bool {
-				return gap.Reason == readreason.UnknownKind && strings.EqualFold(gap.Kind, requested)
-			}) {
+			if err := ctx.Err(); err != nil {
+				return Result{}, err
+			}
+			key := strings.ToLower(requested)
+			if !covered[requested] && !unknownKinds[key] {
+				unknownKinds[key] = true
 				cov.kind(requested, "", readreason.UnknownKind)
 				if incompleteDiscovery {
 					cov.catalog(readreason.ReadError)
 				}
 			}
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
 	}
 	res.Unsearched = cov.result()
 	res.Partial = len(res.Unsearched) > 0 || res.FilterErrors > 0
@@ -565,6 +612,9 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		seen := make(map[hitKey]int, len(pending))
 		out := pending[:0]
 		for _, p := range pending {
+			if err := ctx.Err(); err != nil {
+				return Result{}, err
+			}
 			k := hitKey{p.hit.Kind, p.hit.Group, p.hit.Namespace, p.hit.Name}
 			if idx, ok := seen[k]; ok {
 				if p.hit.Score > out[idx].hit.Score {
@@ -601,6 +651,9 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 	// via context=none).
 	hits := make([]Hit, len(pending))
 	for i := range pending {
+		if err := ctx.Err(); err != nil {
+			return Result{}, err
+		}
 		hits[i] = pending[i].hit
 		if opts.SummaryBuilder != nil {
 			c := pending[i].c

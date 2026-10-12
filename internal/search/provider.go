@@ -23,10 +23,11 @@ import (
 // Use NewCacheProvider to capture the live cache handles and collector probe
 // results for one search request.
 type CacheProvider struct {
-	cache       *k8s.ResourceCache
-	dynamic     *k8s.DynamicResourceCache
-	discovery   *k8s.ResourceDiscovery
-	permissions *k8s.ResourcePermissions
+	cache        *k8s.ResourceCache
+	dynamic      *k8s.DynamicResourceCache
+	discovery    *k8s.ResourceDiscovery
+	permissions  *k8s.ResourcePermissions
+	observations *k8score.DynamicObservationView
 }
 
 // NewCacheProvider returns a Provider over the live radar caches.
@@ -135,11 +136,23 @@ func (p *CacheProvider) TypedCoverage(kind string, namespaces []string) readreas
 	return ""
 }
 
+func (p *CacheProvider) PrepareDynamicObservations(gvrs []schema.GroupVersionResource) {
+	p.observations = nil
+	if p.dynamic != nil {
+		p.observations = p.dynamic.NewObservationView(gvrs)
+	}
+}
+
 func (p *CacheProvider) DynamicObservation(gvr schema.GroupVersionResource, namespace string) k8score.DynamicResourceObservation {
 	if p.dynamic == nil {
 		return k8score.DynamicResourceObservation{State: k8score.DynamicObservationSyncing}
 	}
-	observation := p.dynamic.NamespaceObservation(gvr, namespace)
+	var observation k8score.DynamicResourceObservation
+	if p.observations != nil {
+		observation = p.observations.NamespaceObservation(gvr, namespace)
+	} else {
+		observation = p.dynamic.NamespaceObservation(gvr, namespace)
+	}
 	// Radar reads these high-churn built-ins directly and never watches them,
 	// so search treats them like list-only APIs instead of warming an informer.
 	if k8s.ShouldBypassDynamicInformer(gvr) && observation.State != k8score.DynamicObservationSynced && observation.State != k8score.DynamicObservationSyncing {

@@ -50,6 +50,7 @@ func TestCacheProviderTypedCoverageUsesReadinessAndScope(t *testing.T) {
 
 func TestCacheProviderNilDynamic(t *testing.T) {
 	p := &CacheProvider{discovery: &k8s.ResourceDiscovery{}}
+	p.PrepareDynamicObservations(nil)
 	if _, err := p.DynamicResources(); !errors.Is(err, k8s.ErrDynamicNotReady) {
 		t.Fatalf("catalog: %v", err)
 	}

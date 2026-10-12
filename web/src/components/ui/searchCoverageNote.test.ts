@@ -163,3 +163,31 @@ describe('helpers', () => {
     expect(PENDING_RETRY_BUDGET_MS).toBeGreaterThanOrEqual(60_000)
   })
 })
+
+
+describe('large named target lists', () => {
+  const names = Array.from({ length: 5000 }, (_, i) => `target-${String(i).padStart(4, '0')}`)
+  it.each(['namespace_excluded', 'namespace_scope_limited', 'collector_scope_limited'])(
+    'caps %s namespace prose and preserves structured detail', (reason) => {
+      const gaps = [{ kind: '*', group: '', reason, namespaces: names }]
+      for (const seesAllNamespaces of [false, true]) {
+        const text = searchCoverageNote(gaps, { seesAllNamespaces })!.text
+        expect(text).toContain("'target-0004' and 4995 more")
+        expect(text).not.toContain('target-0005')
+        expect(text.length).toBeLessThan(300)
+      }
+      expect(gaps[0].namespaces).toEqual(names)
+    },
+  )
+  it.each(['unknown_kind', 'rbac_denied', 'collector_access_denied', 'collection_not_supported'])(
+    'caps %s kind prose and preserves exact entries', (reason) => {
+      const gaps = names.map((kind) => entry(kind, reason))
+      const text = searchCoverageNote(gaps, {})!.text
+      expect(text).toContain('and 4995 more')
+      expect(text).not.toContain('target-0005')
+      expect(text.length).toBeLessThan(300)
+      expect(gaps).toHaveLength(5000)
+      expect(gaps[4999].kind).toBe('target-4999')
+    },
+  )
+})

@@ -224,16 +224,25 @@ func kindWithGroup(e search.UnsearchedKind) string {
 	return fmt.Sprintf("%s (%s)", e.Kind, e.Group)
 }
 
-// joinKinds lists the named kinds of entries, at most three, in prose.
+// joinKinds lists the named kinds of entries, at most five, in prose.
 func joinKinds(entries []search.UnsearchedKind, conj string, format func(string) string) string {
 	var names []string
+	seen := map[string]bool{}
 	for _, e := range entries {
-		if e.Kind != "*" && !slices.Contains(names, format(e.Kind)) {
-			names = append(names, format(e.Kind))
+		if e.Kind == "*" {
+			continue
+		}
+		name := format(e.Kind)
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		if len(names) < 5 {
+			names = append(names, name)
 		}
 	}
-	if len(names) > 3 {
-		names = append(names[:3], fmt.Sprintf("%d more kinds", len(names)-3))
+	if len(seen) > len(names) {
+		return boundedCoverageNames(names, len(seen))
 	}
 	switch len(names) {
 	case 0:
@@ -245,18 +254,28 @@ func joinKinds(entries []search.UnsearchedKind, conj string, format func(string)
 }
 
 func quoteJoin(values []string) string {
-	quoted := make([]string, len(values))
-	for i, v := range values {
+	quoted := make([]string, min(len(values), 5))
+	for i, v := range values[:len(quoted)] {
 		quoted[i] = "'" + v + "'"
 	}
-	return strings.Join(quoted, ", ")
+	return boundedCoverageNames(quoted, len(values))
+}
+
+func boundedCoverageNames(shown []string, total int) string {
+	text := strings.Join(shown, ", ")
+	if total > len(shown) {
+		text += fmt.Sprintf(" and %d more", total-len(shown))
+	}
+	return text
 }
 
 func namespaceSentence(entries []search.UnsearchedKind, oneWhy, manyWhy string) string {
 	var namespaces []string
+	seen := map[string]bool{}
 	for _, e := range entries {
 		for _, ns := range e.Namespaces {
-			if !slices.Contains(namespaces, ns) {
+			if !seen[ns] {
+				seen[ns] = true
 				namespaces = append(namespaces, ns)
 			}
 		}
@@ -265,7 +284,7 @@ func namespaceSentence(entries []search.UnsearchedKind, oneWhy, manyWhy string) 
 	if len(namespaces) == 1 {
 		return fmt.Sprintf("Namespace %s wasn't searched: %s.", namespaces[0], oneWhy)
 	}
-	return fmt.Sprintf("Namespaces %s weren't searched: %s.", strings.Join(namespaces, ", "), manyWhy)
+	return fmt.Sprintf("Namespaces %s weren't searched: %s.", boundedCoverageNames(namespaces[:min(len(namespaces), 5)], len(namespaces)), manyWhy)
 }
 
 // celNoSuchKey matches CEL's missing-field message so the hint can name the field.
@@ -277,7 +296,7 @@ func filterSentence(failed int, sample string) string {
 		cause = m
 	}
 	if len(cause) > 80 {
-		cause = cause[:80] + "…"
+		cause = strings.ToValidUTF8(cause[:80], "") + "…"
 	}
 	objects := pluralWord(failed, "object", "objects")
 	const advice = "Kubernetes omits fields that are 0 or empty, so guard them with has() and match a zero with kind == \"K\" && (!has(x) || x == 0)."
