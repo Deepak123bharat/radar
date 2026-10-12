@@ -229,6 +229,16 @@ export function isNotFoundError(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404;
 }
 
+/**
+ * The server's explanation when it refused a request because the browser
+ * reported it came from another site, or undefined for any other error.
+ */
+export function crossOriginRefusalMessage(error: unknown): string | undefined {
+  return error instanceof ApiError && error.data?.error_code === "cross_origin_refused"
+    ? error.message
+    : undefined;
+}
+
 export function isCapacityCursorInvalidError(error: unknown): boolean {
   return (
     error instanceof ApiError &&
@@ -3566,7 +3576,7 @@ export type PrometheusTimeRange =
 // PVC usage at a moment in time, derived from kubelet_volume_stats_*.
 export interface PrometheusPVCUsage {
   // Hub packages the frontend independently from per-cluster agent upgrades.
-  status?: "available" | "no_series" | "invalid_data" | "query_failed";
+  status?: "available" | "no_series" | "invalid_data" | "query_failed" | "ambiguous_scope" | "scope_mismatch";
   namespace: string;
   name: string;
   used: number;

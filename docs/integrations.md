@@ -321,7 +321,7 @@ Radar has first-class renderers for **AWS (CAPA)**, **GCP (CAPG)**, and **Azure 
 
 ### What Radar Shows
 
-**Topology:** Full network path — GatewayClass → Gateway → HTTPRoute/GRPCRoute/TCPRoute/TLSRoute → Service → Pod. Visualize how traffic flows from the gateway controller through routes to your backend services.
+**Topology:** Full network path — GatewayClass → Gateway → HTTPRoute/GRPCRoute/TCPRoute/TLSRoute/UDPRoute → Service → Pod. Visualize how traffic flows from the gateway controller through routes to your backend services.
 
 <p align="center">
   <img src="screenshots/integrations/gateway-topology.png" alt="Gateway API Topology" width="800">
@@ -346,6 +346,7 @@ Radar has first-class renderers for **AWS (CAPA)**, **GCP (CAPG)**, and **Azure 
 | GRPCRoute | `gateway.networking.k8s.io/v1` | Yes | Yes | Yes |
 | TCPRoute | `gateway.networking.k8s.io/v1alpha2` | Yes | Yes | Yes |
 | TLSRoute | `gateway.networking.k8s.io/v1alpha2` | Yes | Yes | Yes |
+| UDPRoute | `gateway.networking.k8s.io/v1alpha2` | Yes | Yes | Yes |
 
 ---
 
@@ -1238,16 +1239,28 @@ PolicyReport findings are policy posture, not live operational failure, so they 
 
 [OpenCost](https://www.opencost.io/) is a CNCF tool for Kubernetes cost monitoring, exposing cloud provider pricing and workload resource allocation as Prometheus metrics.
 
-Radar supports two read-only cost paths. Auto mode keeps OpenCost-compatible metrics from the
-already-discovered Prometheus when representative cost data is usable; when those metrics are
-absent, it tries the current allocation and asset APIs of a Kubecost 3 Aggregator. Source selection
-can also be pinned to `prometheus` or `kubecost` in Settings → Cost or Helm. Local CLI/Desktop
-save the choice per context in `clusters.json`; shared installations use operator configuration. When
-Auto positively finds neither source, Radar reports that state and retries discovery; it does not
-label an absent Prometheus source as active. Local Settings tests Kubecost mode, and Auto with any
-Kubecost override (URL, API key or cluster ID), before saving; a failed test blocks the save. Auto
-with no Kubecost overrides, or Prometheus mode, is a source preference, not a backend reachability
-claim.
+Radar supports two read-only cost sources. **Automatic** prefers usable OpenCost
+metrics from Prometheus, then tries a Kubecost 3 Aggregator when those metrics
+are absent. If neither source is found, Cost reports that state and retries
+discovery.
+
+If discovered Prometheus candidates are unreachable or detection times out,
+Automatic can use a working Kubecost temporarily. The next Cost request after
+one minute rechecks Prometheus and switches back when OpenCost metrics are usable.
+If Kubecost cannot be discovered either, Cost remains unavailable and retries.
+Settings → Metrics shows the Prometheus connection failure, including any
+NetworkPolicy diagnosis. Other Prometheus configuration or query failures do
+not start a new source switch; Cost shows the failure when it has no working
+fallback.
+
+Pin a source in Settings → Cost or Helm to prevent Automatic selection.
+Local CLI/Desktop saves the choice per context in `clusters.json`; shared
+installations use operator configuration.
+
+Local Settings tests Kubecost mode, and Automatic with any Kubecost override
+(URL, API key or cluster ID), before saving; a failed test blocks the save.
+Automatic without Kubecost overrides, or Prometheus mode, saves a preference
+without asserting that the backend is reachable.
 
 For Kubecost, Radar auto-discovers only an active Aggregator StatefulSet and its matching Service.
 It tries the official named `tcp-api` port 9004 first. When that port rejects unauthenticated access
