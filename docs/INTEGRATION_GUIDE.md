@@ -88,6 +88,29 @@ shared renderers.
   or the generic pass reintroducing warnings for intentional states. Don't suppress
   a whole API group when only some kinds are covered.
 
+### Finalizer controller recognition
+
+Stuck-deletion detection covers already-watched, synchronized CRDs. Adding an
+owner enriches those findings; it needs no per-kind detector or renderer.
+
+- [ ] Add documented keys and controller names, labels and image paths in
+  [`pkg/finalizers/catalog.go`](../pkg/finalizers/catalog.go). Disambiguate shared
+  keys by API group/kind, and shared images or identities by role/image checks.
+  Name guesses for uncataloged finalizers remain candidates, never owners.
+- [ ] Review cleanup semantics before setting `AllowConditionalCleanup` (false
+  by default). Leave it disabled for unreviewed cleanup, off-cluster controllers
+  or infrastructure cleanup; record those limits on the entry.
+- [ ] Add identity fixtures in
+  [`pkg/finalizers/catalog_test.go`](../pkg/finalizers/catalog_test.go) and
+  guidance/eligibility cases in
+  [`internal/issues/finalizers_test.go`](../internal/issues/finalizers_test.go),
+  including unrelated workloads and incomplete visibility.
+- [ ] Keep reads and policy in `internal/issues/finalizers.go`, pod health in
+  `pkg/health`. Catalog additions should not change the shared API/UI machinery.
+- [ ] Verify a real stuck deletion, including intentional uninstall if enabling
+  removal. Update the [MCP contract](mcp.md#read-tools) when supported behavior
+  changes; distinguish controller evidence from synthetic fixtures.
+
 ### MCP / AI context
 
 - [ ] Check existing resource-tool output in `pkg/ai/context/summary_crd.go`,

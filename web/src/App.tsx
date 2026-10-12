@@ -75,7 +75,7 @@ import { Tooltip } from './components/ui/Tooltip'
 import { LargeClusterNamespacePicker } from './components/shared/LargeClusterNamespacePicker'
 import { SettingsDialog, type SettingsSectionId } from './components/settings/SettingsDialog'
 import type { APIResource, TopologyNode, GroupingMode, MainView, SelectedResource, SelectedHelmRelease, NodeKind, TopologyMode, Topology, K8sEvent } from './types'
-import { kindToPluralWithGroup, pluralToKind, openExternal, apiVersionToGroup, relatedResourcePath, searchHitToSelectedResource, withCrossViewParams } from './utils/navigation'
+import { kindToPluralWithGroup, pluralToKind, openExternal, apiVersionToGroup, relatedResourcePath, searchHitToSelectedResource, withCrossViewParams, writeViewParams } from './utils/navigation'
 import { findSelectedTopologyNode } from './utils/topology-selection'
 import { type OmnibarHandle } from './components/ui/Omnibar'
 import { RadarOmnibar } from './components/ui/RadarOmnibar'
@@ -83,7 +83,7 @@ import type { ContextSwitcherHandle } from './components/ContextSwitcher'
 
 // All possible node kinds (core + GitOps)
 const ALL_NODE_KINDS: NodeKind[] = [
-  'Internet', 'Ingress', 'Gateway', 'HTTPRoute', 'GRPCRoute', 'TCPRoute', 'TLSRoute',
+  'Internet', 'Ingress', 'Gateway', 'HTTPRoute', 'GRPCRoute', 'TCPRoute', 'TLSRoute', 'UDPRoute',
   'Service', 'Deployment', 'Rollout', 'DaemonSet', 'StatefulSet',
   'ReplicaSet', 'Pod', 'PodGroup', 'ConfigMap', 'Secret', 'ServiceAccount', 'SealedSecret', 'ServiceMonitor', 'PodMonitor', 'HorizontalPodAutoscaler', 'Job', 'CronJob', 'PersistentVolumeClaim', 'Namespace',
   'Application', 'Kustomization', 'HelmRelease', 'GitRepository',
@@ -1432,6 +1432,23 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
       { onSuccess: () => setNamespaces([]) },
     )
   }, [namespaceScope?.cacheScoped, namespaces.length, setActiveNamespace])
+  const issuesShowNamespace = useMemo(() => {
+    if (namespaceScope?.cacheScoped) {
+      if (!namespaceScope.namespaceRescope) return undefined
+      return {
+        mode: 'switch' as const,
+        show: (ns: string) => { setNamespaces([ns]); setActiveNamespace.mutate({ namespaces: [ns] }) },
+      }
+    }
+    return {
+      mode: 'add' as const,
+      show: (ns: string) => {
+        const next = namespaces.includes(ns) ? namespaces : [...namespaces, ns]
+        setNamespaces(next)
+        setActiveNamespace.mutate({ namespaces: next })
+      },
+    }
+  }, [namespaceScope?.cacheScoped, namespaceScope?.namespaceRescope, namespaces, setActiveNamespace])
   const initialBookmarkReconciledRef = useRef(false)
   const scopeActives = useMemo(() => namespaceScope?.actives ?? [], [namespaceScope?.actives])
   const namespaceScopeKey = useMemo(() => namespaceScope ? [...scopeActives].sort().join(',') : null, [namespaceScope, scopeActives])
@@ -1510,32 +1527,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     if (skipUrlWriteAfterPopRef.current) return
     const currentSearch = window.location.search
     const params = new URLSearchParams(currentSearch)
-
-    // Update namespaces param
-    if (namespaces.length > 0) {
-      params.set('namespaces', namespaces.join(','))
-    } else {
-      params.delete('namespaces')
-    }
-    // Remove legacy 'namespace' param if present
-    params.delete('namespace')
-
-    // Topology-specific params: only set when on topology view, clean up otherwise
-    if (mainView === 'topology') {
-      if (topologyMode !== 'resources') {
-        params.set('mode', topologyMode)
-      } else {
-        params.delete('mode')
-      }
-      if (groupingMode !== 'none' && (namespaces.length === 0 || groupingMode !== 'namespace')) {
-        params.set('group', groupingMode)
-      } else {
-        params.delete('group')
-      }
-    } else {
-      params.delete('mode')
-      params.delete('group')
-    }
+    writeViewParams(params, namespaces, mainView === 'topology' ? { mode: topologyMode, grouping: groupingMode } : null)
 
     // Only update if params actually changed vs current URL
     if (params.toString() !== new URLSearchParams(currentSearch).toString()) {
@@ -2372,6 +2364,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
           <IssuesPane
             namespaces={namespaces}
             onNavigateToResource={navigateFromIssue}
+            showNamespace={issuesShowNamespace}
           />
         )}
 

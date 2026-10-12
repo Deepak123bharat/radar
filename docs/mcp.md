@@ -491,6 +491,55 @@ API group is part of a resource's identity. Radar infers the canonical group for
 
 This selects the Argo Rollout workload path; it does not imply that `diagnose` supports arbitrary custom resource shapes.
 
+Watched, synchronized custom resources that remain deleting appear in `issues`
+as `termination_stuck`, timed from the deletion request. Radar starts no new
+watches for this scan; an empty result does not establish that unwatched kinds
+are healthy. These findings also feed Active Issues and AI resource/search
+summaries, but not dashboard health summaries or `cluster://health`.
+
+Findings start at warning after 10 minutes. At 30 minutes, controller-owned
+finalizers follow this policy:
+
+| Controller evidence | Severity | Next step |
+|---|---|---|
+| Recognized controller is fully ready | Warning | Check logs, permissions and deletion-blocking dependencies. No removal. |
+| Recognized controller is installed but not fully ready | Critical | Repair the controller so it can resume cleanup. No removal. |
+| No recognized controller, or all recognized copies are scaled to zero | Warning | Restore it if it should be running. Removal may be offered conditionally. |
+| Owner or controller state cannot be established | Warning | Identify and check the controller. No removal. |
+
+A fully ready controller for any finalizer keeps a mixed-finalizer finding at
+warning; repair advice for other controllers remains. In-use guards and
+GC-only finalizers can reach critical at 30 minutes. Resolve their dependencies
+rather than removing them; orphaning preserves dependents.
+
+The catalog recognizes Argo CD, Flux, VictoriaMetrics and Karpenter through
+known finalizer keys and workload identities. Name-only guesses for uncataloged
+finalizers never establish ownership. Renamed installs and mirrors can be
+recognized through published images; controller-specific identity rules are in
+[`pkg/finalizers/catalog.go`](../pkg/finalizers/catalog.go).
+
+Ordinary namespaced subjects require namespace access; Secrets also require
+Secret access, and cluster-scoped subjects require list on their exact kind.
+Controller evidence follows namespace access for namespaced reads and exact-kind
+list for cluster-wide searches. A missing or down controller requires complete
+cluster-wide Pod, Deployment,
+StatefulSet and DaemonSet visibility. Incomplete inventory cannot enable removal.
+A negative search is not proof of an uninstall; a controller may run elsewhere
+or use an identity Radar does not recognize.
+
+Only Flux and VictoriaMetrics currently opt into `conditional_cleanup`, separate
+from `action`. It contains `condition`, `agent_guidance`, `caution`, and `removals`
+with one entry per finalizer (`finalizer`, `patch_resource`, `kubectl`). An agent
+may propose removal only after the user confirms intentional uninstall or a
+permanent stop. The UI keeps these commands in a collapsed conditional section.
+
+Each command defaults to a server dry run and tests the object's UID and the
+finalizer at its index. Review the preview before applying; re-read after every
+removal because indices change. Removal bypasses controller cleanup and can
+leave Kubernetes resources, infrastructure or storage behind. Dependents with
+their own finalizers can remain stuck even after the controller is restored;
+older VictoriaMetrics operators place such finalizers on managed objects.
+
 For `issues`, read `timing_summary` when present; it explains timing combinations that are easy to misread without schema context. The raw provenance fields remain available for filtering. `first_seen` is an evidence-backed lower bound, `onset_unknown` means no contributing signal has a known onset, and `resource_created_at` is resource-age context rather than issue age. A missing `first_seen` is exposed to CEL as `0`; require `first_seen != 0` for any age filter, and also require `onset_coverage_unknown == 0` when the whole row must have exact timing.
 
 Resource context distinguishes observed dependency references (`dependencies` and
@@ -498,6 +547,17 @@ Resource context distinguishes observed dependency references (`dependencies` an
 it does not scale it. These references carry API group and namespace identity,
 are filtered by the caller's reference permissions, and do not establish that
 a controller has successfully reconciled the dependency.
+
+Resource context exposes routing direction through `exposedBy` (upstream
+resources routing to this resource, including entrypoints reached through a
+selecting Service) and `backends` (resources this routes to). The compatibility
+field `exposes` is their union and does not imply a direction. Pod containment
+shortcuts on Deployments and Nodes are excluded from routing backends. All three
+fields carry exact group/kind/namespace/name references and apply the caller's
+reference permissions independently. Monitoring uses `monitors` and
+`monitorTargets`; policy selections use `protects`, while non-enforcing staged
+policies use `stagedPolicies` rather than `selectedBy`. Cluster API Clusters
+expose their `healthChecks`; a MachineHealthCheck's Cluster is a dependency.
 
 ### Write Tools
 

@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/skyhook-io/radar/pkg/configrefs"
 	"github.com/skyhook-io/radar/pkg/hpadiag"
 	"github.com/skyhook-io/radar/pkg/rolloutdiag"
 	"github.com/skyhook-io/radar/pkg/topology"
@@ -226,14 +227,21 @@ func Build(ctx context.Context, obj runtime.Object, opts Options) *ResourceConte
 
 	// 2. Topology-derived: Exposes, SelectedBy, ScaledBy
 	if rel != nil {
-		exposes := make([]topology.ResourceRef, 0, len(rel.Services)+len(rel.Ingresses)+len(rel.Gateways)+len(rel.Routes))
-		exposes = append(exposes, rel.Services...)
-		exposes = append(exposes, rel.Ingresses...)
-		exposes = append(exposes, rel.Gateways...)
-		exposes = append(exposes, rel.Routes...)
-		rc.Exposes = filterRefs(ctx, opts.AccessChecker,
-			toContextRefs(exposes),
-			"exposes", omitted)
+		exposedBy := make([]topology.ResourceRef, 0, len(rel.Services)+len(rel.Ingresses)+len(rel.Gateways)+len(rel.Routes)+len(rel.RoutedFrom))
+		exposedBy = append(exposedBy, rel.Services...)
+		exposedBy = append(exposedBy, rel.Ingresses...)
+		exposedBy = append(exposedBy, rel.Gateways...)
+		exposedBy = append(exposedBy, rel.Routes...)
+		exposedBy = append(exposedBy, rel.RoutedFrom...)
+		backends := append([]topology.ResourceRef(nil), rel.Backends...)
+		// Deployment and Node Pods are containment shortcuts, not routing targets.
+		if !(ident.Kind == "Deployment" && ident.Group == "apps") && !(ident.Kind == "Node" && ident.Group == "") {
+			backends = append(backends, rel.Pods...)
+		}
+		rc.ExposedBy = filterRefs(ctx, opts.AccessChecker, toContextRefs(exposedBy), "exposedBy", omitted)
+		rc.Backends = filterRefs(ctx, opts.AccessChecker, toContextRefs(backends), "backends", omitted)
+		exposes := append(exposedBy, backends...)
+		rc.Exposes = filterRefs(ctx, opts.AccessChecker, toContextRefs(exposes), "exposes", omitted)
 
 		selected := make([]topology.ResourceRef, 0, len(rel.PDBs)+len(rel.NetworkPolicies))
 		selected = append(selected, rel.PDBs...)
@@ -241,6 +249,12 @@ func Build(ctx context.Context, obj runtime.Object, opts Options) *ResourceConte
 		rc.SelectedBy = filterRefs(ctx, opts.AccessChecker,
 			toContextRefs(selected),
 			"selectedBy", omitted)
+
+		rc.Protects = filterRefs(ctx, opts.AccessChecker, toContextRefs(rel.Protects), "protects", omitted)
+		rc.HealthChecks = filterRefs(ctx, opts.AccessChecker, toContextRefs(rel.HealthChecks), "healthChecks", omitted)
+		rc.StagedPolicies = filterRefs(ctx, opts.AccessChecker, toContextRefs(rel.StagedPolicies), "stagedPolicies", omitted)
+		rc.Monitors = filterRefs(ctx, opts.AccessChecker, toContextRefs(rel.Monitors), "monitors", omitted)
+		rc.MonitorTargets = filterRefs(ctx, opts.AccessChecker, toContextRefs(rel.MonitorTargets), "monitorTargets", omitted)
 
 		rc.Dependencies = filterRefs(ctx, opts.AccessChecker,
 			toContextRefs(rel.Dependencies), "dependencies", omitted)
@@ -1027,14 +1041,8 @@ func buildIngressSummary(ctx context.Context, obj runtime.Object, ac RefAccessCh
 	}
 
 	svcSet := newRefSet()
-	addIngressBackendService(svcSet, ing.Namespace, ing.Spec.DefaultBackend)
-	for _, rule := range ing.Spec.Rules {
-		if rule.HTTP == nil {
-			continue
-		}
-		for _, path := range rule.HTTP.Paths {
-			addIngressBackendService(svcSet, ing.Namespace, &path.Backend)
-		}
+	for _, name := range configrefs.IngressBackendServices(ing) {
+		svcSet.add(name, ing.Namespace)
 	}
 	out.BackendServices = filterRefs(ctx, ac, svcSet.refs("Service", ""), "ingressSummary.backendServices", omitted)
 
@@ -1048,13 +1056,6 @@ func buildIngressSummary(ctx context.Context, obj runtime.Object, ac RefAccessCh
 		return nil
 	}
 	return out
-}
-
-func addIngressBackendService(dst *refSet, namespace string, backend *networkingv1.IngressBackend) {
-	if backend == nil || backend.Service == nil {
-		return
-	}
-	dst.add(backend.Service.Name, namespace)
 }
 
 func buildNodeSummary(obj runtime.Object) *NodeSummary {

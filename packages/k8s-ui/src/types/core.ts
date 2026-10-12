@@ -164,6 +164,7 @@ export interface FeatureCapabilities {
   yamlSchemas?: boolean
   workloadImages?: boolean
   resourceIssues?: boolean
+  resourceIssueCoverage?: boolean
   podEnvironment?: boolean
   policyResource?: boolean
   workloadHistory?: boolean
@@ -201,6 +202,7 @@ export type CoreNodeKind =
   | 'HTTPRoute'
   | 'GRPCRoute'
   | 'TCPRoute'
+  | 'UDPRoute'
   | 'TLSRoute'
   | 'Service'
   | 'Deployment'
@@ -658,6 +660,13 @@ export interface Relationships {
   storageRefs?: ResourceRef[]
   dependencies?: ResourceRef[]
   dependents?: ResourceRef[]
+  monitors?: ResourceRef[]
+  monitorTargets?: ResourceRef[]
+  backends?: ResourceRef[]
+  routedFrom?: ResourceRef[]
+  protects?: ResourceRef[]
+  healthChecks?: ResourceRef[]
+  stagedPolicies?: ResourceRef[]
   scaleTarget?: ResourceRef
   pdbs?: ResourceRef[]              // PodDisruptionBudgets protecting this workload
   networkPolicies?: ResourceRef[]   // NetworkPolicy / CiliumNetworkPolicy / ClusterNetworkPolicy variants selecting this workload
