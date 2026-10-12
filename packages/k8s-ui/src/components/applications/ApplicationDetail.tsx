@@ -253,6 +253,9 @@ export type ApplicationDetailProps = {
   // The retained ring itself was row-capped: the OLDEST part of the retention
   // window is not loaded, independent of the per-query event limit.
   historyRingTruncated?: boolean;
+  // The host's note about how far back history goes, or the stretch before
+  // the limit reads as "no history".
+  historyRetentionNote?: ReactNode;
   onHistoryRangeChange?: (range: ApplicationHistoryRange) => void;
   onOpenTimeline?: (timestamp?: string) => void;
   onOpenSource?: (source: AppSourceRef) => void;
@@ -346,6 +349,7 @@ export function ApplicationDetail({
   historyCoverageRecordCount,
   historyRuntimeLimited,
   historyRingTruncated,
+  historyRetentionNote,
   onHistoryRangeChange,
   onOpenTimeline,
   onOpenSource,
@@ -784,6 +788,7 @@ export function ApplicationDetail({
             historyCoverageRecordCount={historyCoverageRecordCount}
             historyRuntimeLimited={historyRuntimeLimited}
             historyRingTruncated={historyRingTruncated}
+            historyRetentionNote={historyRetentionNote}
             onHistoryRangeChange={onHistoryRangeChange}
             onOpenTimeline={onOpenTimeline}
             onOpenSource={onOpenSource}
@@ -832,6 +837,7 @@ function ApplicationWorkspace({
   historyCoverageRecordCount,
   historyRuntimeLimited,
   historyRingTruncated,
+  historyRetentionNote,
   onHistoryRangeChange,
   onOpenTimeline,
   onOpenSource,
@@ -884,6 +890,9 @@ function ApplicationWorkspace({
   historyCoverageRecordCount?: number;
   historyRuntimeLimited?: boolean;
   historyRingTruncated?: boolean;
+  // The host's note about how far back history goes, or the stretch before
+  // the limit reads as "no history".
+  historyRetentionNote?: ReactNode;
   onHistoryRangeChange?: (range: ApplicationHistoryRange) => void;
   onOpenTimeline?: (timestamp?: string) => void;
   onOpenSource?: (source: AppSourceRef) => void;
@@ -953,6 +962,7 @@ function ApplicationWorkspace({
           coverageRecordCount={historyCoverageRecordCount}
           runtimeLimited={historyRuntimeLimited}
           ringTruncated={historyRingTruncated}
+          retentionNote={historyRetentionNote}
           workloads={workloads}
           onSelectWorkload={onSelectWorkload}
           onNavigateToResource={onNavigateToResource}
@@ -2190,6 +2200,7 @@ function ApplicationHistoryView({
   coverageRecordCount,
   runtimeLimited,
   ringTruncated,
+  retentionNote,
   workloads,
   onSelectWorkload,
   onNavigateToResource,
@@ -2208,6 +2219,7 @@ function ApplicationHistoryView({
   coverageRecordCount?: number;
   runtimeLimited?: boolean;
   ringTruncated?: boolean;
+  retentionNote?: ReactNode;
   workloads: AppWorkload[];
   onSelectWorkload: (workload: AppWorkload) => void;
   onNavigateToResource?: (resource: ResourceRef) => void;
@@ -2417,6 +2429,7 @@ function ApplicationHistoryView({
                 application activity in this range may not be included.
               </div>
             )}
+            {retentionNote && <div>{retentionNote}</div>}
             {ringTruncated && (
               <div>
                 {mode === "retained"

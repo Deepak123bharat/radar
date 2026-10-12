@@ -796,8 +796,8 @@ export function useResourceIssues(
 // the caller's RBAC withheld. Polls like the page list.
 export interface SubjectIssuesResponse {
   issues: Issue[];
-  coverage: "ok" | "syncing" | "notWatched";
-  withheld?: { issues: number; members: number };
+  coverage: "ok" | "syncing" | "notWatched" | "unknownKind";
+  withheld?: { issues: number };
   visibility?: { state?: string; impact?: string };
 }
 
@@ -6939,7 +6939,9 @@ export function useSetActiveNamespace() {
           error: error instanceof Error ? error.message : String(error),
         });
         if (error instanceof Error && error.name === "AbortError") {
-          const applied = await reconcileNamespaceSwitch(namespaces);
+          // A rescope publishes its target before the rebuild finishes and can
+          // still roll back, so only a view-filter pick is proven by the scope.
+          const applied = isRescope ? null : await reconcileNamespaceSwitch(namespaces);
           if (applied) {
             debugNamespaceLog("mutation:timeout-but-applied", { namespaces });
             return applied;

@@ -15,7 +15,7 @@ export function issuesPathForSubject(subject: { kind: string; group?: string; na
   const params = new URLSearchParams()
   if (viewNamespaces) params.set('namespaces', viewNamespaces)
   params.set('kind', subject.kind)
-  if (subject.group) params.set('group', subject.group)
+  if (subject.group) params.set('apiGroup', subject.group)
   params.set('resource', subject.namespace ? `${subject.namespace}/${subject.name}` : subject.name)
   return `/issues?${params}`
 }

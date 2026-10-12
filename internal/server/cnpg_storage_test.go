@@ -181,12 +181,14 @@ func usePrometheusVolumeStatsFrom(t *testing.T, used, capacity map[string]float6
 		switch {
 		case q == "up":
 			_, _ = io.WriteString(w, `{"status":"success","data":{"resultType":"vector","result":[{"metric":{"job":"prometheus"},"value":[1700000000,"1"]}]}}`)
-		case strings.HasPrefix(q, "max(count by (persistentvolumeclaim)"):
-			identities := "1"
+		case strings.HasPrefix(q, "topk(2,count by (") && strings.Contains(q, "kubelet_volume_stats_"):
+			rows := []map[string]any{}
 			if twoClusters {
-				identities = "2"
+				for _, cluster := range []string{"current", "other"} {
+					rows = append(rows, map[string]any{"metric": map[string]string{"cluster_id": cluster}, "value": []any{1700000000, "1"}})
+				}
 			}
-			_, _ = io.WriteString(w, `{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1700000000,"`+identities+`"]}]}}`)
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "success", "data": map[string]any{"resultType": "vector", "result": rows}})
 		case strings.Contains(q, "kubelet_volume_stats_used_bytes"):
 			_, _ = io.WriteString(w, series(used, q))
 		case strings.Contains(q, "kubelet_volume_stats_capacity_bytes"):

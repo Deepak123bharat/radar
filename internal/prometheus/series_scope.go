@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/skyhook-io/radar/internal/errorlog"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/prom"
 )
@@ -55,38 +56,45 @@ func withScope(selector, matchers string) string {
 // is collected over (an instant check would miss one that stopped reporting
 // minutes ago but still fills the chart).
 type scopeProbe struct {
-	metric string
+	metric            string
+	additionalMetrics []string
 	// key is the label one Kubernetes object's series share (pod, claim).
-	key       string
-	selectors []string
-	window    time.Duration
+	key                     string
+	selectors               []string
+	window                  time.Duration
+	allowUnlabeledProof     bool
+	allowUnlabeledDuplicate bool
+	singlePartition         bool
+	unverifiedNote          string
 }
 
 func (p scopeProbe) over(sel string) string {
-	if p.window <= 0 {
-		return p.metric + "{" + sel + "}"
+	metrics := append([]string{p.metric}, p.additionalMetrics...)
+	probes := make([]string, len(metrics))
+	for i, metric := range metrics {
+		probes[i] = metric + "{" + sel + "}"
+		if p.window > 0 {
+			probes[i] = "count_over_time(" + probes[i] + "[" + p.window.String() + "])"
+		}
 	}
-	return "count_over_time(" + p.metric + "{" + sel + "}[" + p.window.String() + "])"
+	// Range functions drop metric names, so evaluate each metric before unioning
+	// to avoid identical labelsets in a single range-function result.
+	return strings.Join(probes, " or ")
 }
 
 // ResolvePVCScope decides the cluster-identity matchers for the named claims'
 // kubelet volume stats over window (0 for an instant read).
 func (client *Client) ResolvePVCScope(ctx context.Context, namespace string, claims []string, anchors []prom.WorkloadPodIdentity, window time.Duration) (string, SeriesIsolation, error) {
-	m, iso, err := client.resolveScope(ctx, namespace, pvcScopeProbe(namespace, claims, window), anchors, nil)
-	return m, iso.forClaims(), err
-}
-
-// forClaims words an unverified match for volume stats, which are matched by
-// claim name rather than Pod name.
-func (iso SeriesIsolation) forClaims() SeriesIsolation {
-	if iso.Mode == SeriesIsolationUnverified {
-		iso.Note = "Matched by namespace and claim names. Radar couldn't confirm these volume stats belong to this exact cluster (no cluster label it could check)"
-	}
-	return iso
+	return client.resolveScope(ctx, namespace, pvcScopeProbe(namespace, claims, window), anchors, nil)
 }
 
 func pvcScopeProbe(namespace string, claims []string, window time.Duration) scopeProbe {
-	return scopeProbe{metric: "kubelet_volume_stats_capacity_bytes", key: "persistentvolumeclaim", selectors: ClaimSelectors(namespace, claims), window: window}
+	return scopeProbe{
+		metric: "kubelet_volume_stats_capacity_bytes", additionalMetrics: []string{"kubelet_volume_stats_used_bytes"},
+		selectors: ClaimSelectors(namespace, claims), window: window,
+		allowUnlabeledProof: true, allowUnlabeledDuplicate: true, singlePartition: true,
+		unverifiedNote: "Matched by namespace and claim names. Radar couldn't confirm these volume stats belong to this exact cluster (no cluster label it could check)",
+	}
 }
 
 // ClaimSelectors selects the named claims of one namespace, in batches that
@@ -126,10 +134,21 @@ func (client *Client) resolveScope(ctx context.Context, namespace string, probe 
 		return m, iso, nil
 	}
 	var verified map[string]string
+	unlabeled := false
 	if len(anchors) > 0 || cache != nil {
-		if cfg, err := client.historicalClusterScope(ctx, PodScope{Namespace: namespace, Identities: anchors}, cache); err == nil {
-			verified = cfg.ClusterLabels
+		if proof, err := client.historicalClusterProof(ctx, PodScope{Namespace: namespace, Identities: anchors}, cache); err == nil {
+			verified, unlabeled = proof.scope.ClusterLabels, proof.unlabeled
+		} else if ctx.Err() == nil && !errors.Is(err, context.Canceled) {
+			errorlog.Record("prometheus", "warning", "series scope proof failed for namespace %s: %v", namespace, err)
 		}
+	}
+	if unlabeled && probe.allowUnlabeledProof {
+		matchers := make([]string, len(partitionLabels))
+		for i, label := range partitionLabels {
+			matchers[i] = label + `=""`
+		}
+		iso := SeriesIsolation{Mode: SeriesIsolationUnverified, Note: "Matched to stats without cluster identity labels, like this namespace's kube-state-metrics Pod evidence. Radar cannot distinguish unlabeled stats from another cluster"}
+		return decideVerifiedScope(ctx, client, probe, strings.Join(matchers, ","), iso)
 	}
 	return decideScope(ctx, client, probe, verified)
 }
@@ -140,46 +159,96 @@ func decideScope(ctx context.Context, q seriesQuerier, probe scopeProbe, verifie
 		if err != nil {
 			return "", SeriesIsolation{}, err
 		}
+		return decideVerifiedScope(ctx, q, probe, m, verifiedIsolation(verified))
+	}
+	if probe.singlePartition {
+		if _, err := readScopePartition(ctx, q, probe, ""); err != nil {
+			return "", SeriesIsolation{}, err
+		}
+	} else {
+		for _, sel := range probe.selectors {
+			identities := "count by (" + probe.key + "," + strings.Join(partitionLabels, ",") + ") (" + probe.over(sel) + ")"
+			if probe.allowUnlabeledDuplicate {
+				// A second scrape without cluster labels is not a second identity.
+				identities += " unless on (" + strings.Join(partitionLabels, ",") + ") vector(1)"
+			}
+			res, err := q.Query(ctx, "max(count by ("+probe.key+") ("+identities+"))")
+			if err != nil {
+				return "", SeriesIsolation{}, err
+			}
+			if len(res.Series) > 0 && len(res.Series[0].DataPoints) > 0 && res.Series[0].DataPoints[0].Value > 1 {
+				return "", SeriesIsolation{}, ErrScopeAmbiguous
+			}
+		}
+	}
+	note := "Matched by namespace and Pod names. Radar couldn't confirm these series belong to this exact cluster (no cluster label it could check)"
+	if probe.unverifiedNote != "" {
+		note = probe.unverifiedNote
+	}
+	return "", SeriesIsolation{Mode: SeriesIsolationUnverified, Note: note}, nil
+}
+
+func verifiedIsolation(labels map[string]string) SeriesIsolation {
+	return SeriesIsolation{Mode: SeriesIsolationVerified, Labels: labels, Note: "Matched by cluster labels confirmed against this cluster's Pods"}
+}
+
+func decideVerifiedScope(ctx context.Context, q seriesQuerier, probe scopeProbe, m string, iso SeriesIsolation) (string, SeriesIsolation, error) {
+	if probe.singlePartition {
+		present, err := readScopePartition(ctx, q, probe, m)
+		if err != nil {
+			return "", SeriesIsolation{}, err
+		}
+		if present {
+			return m, iso, nil
+		}
+	} else {
 		for _, sel := range probe.selectors {
 			scoped, err := q.Query(ctx, "count("+probe.over(withScope(sel, m))+")")
 			if err != nil {
 				return "", SeriesIsolation{}, err
 			}
 			if len(scoped.Series) > 0 {
-				return m, verifiedIsolation(verified), nil
+				return m, iso, nil
 			}
 		}
-		for _, sel := range probe.selectors {
-			all, err := q.Query(ctx, "count("+probe.over(sel)+")")
-			if err != nil {
-				return "", SeriesIsolation{}, err
-			}
-			if len(all.Series) > 0 {
-				return "", SeriesIsolation{}, ErrScopeMismatch
-			}
-		}
-		return m, verifiedIsolation(verified), nil
 	}
-	// Unproven: nothing is pinned. One object (Pod, claim) whose series carry
-	// more than one set of partition labels over the range may be two
-	// clusters' objects of the same name, so that is refused.
 	for _, sel := range probe.selectors {
-		identities := "count by (" + probe.key + "," + strings.Join(partitionLabels, ",") + ") (" + probe.over(sel) + ")"
-		if probe.key == "persistentvolumeclaim" {
-			// A second scrape without cluster labels is not a second identity.
-			identities += " unless on (" + strings.Join(partitionLabels, ",") + ") vector(1)"
-		}
-		res, err := q.Query(ctx, "max(count by ("+probe.key+") ("+identities+"))")
+		all, err := q.Query(ctx, "count("+probe.over(sel)+")")
 		if err != nil {
 			return "", SeriesIsolation{}, err
 		}
-		if len(res.Series) > 0 && len(res.Series[0].DataPoints) > 0 && res.Series[0].DataPoints[0].Value > 1 {
-			return "", SeriesIsolation{}, ErrScopeAmbiguous
+		if len(all.Series) > 0 {
+			return "", SeriesIsolation{}, ErrScopeMismatch
 		}
 	}
-	return "", SeriesIsolation{Mode: SeriesIsolationUnverified, Note: "Matched by namespace and Pod names. Radar couldn't confirm these series belong to this exact cluster (no cluster label it could check)"}, nil
+	return m, iso, nil
 }
 
-func verifiedIsolation(labels map[string]string) SeriesIsolation {
-	return SeriesIsolation{Mode: SeriesIsolationVerified, Labels: labels, Note: "Matched by cluster labels confirmed against this cluster's Pods"}
+func readScopePartition(ctx context.Context, q seriesQuerier, probe scopeProbe, matchers string) (bool, error) {
+	var partition string
+	for _, sel := range probe.selectors {
+		identities := "count by (" + strings.Join(partitionLabels, ",") + ") (" + probe.over(withScope(sel, matchers)) + ")"
+		if probe.allowUnlabeledDuplicate && matchers == "" {
+			identities += " unless on (" + strings.Join(partitionLabels, ",") + ") vector(1)"
+		}
+		res, err := q.Query(ctx, "topk(2,"+identities+")")
+		if err != nil {
+			return false, err
+		}
+		if len(res.Series) > 1 {
+			return false, ErrScopeAmbiguous
+		}
+		for _, row := range res.Series {
+			values := make([]string, len(partitionLabels))
+			for i, label := range partitionLabels {
+				values[i] = strconv.Quote(row.Labels[label])
+			}
+			key := strings.Join(values, ",")
+			if partition != "" && partition != key {
+				return false, ErrScopeAmbiguous
+			}
+			partition = key
+		}
+	}
+	return partition != "", nil
 }

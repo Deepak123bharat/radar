@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,11 +13,16 @@ import (
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/internal/timeline"
 	"github.com/skyhook-io/radar/pkg/k8score"
-	authv1 "k8s.io/api/authorization/v1"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
 )
 
@@ -23,110 +30,163 @@ func resourceIssuesRequest(t *testing.T, s *Server, path string) *httptest.Respo
 	t.Helper()
 	rt := chi.NewRouter()
 	rt.Get("/api/issues/resource/{kind}/{namespace}/{name}", s.handleResourceIssues)
+	rt.Get("/api/issues", s.handleIssues)
 	w := httptest.NewRecorder()
 	rt.ServeHTTP(w, requestWithUser(http.MethodGet, path, &auth.User{Username: "pg-user"}))
 	return w
 }
 
+// Namespaced issues follow the drawer: namespace access opens a Deployment,
+// so it opens the Deployment's issues too, with no per-kind check.
 // Fixture: TestMain seeds Deployment broken/stuck-app with no available replicas.
-func TestResourceIssuesRequireGetOnTheSubjectKind(t *testing.T) {
+func TestResourceIssuesFollowTheDrawersNamespaceAccess(t *testing.T) {
 	s := newAuthServer(auth.Config{Mode: "proxy"})
-	perms := &auth.UserPermissions{AllowedNamespaces: nil}
-	s.permCache.Set("pg-user", nil, perms)
+	s.permCache.Set("pg-user", nil, &auth.UserPermissions{AllowedNamespaces: []string{"broken"}})
 
-	perms.SetCanI("get", "apps", "deployments", "broken", false)
-	w := resourceIssuesRequest(t, s, "/api/issues/resource/Deployment/broken/stuck-app?group=apps")
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("denied get on deployments: status %d, want 403 (body %s)", w.Code, w.Body.String())
-	}
-
-	perms.SetCanI("get", "apps", "deployments", "broken", true)
-	w = resourceIssuesRequest(t, s, "/api/issues/resource/Deployment/broken/stuck-app?group=apps&coverage=1")
+	w := resourceIssuesRequest(t, s, "/api/issues/resource/Deployment/broken/stuck-app?group=apps&coverage=1")
 	if w.Code != http.StatusOK {
-		t.Fatalf("allowed: status %d (body %s)", w.Code, w.Body.String())
+		t.Fatalf("namespace access: status %d (body %s)", w.Code, w.Body.String())
 	}
 	var resp ResourceIssuesResponse
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if len(resp.Issues) == 0 {
-		t.Fatal("allowed caller got no issues for the broken Deployment")
+		t.Fatal("a caller with namespace access got no issues for the broken Deployment")
 	}
 	if resp.Coverage != resourceIssuesCoverageOK {
 		t.Fatalf("coverage %q, want ok for a synced typed kind", resp.Coverage)
 	}
-
-	w = resourceIssuesRequest(t, s, "/api/issues/resource/deployments/broken/stuck-app")
-	if w.Code != http.StatusOK {
+	if w := resourceIssuesRequest(t, s, "/api/issues/resource/deployments/broken/stuck-app"); w.Code != http.StatusOK {
 		t.Fatalf("plural kind: status %d (body %s)", w.Code, w.Body.String())
 	}
+
+	s.permCache.Set("pg-user", nil, &auth.UserPermissions{AllowedNamespaces: []string{"other"}})
+	if w := resourceIssuesRequest(t, s, "/api/issues/resource/Deployment/broken/stuck-app?group=apps"); w.Code != http.StatusForbidden {
+		t.Fatalf("no namespace access: status %d, want 403", w.Code)
+	}
 }
 
-func TestResourceIssuesWithholdUnreadableSubjectsAndMembers(t *testing.T) {
+func TestIssueSubjectAccessFollowsTheDrawer(t *testing.T) {
 	s := newAuthServer(auth.Config{Mode: "proxy"})
-	perms := &auth.UserPermissions{AllowedNamespaces: nil}
-	perms.SetCanI("get", "apps", "deployments", "pg", true)
-	perms.SetCanI("get", "", "pods", "pg", false)
-	perms.SetCanI("get", "apps", "statefulsets", "pg", false)
+	perms := &auth.UserPermissions{AllowedNamespaces: []string{"team-a"}}
+	perms.SetCanI("get", "", "secrets", "team-a", false)
 	s.permCache.Set("pg-user", nil, perms)
-	r := requestWithUser(http.MethodGet, "/api/issues/resource/Deployment/pg/app", &auth.User{Username: "pg-user"})
+	access := s.issueSubjectAccess(requestWithUser(http.MethodGet, "/", &auth.User{Username: "pg-user"}))
 
-	in := []issues.Issue{
-		{ID: "a", Group: "apps", Kind: "Deployment", Namespace: "pg", Name: "app", Members: []issues.Ref{
-			{Kind: "Pod", Namespace: "pg", Name: "app-1"},
-			{Kind: "Pod", Namespace: "pg", Name: "app-2"},
-			{Group: "apps", Kind: "Deployment", Namespace: "pg", Name: "app"},
-		}},
-		{ID: "b", Group: "apps", Kind: "StatefulSet", Namespace: "pg", Name: "db"},
+	if !access(issues.Ref{Group: "apps", Kind: "Deployment", Namespace: "team-a", Name: "web"}) {
+		t.Fatal("namespace access must open a Deployment's issues")
 	}
-	out, withheld := s.withholdUnreadableIssueRefs(r, in)
-	if withheld.Issues != 1 || withheld.Members != 2 {
-		t.Fatalf("withheld %+v, want 1 issue and 2 members", withheld)
+	if access(issues.Ref{Group: "apps", Kind: "Deployment", Namespace: "team-b", Name: "web"}) {
+		t.Fatal("another namespace's row was authorized")
 	}
-	if len(out) != 1 || out[0].ID != "a" {
-		t.Fatalf("kept %+v, want only the Deployment's issue", out)
+	if access(issues.Ref{Kind: "Secret", Namespace: "team-a", Name: "creds"}) {
+		t.Fatal("a Secret's issue was authorized without Secret access")
 	}
-	if len(out[0].Members) != 1 || !out[0].MembersTruncated {
-		t.Fatalf("members %+v truncated=%v, want the readable one and truncated", out[0].Members, out[0].MembersTruncated)
+	perms.SetCanI("get", "", "secrets", "team-a", true)
+	if !access(issues.Ref{Kind: "Secret", Namespace: "team-a", Name: "creds"}) {
+		t.Fatal("Secret access did not open the Secret's issue")
+	}
+
+	open := newAuthServer(auth.Config{Mode: "none"}).issueSubjectAccess(httptest.NewRequest(http.MethodGet, "/", nil))
+	if !open(issues.Ref{Kind: "Secret", Namespace: "team-b", Name: "creds"}) {
+		t.Fatal("auth off must not gate rows")
 	}
 }
 
-func TestResourceIssuesWithholdNothingWithoutAuth(t *testing.T) {
-	s := newAuthServer(auth.Config{Mode: "none"})
-	r := httptest.NewRequest(http.MethodGet, "/api/issues/resource/Deployment/pg/app", nil)
-	in := []issues.Issue{{ID: "a", Kind: "Pod", Namespace: "pg", Name: "p"}}
-	if out, withheld := s.withholdUnreadableIssueRefs(r, in); len(out) != 1 || withheld != (ResourceIssuesWithheld{}) {
-		t.Fatalf("auth off: out %+v withheld %+v", out, withheld)
+func TestIssueEvidenceAccessFollowsReadGranularity(t *testing.T) {
+	s := newAuthServer(auth.Config{Mode: "proxy"})
+	perms := &auth.UserPermissions{AllowedNamespaces: []string{"team-a"}}
+	perms.SetCanI("list", "", "secrets", "team-a", false)
+	perms.SetCanI("list", "", "nodes", "", false)
+	s.permCache.Set("pg-user", nil, perms)
+	access := s.issueEvidenceAccess(requestWithUser(http.MethodGet, "/", &auth.User{Username: "pg-user"}))
+
+	if !access(issues.EvidenceRead{Resource: "pods", Namespace: "team-a", Verb: "list"}) {
+		t.Fatal("namespace access must authorize a namespaced inventory")
+	}
+	if access(issues.EvidenceRead{Resource: "pods", Namespace: "team-b", Verb: "list"}) {
+		t.Fatal("another namespace's inventory was authorized")
+	}
+	if access(issues.EvidenceRead{Resource: "secrets", Namespace: "team-a", Verb: "list"}) {
+		t.Fatal("Secrets were authorized without Secret access")
+	}
+	if access(issues.EvidenceRead{Resource: "nodes", Verb: "list"}) {
+		t.Fatal("a cluster-wide inventory was authorized without the SAR")
+	}
+	perms.SetCanI("list", "", "secrets", "team-a", true)
+	perms.SetCanI("list", "", "nodes", "", true)
+	if !access(issues.EvidenceRead{Resource: "secrets", Namespace: "team-a", Verb: "list"}) || !access(issues.EvidenceRead{Resource: "nodes", Verb: "list"}) {
+		t.Fatal("granted inventories were withheld")
+	}
+}
+
+// A Secret stuck terminating is an issue about the Secret, so it reaches only
+// a caller who can read Secrets there, on the list as on the drawer.
+func TestIssuesListWithholdsSecretsTheCallerCantRead(t *testing.T) {
+	restoreFixtureCache(t)
+	k8s.ResetResourceCache()
+	deleted := metav1.NewTime(time.Now().Add(-2 * time.Hour))
+	client := fake.NewClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name: "creds", Namespace: "vault", DeletionTimestamp: &deleted, Finalizers: []string{"example.com/hold"},
+	}})
+	if err := k8s.InitTestResourceCache(client); err != nil {
+		t.Fatalf("InitTestResourceCache: %v", err)
+	}
+	s := newAuthServer(auth.Config{Mode: "proxy"})
+	perms := &auth.UserPermissions{AllowedNamespaces: []string{"vault"}}
+	perms.SetCanI("get", "", "secrets", "vault", false)
+	s.permCache.Set("pg-user", nil, perms)
+
+	secretIssue := func() bool {
+		w := resourceIssuesRequest(t, s, "/api/issues?namespaces=vault")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status %d (body %s)", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Issues []issues.Issue `json:"issues"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		for _, i := range resp.Issues {
+			if i.Kind == "Secret" && i.Name == "creds" {
+				return true
+			}
+		}
+		return false
+	}
+	if secretIssue() {
+		t.Fatal("a caller without Secret access saw the Secret's issue")
+	}
+	perms.SetCanI("get", "", "secrets", "vault", true)
+	if !secretIssue() {
+		t.Fatal("a caller with Secret access lost the Secret's issue")
 	}
 }
 
 func TestResourceIssuesCoverageOfAnUnwatchedKind(t *testing.T) {
-	if got := resourceIssuesCoverage("Cluster", "postgresql.cnpg.io", "pg"); got != resourceIssuesCoverageNotWatched {
-		t.Fatalf("coverage %q, want notWatched for a kind Radar has not discovered", got)
+	if got := resourceIssuesCoverage("Widget", "example.com", "pg"); got != resourceIssuesCoverageNotWatched {
+		t.Fatalf("coverage %q, want notWatched before discovery is ready", got)
 	}
 }
 
-func TestResourceIssuesHonourAResourceNamesGrant(t *testing.T) {
-	fakeSARServer(t, func(a authv1.ResourceAttributes) bool {
-		return a.Group == "apps" && a.Resource == "deployments" && a.Namespace == "broken" && a.Name == "stuck-app" && a.Verb == "get"
-	})
-	s := newAuthServer(auth.Config{Mode: "proxy"})
-	s.permCache.Set("pg-user", nil, &auth.UserPermissions{AllowedNamespaces: nil})
-
-	w := resourceIssuesRequest(t, s, "/api/issues/resource/Deployment/broken/stuck-app?group=apps&coverage=1")
-	if w.Code != http.StatusOK {
-		t.Fatalf("named grant: status %d, want 200 (body %s)", w.Code, w.Body.String())
+// A link made on one cluster can open on another that has no such kind; that
+// is not a kind Radar could start watching.
+func TestResourceIssuesCoverageOfAKindTheClusterDoesNotServe(t *testing.T) {
+	appGVR := schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{appGVR: "ApplicationList"})
+	if err := k8s.InitTestDynamicResourceCache(dyn, []k8s.APIResource{
+		{Group: "argoproj.io", Version: "v1alpha1", Kind: "Application", Name: "applications", Namespaced: true, IsCRD: true, Verbs: []string{"get", "list", "watch"}},
+	}); err != nil {
+		t.Fatal(err)
 	}
-	var resp ResourceIssuesResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
+	t.Cleanup(k8s.ResetTestDynamicState)
+	if got := resourceIssuesCoverage("Widget", "example.com", "pg"); got != resourceIssuesCoverageUnknownKind {
+		t.Fatalf("coverage %q, want unknownKind for a kind discovery doesn't serve", got)
 	}
-	if len(resp.Issues) == 0 {
-		t.Fatal("named grant got no issues for the broken Deployment")
-	}
-
-	if w := resourceIssuesRequest(t, s, "/api/issues/resource/Deployment/broken/other-app?group=apps"); w.Code != http.StatusForbidden {
-		t.Fatalf("a name outside the grant: status %d, want 403", w.Code)
+	if got := resourceIssuesCoverage("Application", "argoproj.io", "pg"); got != resourceIssuesCoverageNotWatched {
+		t.Fatalf("coverage %q, want notWatched for a served kind with no watch", got)
 	}
 }
 
@@ -244,40 +304,6 @@ func TestResourceIssuesCountWithheldWithAndWithoutTheGroupParam(t *testing.T) {
 	}
 }
 
-func TestResourceIssuesAcceptExactNamespaceListGrant(t *testing.T) {
-	fakeSARServer(t, func(a authv1.ResourceAttributes) bool {
-		return a.Group == "apps" && a.Resource == "deployments" && a.Namespace == "broken" && a.Verb == "list"
-	})
-	s := newAuthServer(auth.Config{Mode: "proxy"})
-	s.permCache.Set("pg-user", nil, &auth.UserPermissions{AllowedNamespaces: nil})
-	w := resourceIssuesRequest(t, s, "/api/issues/resource/Deployment/broken/stuck-app?group=apps&coverage=1")
-	if w.Code != http.StatusOK {
-		t.Fatalf("list grant: status=%d body=%s", w.Code, w.Body.String())
-	}
-	var response ResourceIssuesResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
-	}
-	if len(response.Issues) == 0 {
-		t.Fatal("list-authorized caller lost Deployment issues")
-	}
-	r := requestWithUser(http.MethodGet, "/", &auth.User{Username: "pg-user"})
-	for _, ref := range []issues.Ref{
-		{Kind: "Deployment", Group: "apps", Namespace: "other", Name: "app"},
-		{Kind: "StatefulSet", Group: "apps", Namespace: "broken", Name: "db"},
-		{Kind: "Pod", Namespace: "broken", Name: "app"},
-	} {
-		if s.canGetIssueRef(r, ref) {
-			t.Fatalf("list grant leaked to %+v", ref)
-		}
-	}
-	in := []issues.Issue{{Kind: "Deployment", Group: "apps", Namespace: "broken", Name: "stuck-app", Members: []issues.Ref{{Kind: "Pod", Namespace: "broken", Name: "p"}}}}
-	out, withheld := s.withholdUnreadableIssueRefs(r, in)
-	if len(out) != 1 || withheld.Members != 1 || !out[0].MembersTruncated {
-		t.Fatalf("list-only rows must still hide denied members: %+v %+v", out, withheld)
-	}
-}
-
 func TestResourceIssuesUnresolvedKindUsesPreflight(t *testing.T) {
 	s := newAuthServer(auth.Config{Mode: "proxy"})
 	s.permCache.Set("pg-user", nil, &auth.UserPermissions{AllowedNamespaces: []string{"broken"}})
@@ -285,15 +311,216 @@ func TestResourceIssuesUnresolvedKindUsesPreflight(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("unresolved kind: status=%d body=%s", w.Code, w.Body.String())
 	}
+	var resp ResourceIssuesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Coverage != resourceIssuesCoverageNotWatched {
+		t.Fatalf("coverage %q, want notWatched for an undiscovered kind", resp.Coverage)
+	}
 	if w := resourceIssuesRequest(t, s, "/api/issues/resource/NewWidget/denied/new?group=widgets.example.io"); w.Code != http.StatusForbidden {
 		t.Fatalf("preflight deny: status=%d body=%s", w.Code, w.Body.String())
 	}
-	r := requestWithUser(http.MethodGet, "/", &auth.User{Username: "pg-user"})
-	out, withheld := s.withholdUnreadableIssueRefs(r, []issues.Issue{
-		{Kind: "NewWidget", Group: "widgets.example.io", Namespace: "broken", Name: "new"},
-		{Kind: "NewWidget", Group: "widgets.example.io", Namespace: "denied", Name: "new"},
+}
+
+// A finding drawn from a Secret's history is told to a caller who can't read
+// the Secret without that history: the Pod may hold a stale value and needs a
+// restart, but not which Secret, which key, or when it changed. A missing TLS
+// Secret names only what the Ingress names, so it needs only namespace access.
+func TestSecretDerivedFindingsDegradeWithoutSecretAccess(t *testing.T) {
+	restoreFixtureCache(t)
+	k8s.ResetResourceCache()
+	now := time.Now().UTC().Truncate(time.Second)
+	started := metav1.NewTime(now.Add(-2 * time.Minute))
+	secretEnv := []corev1.EnvVar{{
+		Name: "DB_PASSWORD",
+		ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "db-conn"}, Key: "password",
+		}},
+	}}
+	controller := true
+	client := fake.NewClientset(
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "worker", Namespace: "shop", UID: "dep", CreationTimestamp: metav1.NewTime(now.Add(-time.Hour))},
+			Spec:       appsv1.DeploymentSpec{Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "worker"}}},
+		},
+		&appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
+			Name: "worker-abc", Namespace: "shop", UID: "rs",
+			OwnerReferences: []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "Deployment", Name: "worker", UID: "dep", Controller: &controller}},
+		}},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "worker-abc-1", Namespace: "shop", CreationTimestamp: started,
+				OwnerReferences: []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "ReplicaSet", Name: "worker-abc", UID: "rs", Controller: &controller}},
+			},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Env: secretEnv}}},
+			Status: corev1.PodStatus{
+				Phase:      corev1.PodRunning,
+				Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+				ContainerStatuses: []corev1.ContainerStatus{{
+					Name: "app", Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: started}},
+				}},
+			},
+		},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: "api-0", Namespace: "shop", CreationTimestamp: started},
+			Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Env: secretEnv}}},
+			Status: corev1.PodStatus{
+				Phase:      corev1.PodRunning,
+				Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse}},
+				ContainerStatuses: []corev1.ContainerStatus{{
+					Name: "app", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: started}},
+				}},
+			},
+		},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "db-conn", Namespace: "shop"}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "shop"}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 80}}}},
+		&networkingv1.Ingress{
+			ObjectMeta: metav1.ObjectMeta{Name: "front", Namespace: "shop", CreationTimestamp: metav1.NewTime(now.Add(-time.Hour))},
+			Spec: networkingv1.IngressSpec{
+				TLS: []networkingv1.IngressTLS{{Hosts: []string{"shop.example.com"}, SecretName: "shop-tls"}},
+				DefaultBackend: &networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
+					Name: "web", Port: networkingv1.ServiceBackendPort{Number: 80},
+				}},
+			},
+		},
+	)
+	if err := k8s.InitTestResourceCache(client); err != nil {
+		t.Fatalf("InitTestResourceCache: %v", err)
+	}
+	timeline.ResetStore()
+	if err := timeline.InitStore(timeline.StoreConfig{Type: timeline.StoreTypeMemory, MaxSize: 10}); err != nil {
+		t.Fatalf("InitStore: %v", err)
+	}
+	t.Cleanup(func() {
+		timeline.ResetStore()
+		if err := timeline.InitStore(timeline.DefaultStoreConfig()); err != nil {
+			t.Fatalf("re-init global store: %v", err)
+		}
 	})
-	if len(out) != 1 || withheld.Issues != 1 {
-		t.Fatalf("fallback bypassed preflight: %+v %+v", out, withheld)
+	if err := timeline.RecordEvent(context.Background(), timeline.TimelineEvent{
+		ID: "db-conn-change", Timestamp: now.Add(-time.Minute), Source: timeline.SourceInformer,
+		ClusterContext: k8s.ActiveClusterContext(), Kind: "Secret", Namespace: "shop", Name: "db-conn",
+		EventType: timeline.EventTypeUpdate,
+		Diff:      &timeline.DiffInfo{Fields: []timeline.FieldChange{{Path: "data (modified keys)", NewValue: []string{"password"}}}},
+	}); err != nil {
+		t.Fatalf("RecordEvent: %v", err)
+	}
+
+	s := newAuthServer(auth.Config{Mode: "proxy"})
+	perms := &auth.UserPermissions{AllowedNamespaces: []string{"shop"}}
+	perms.SetCanI("get", "", "secrets", "shop", false)
+	s.permCache.Set("pg-user", nil, perms)
+	env := newAuthTestServer(t)
+	env.srv.permCache.Set("pg-user", nil, perms)
+
+	findings := func() (stale *issues.Issue, tls bool) {
+		w := resourceIssuesRequest(t, s, "/api/issues?namespaces=shop")
+		var resp struct {
+			Issues []issues.Issue `json:"issues"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode %d: %v (%s)", w.Code, err, w.Body.String())
+		}
+		for i := range resp.Issues {
+			switch resp.Issues[i].Reason {
+			case "StaleSecretEnv":
+				if resp.Issues[i].Kind == "Pod" && resp.Issues[i].Name == "api-0" {
+					stale = &resp.Issues[i]
+				}
+			case "Missing TLS Secret":
+				tls = true
+			}
+		}
+		return stale, tls
+	}
+	dashboard := func() (stale *DashboardProblem, tls bool) {
+		resp := env.authGet(t, "/api/dashboard?namespaces=shop", "pg-user", "")
+		defer resp.Body.Close()
+		var body DashboardResponse
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode dashboard %d: %v", resp.StatusCode, err)
+		}
+		for i := range body.Problems {
+			switch body.Problems[i].Reason {
+			case "StaleSecretEnv":
+				if body.Problems[i].Kind == "Deployment" && body.Problems[i].Name == "worker" {
+					stale = &body.Problems[i]
+				}
+			case "Missing TLS Secret":
+				tls = true
+			}
+		}
+		return stale, tls
+	}
+	revealsTheSecret := func(text string) bool {
+		return strings.Contains(text, "db-conn") || strings.Contains(text, "password")
+	}
+
+	stale, tls := findings()
+	if stale == nil {
+		t.Fatal("a caller without Secret access lost the stale-env finding instead of a degraded one")
+	}
+	if revealsTheSecret(stale.Message+stale.RawMessage+stale.Cause+stale.Action) || !stale.FirstSeen.IsZero() || !stale.OnsetUnknown ||
+		!strings.Contains(stale.Cause, "shown only to callers who can read the Secret") || !strings.Contains(stale.Action, "Restart the pod") {
+		t.Fatalf("degraded issue = %+v", stale)
+	}
+	problem, dashTLS := dashboard()
+	if problem == nil || revealsTheSecret(problem.Message) || !strings.Contains(problem.Message, "may hold stale Secret-backed environment values") ||
+		problem.Duration != "" || !problem.OnsetUnknown {
+		t.Fatalf("degraded dashboard problem = %+v", problem)
+	}
+	if !tls || !dashTLS {
+		t.Fatal("a caller with namespace access lost the missing-TLS finding")
+	}
+
+	perms.SetCanI("get", "", "secrets", "shop", true)
+	stale, _ = findings()
+	if stale == nil || !strings.Contains(stale.Message, "Secret/db-conn key password") || stale.FirstSeen.IsZero() {
+		t.Fatalf("a caller with Secret access lost the full finding: %+v", stale)
+	}
+	if problem, _ := dashboard(); problem == nil || !strings.Contains(problem.Message, "before Radar observed") || problem.Duration == "" {
+		t.Fatalf("a caller with Secret access lost the full dashboard problem: %+v", problem)
+	}
+}
+
+// A cluster-scoped problem needs list on its kind, on the dashboard as on
+// Issues, even for a caller who can read Pods everywhere.
+func TestDashboardClusterScopedProblemsNeedListOnTheKind(t *testing.T) {
+	restoreFixtureCache(t)
+	k8s.ResetResourceCache()
+	client := fake.NewClientset(&rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "dangling"},
+		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: "gone"},
+		Subjects:   []rbacv1.Subject{{Kind: "User", Name: "someone"}},
+	})
+	if err := k8s.InitTestResourceCache(client); err != nil {
+		t.Fatalf("InitTestResourceCache: %v", err)
+	}
+	env := newAuthTestServer(t)
+	perms := &auth.UserPermissions{AllowedNamespaces: nil}
+	perms.SetCanI("list", "rbac.authorization.k8s.io", "clusterrolebindings", "", false)
+	env.srv.permCache.Set("pod-reader", nil, perms)
+
+	dangling := func() bool {
+		resp := env.authGet(t, "/api/dashboard", "pod-reader", "")
+		defer resp.Body.Close()
+		var body DashboardResponse
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode dashboard %d: %v", resp.StatusCode, err)
+		}
+		for _, p := range body.Problems {
+			if p.Kind == "ClusterRoleBinding" && p.Name == "dangling" {
+				return true
+			}
+		}
+		return false
+	}
+	if dangling() {
+		t.Fatal("a caller who can't list ClusterRoleBindings saw one's problem")
+	}
+	perms.SetCanI("list", "rbac.authorization.k8s.io", "clusterrolebindings", "", true)
+	if !dangling() {
+		t.Fatal("a caller who can list ClusterRoleBindings lost the problem")
 	}
 }

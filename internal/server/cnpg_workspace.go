@@ -34,6 +34,6 @@ func (s *Server) cnpgIssueRows(r *http.Request, namespaces []string) []issues.Is
 	if provider == nil {
 		return nil
 	}
-	rows, _ := issues.ComposeWithStats(provider, issues.Filters{Namespaces: namespaces, Limit: issues.NoLimit, CanReadClusterScoped: s.issueClusterScopedAccess(r), CanReadRelated: s.issueRelatedResourceAccess(r), CanReadEvidence: s.issueEvidenceAccess(r)})
+	rows, _ := issues.ComposeWithStats(provider, issues.Filters{Namespaces: namespaces, Limit: issues.NoLimit, CanReadClusterScoped: s.issueClusterScopedAccess(r), CanReadRelated: s.issueRelatedResourceAccess(r), CanReadSubject: s.issueSubjectAccess(r), CanReadEvidence: s.issueEvidenceAccess(r)})
 	return rows
 }

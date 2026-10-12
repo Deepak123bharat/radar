@@ -40,10 +40,6 @@ func (f *fakeCNPGQuerier) QueryRange(_ context.Context, q string, _, _ time.Time
 	return f.rng(q)
 }
 
-func vec(labels map[string]string, v float64) prom.Series {
-	return prom.Series{Labels: labels, DataPoints: []prom.DataPoint{{Timestamp: 1, Value: v}}}
-}
-
 func TestCNPGInstanceSelectorAnchorsPodNames(t *testing.T) {
 	got := CNPGInstanceSelector("pg", "pg.main")
 	want := `namespace="pg",pod=~"^pg\\.main-[0-9]+$"`

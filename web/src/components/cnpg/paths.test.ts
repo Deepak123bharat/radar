@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { cnpgClusterProblemsPath, cnpgDimensionPath, cnpgWithinDetail } from './paths'
 import { issuesPathForSubject } from '../../utils/page-links'
+import { writeViewParams } from '../../utils/navigation'
+import { issueSubjectFromParams } from '../issues/IssuesPane'
 
 describe('cnpgDimensionPath', () => {
   it('opens each health dimension where it is explained', () => {
@@ -41,7 +43,12 @@ describe('issuesPathForSubject', () => {
   it('keeps the current namespace view filter', () => {
     expect(issuesPathForSubject({ kind: 'Cluster', namespace: 'pg', name: 'main' }, 'pg,app')).toBe('/issues?namespaces=pg%2Capp&kind=Cluster&resource=pg%2Fmain')
   })
-  it('carries the API group, so a CNPG Cluster is not a CAPI one', () => {
-    expect(issuesPathForSubject({ kind: 'Cluster', group: 'postgresql.cnpg.io', namespace: 'pg', name: 'main' })).toBe('/issues?kind=Cluster&group=postgresql.cnpg.io&resource=pg%2Fmain')
+  it('carries the API group through App URL synchronization', () => {
+    const subject = { kind: 'Cluster', group: 'postgresql.cnpg.io', namespace: 'pg', name: 'main' }
+    const href = issuesPathForSubject(subject)
+    expect(href).toBe('/issues?kind=Cluster&apiGroup=postgresql.cnpg.io&resource=pg%2Fmain')
+    const params = new URLSearchParams(href.split('?')[1])
+    writeViewParams(params, ['pg'], null)
+    expect(issueSubjectFromParams(params)).toEqual(subject)
   })
 })

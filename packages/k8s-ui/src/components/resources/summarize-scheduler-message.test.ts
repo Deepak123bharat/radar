@@ -47,6 +47,14 @@ it.each([
   ['no node has kubernetes.io/arch=arm64 — 2 node(s) carry kubernetes.io/arch: [amd64]; 1 node(s) insufficient cpu (0/3 nodes available)', 'no node has kubernetes.io/arch=arm64 — 2 node(s) carry kubernetes.io/arch: [amd64]; 1 node does not have enough CPU'],
   ['custom scheduler says 2 Insufficient cpu, 1 Insufficient memory', 'custom scheduler says 2 Insufficient cpu; 1 node does not have enough memory'],
   ['1 node(s) pod anti-affinity conflict, 1 node(s) insufficient memory, no node has zone=west — 2 node(s) carry zone: [east, north]', '1 node(s) pod anti-affinity conflict; 1 node does not have enough memory; no node has zone=west — 2 node(s) carry zone: [east, north]'],
+  ["0/14 nodes are available: 6 node(s) had untolerated taint(s), 8 node(s) didn't match Pod's node affinity/selector. no new claims to deallocate, preemption: 0/14 nodes are available: 14 Preemption is not helpful for scheduling.", '6 nodes have taints the Pod does not tolerate; 8 nodes do not match the Pod’s node affinity or selector'],
 ])('offers a plain summary additively for %s', (raw, expected) => {
   expect(summarizeSchedulerMessage(raw, { plain: true })).toBe(expected)
+})
+
+it('summarizes a very long, separator-heavy message in linear time', () => {
+  const message = '0/2 nodes are available: ' + '1 node(s) custom reason, '.repeat(10_000) + '2 Insufficient cpu.'
+  const summary = summarizeSchedulerMessage(message, { plain: true })
+  expect(summary.split('; ')).toHaveLength(10_001)
+  expect(summary.endsWith('both nodes do not have enough CPU')).toBe(true)
 })

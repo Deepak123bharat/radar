@@ -840,6 +840,13 @@ export function RelatedResourcesSection({ relationships, onNavigate }: RelatedRe
     (relationships.resourceClaims && relationships.resourceClaims.length > 0) ||
     (relationships.dependencies && relationships.dependencies.length > 0) ||
     (relationships.dependents && relationships.dependents.length > 0) ||
+    (relationships.monitors && relationships.monitors.length > 0) ||
+    (relationships.monitorTargets && relationships.monitorTargets.length > 0) ||
+    (relationships.backends && relationships.backends.length > 0) ||
+    (relationships.routedFrom && relationships.routedFrom.length > 0) ||
+    (relationships.protects && relationships.protects.length > 0) ||
+    (relationships.healthChecks && relationships.healthChecks.length > 0) ||
+    (relationships.stagedPolicies && relationships.stagedPolicies.length > 0) ||
     relationships.scaleTarget
 
   if (!hasRelationships) return null
@@ -901,6 +908,27 @@ export function RelatedResourcesSection({ relationships, onNavigate }: RelatedRe
         {relationships.dependents && relationships.dependents.length > 0 && (
           <RelationshipGroup label="Required By" refs={dedupeResourceRefs(relationships.dependents)} onNavigate={onNavigate} />
         )}
+        {relationships.monitors && relationships.monitors.length > 0 && (
+          <RelationshipGroup label="Monitored By" refs={dedupeResourceRefs(relationships.monitors)} onNavigate={onNavigate} />
+        )}
+        {relationships.monitorTargets && relationships.monitorTargets.length > 0 && (
+          <RelationshipGroup label="Monitors" refs={dedupeResourceRefs(relationships.monitorTargets)} onNavigate={onNavigate} />
+        )}
+        {relationships.backends && relationships.backends.length > 0 && (
+          <RelationshipGroup label="Routes To" refs={dedupeResourceRefs(relationships.backends)} onNavigate={onNavigate} />
+        )}
+        {relationships.routedFrom && relationships.routedFrom.length > 0 && (
+          <RelationshipGroup label="Routed From" refs={dedupeResourceRefs(relationships.routedFrom)} onNavigate={onNavigate} />
+        )}
+        {relationships.protects && relationships.protects.length > 0 && (
+          <RelationshipGroup label="Selects" refs={dedupeResourceRefs(relationships.protects)} onNavigate={onNavigate} />
+        )}
+        {relationships.healthChecks && relationships.healthChecks.length > 0 && (
+          <RelationshipGroup label="Health Checks" refs={dedupeResourceRefs(relationships.healthChecks)} onNavigate={onNavigate} />
+        )}
+        {relationships.stagedPolicies && relationships.stagedPolicies.length > 0 && (
+          <RelationshipGroup label="Staged Policies" refs={dedupeResourceRefs(relationships.stagedPolicies)} onNavigate={onNavigate} />
+        )}
         {relationships.scaleTarget && (
           <RelationshipGroup label="Scale Target" refs={[relationships.scaleTarget]} onNavigate={onNavigate} />
         )}
@@ -952,7 +980,7 @@ export interface ResourceRefBadgeProps {
 /** Reusable chip/badge for showing a related resource with click-to-navigate */
 export function ResourceRefBadge({ resourceRef, onClick, wrapAtSeparator }: ResourceRefBadgeProps) {
   const kindClass = getKindColor(resourceRef.kind)
-  const kindName = formatKindForRef(resourceRef.kind)
+  const kindName = formatKindForRef(resourceRef.kind, resourceRef.group)
   const content = wrapAtSeparator ? (
     <>
       <span className="shrink-0 opacity-60">{kindName}/</span>
@@ -1015,8 +1043,10 @@ export function ResourceLink({ name, kind, namespace = '', group, label, onNavig
   )
 }
 
-function formatKindForRef(kind: string): string {
+function formatKindForRef(kind: string, group?: string): string {
   const k = kind.toLowerCase()
+  // A Knative Service shares its kind with core Services; use Knative's own short name.
+  if (k === 'service' && group === 'serving.knative.dev') return 'ksvc'
   const shortNames: Record<string, string> = {
     deployment: 'deploy',
     daemonset: 'ds',

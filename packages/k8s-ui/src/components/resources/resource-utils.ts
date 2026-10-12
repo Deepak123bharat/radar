@@ -91,6 +91,8 @@ export function summarizeSchedulerMessage(message?: string, options: { plain?: b
   let m = message.split('. preemption:')[0].split(' preemption:')[0].trim()
   if (options.plain) {
     m = m.replace(/^(?:Pod cannot be scheduled:\s*)?(?:Unschedulable:\s*)?(?:0\/\d+ nodes are available:\s*)?/i, '')
+    // Schedulers with dynamic resource allocation append this after the node reasons.
+    m = m.replace(/no new claims to deallocate,?/i, '').trim()
   } else {
     const colon = m.indexOf(':')
     if (colon >= 0) m = m.slice(colon + 1).trim()
@@ -103,11 +105,10 @@ export function summarizeSchedulerMessage(message?: string, options: { plain?: b
     [/^(\d+) (?:node\(s\) )?Insufficient cpu(?: \(0\/\d+ nodes available\))?$/i, 'do not have enough CPU'],
     [/^(\d+) (?:node\(s\) )?Insufficient memory(?: \(0\/\d+ nodes available\))?$/i, 'do not have enough memory'],
     [/^(\d+) node\(s\) (?:didn.t match Pod.s node affinity\/selector|node affinity\/selector mismatch)(?: \(0\/\d+ nodes available\))?$/i, 'do not match the Pod’s node affinity or selector'],
-    [/^(\d+) node\(s\) (?:had )?untolerated taint(?: \{[^}]*\}| [^\s]+)?(?: \(0\/\d+ nodes available\))?$/i, 'have taints the Pod does not tolerate'],
+    [/^(\d+) node\(s\) (?:had )?untolerated taint(?:\(s\))?(?: \{[^}]*\}| [^\s]+)?(?: \(0\/\d+ nodes available\))?$/i, 'have taints the Pod does not tolerate'],
     [/^(\d+) node\(s\) (?:had )?volume node[- ]affinity conflict(?: \(0\/\d+ nodes available\))?$/i, 'do not match the volume’s node affinity'],
   ]
-  // Scheduler taints and resolved node labels can contain comma-separated values.
-  return m.split(/[,;](?![^\[\]{}]*[\]}])/).map((part) => {
+  return splitSchedulerClauses(m).filter((part) => part.trim()).map((part) => {
     const clause = part.trim()
     for (const [pattern, cause] of causes) {
       const count = pattern.exec(clause)?.[1]
@@ -116,6 +117,26 @@ export function summarizeSchedulerMessage(message?: string, options: { plain?: b
     if (/^(?:pod has )?unbound (?:immediate )?PersistentVolumeClaims?(?:\s*\(0\/\d+ nodes available\))?$/i.test(clause)) return 'a required volume claim is not bound'
     return clause
   }).join('; ')
+}
+
+// Splits on commas and semicolons, except where the next bracket ahead closes:
+// scheduler taints and resolved node labels can contain comma-separated values.
+// One pass from the end keeps long messages linear.
+function splitSchedulerClauses(m: string): string[] {
+  const parts: string[] = []
+  let end = m.length
+  let insideBrackets = false
+  for (let i = m.length - 1; i >= 0; i--) {
+    const c = m[i]
+    if (c === ']' || c === '}') insideBrackets = true
+    else if (c === '[' || c === '{') insideBrackets = false
+    else if ((c === ',' || c === ';') && !insideBrackets) {
+      parts.push(m.slice(i + 1, end))
+      end = i
+    }
+  }
+  parts.push(m.slice(0, end))
+  return parts.reverse()
 }
 
 /** Tailwind classes for severity dot indicators (used in tooltips and alert banners) */

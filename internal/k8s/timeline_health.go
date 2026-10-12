@@ -69,16 +69,45 @@ func classifyTimelineChangeHealth(kind string, oldObj, newObj any, now time.Time
 		if t := cs.State.Terminated; t != nil {
 			if t.ExitCode != 0 {
 				level = health.WorseOf(level, health.LevelUnhealthy)
-			} else {
+			} else if pod.Spec.RestartPolicy != corev1.RestartPolicyAlways {
+				// Under restartPolicy Always a clean exit is a restart, not completion.
 				completing = true
 			}
 		}
 	}
 	// A container finishing cleanly also drops readiness; that is completion.
-	if old, ok := oldObj.(*corev1.Pod); ok && old != pod && !completing && timelinePodReady(old) && !timelinePodReady(pod) {
-		level = health.WorseOf(level, health.LevelDegraded)
+	// Lost readiness stays degraded on every later row until it returns, rather
+	// than reading healthy again inside the standing-state grace.
+	if !completing && !timelinePodReady(pod) {
+		if old, ok := oldObj.(*corev1.Pod); (ok && old != pod && timelinePodReady(old)) || timelinePodLostReadiness(pod) {
+			level = health.WorseOf(level, health.LevelDegraded)
+		}
 	}
 	return levelToTimeline(level)
+}
+
+// timelinePodLostReadiness reports readiness that went false after a container
+// had started, in its current run or the one before a restart: lost, not
+// still to come at startup.
+func timelinePodLostReadiness(p *corev1.Pod) bool {
+	var since time.Time
+	for _, c := range p.Status.Conditions {
+		if c.Type == corev1.PodReady && c.Status == corev1.ConditionFalse {
+			since = c.LastTransitionTime.Time
+		}
+	}
+	if since.IsZero() {
+		return false
+	}
+	for _, cs := range p.Status.ContainerStatuses {
+		if r := cs.State.Running; r != nil && !r.StartedAt.IsZero() && r.StartedAt.Time.Before(since) {
+			return true
+		}
+		if t := cs.LastTerminationState.Terminated; t != nil && !t.StartedAt.IsZero() && t.StartedAt.Time.Before(since) {
+			return true
+		}
+	}
+	return false
 }
 
 func timelinePodReady(p *corev1.Pod) bool {
