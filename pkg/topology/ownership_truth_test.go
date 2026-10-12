@@ -428,6 +428,22 @@ func TestInventoryManagerSurvivesVerifiedOwnerWalk(t *testing.T) {
 	}
 }
 
+func TestNearestInventoryManagerSurvivesAnIntermediateOwner(t *testing.T) {
+	nodes := []Node{
+		{ID: "application/team/app", Kind: KindApplication, Name: "app", Data: map[string]any{"namespace": "team", "apiVersion": "argoproj.io/v1alpha1"}},
+		{ID: "deployment/team/web", Kind: KindDeployment, Name: "web", uid: "deployment", observed: true, Data: map[string]any{"namespace": "team"}},
+		{ID: "replicaset/team/web-abc", Kind: KindReplicaSet, Name: "web-abc", uid: "rs", observed: true, ownerReferences: []metav1.OwnerReference{ownerRef("apps/v1", "Deployment", "web", "deployment", true)}, Data: map[string]any{"namespace": "team"}},
+		{ID: "pod/team/web-abc-0", Kind: KindPod, Name: "web-abc-0", uid: "pod", observed: true, ownerReferences: []metav1.OwnerReference{ownerRef("apps/v1", "ReplicaSet", "web-abc", "rs", true)}, Data: map[string]any{"namespace": "team"}},
+	}
+	topo := &Topology{Nodes: nodes, Edges: addObservedOwnerEdges(nodes, []Edge{{Source: nodes[0].ID, Target: nodes[2].ID, Type: EdgeManages}})}
+	for _, index := range []*RelationshipsIndex{nil, IndexByResource(topo)} {
+		refs := SynthesizeManagedBy(nil, "Pod", "team", "web-abc-0", topo, nil, index)
+		if len(refs) != 1 || refs[0].Kind != "Application" || refs[0].Name != "app" {
+			t.Fatalf("nearest manager lost: %+v", refs)
+		}
+	}
+}
+
 func TestGroupedCustomOwnerIsEnrolledWithoutBecomingGroupOwnership(t *testing.T) {
 	gvr := schema.GroupVersionResource{Group: "parents.example.io", Version: "v1", Resource: "widgets"}
 	parent := genericIdentityObject(gvr, "Widget", "team", "owner")

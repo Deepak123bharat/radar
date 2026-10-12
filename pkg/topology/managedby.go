@@ -214,6 +214,26 @@ func walkTopmostOwnerFromNodeID(startID string, topo *Topology, dp DynamicProvid
 	visited := map[string]bool{cur: true}
 	var topRef *ResourceRef
 	for {
+		incoming, _ := edgesForNode(topo, idx, cur)
+		for _, edge := range incoming {
+			if edge.Type != EdgeManages || edge.OwnerController != nil || edge.SkipIfKindVisible != "" || edge.Source == startID || edge.Source == cur {
+				continue
+			}
+			var manager *ResourceRef
+			if idx != nil {
+				manager = resourceRefForNode(idx.nodesByID[edge.Source], dp)
+			} else {
+				manager = resourceRefForNodeID(edge.Source, topo, dp)
+			}
+			if manager == nil {
+				continue
+			}
+			if manager.Kind == "Application" && manager.Group == argoApplicationGroup ||
+				manager.Kind == "Kustomization" && manager.Group == fluxKustomizeGroup ||
+				manager.Kind == "HelmRelease" && manager.Group == fluxHelmGroup {
+				return manager
+			}
+		}
 		next := ownerOf(cur)
 		if next == "" {
 			break
@@ -232,27 +252,10 @@ func walkTopmostOwnerFromNodeID(startID string, topo *Topology, dp DynamicProvid
 			break
 		}
 		topRef = ref
+		if ref.Kind == "Application" && ref.Group == argoApplicationGroup || ref.Kind == "Kustomization" && ref.Group == fluxKustomizeGroup || ref.Kind == "HelmRelease" && ref.Group == fluxHelmGroup {
+			return ref
+		}
 		cur = next
-	}
-	incoming, _ := edgesForNode(topo, idx, cur)
-	for _, edge := range incoming {
-		if edge.Type != EdgeManages || edge.OwnerController != nil || edge.SkipIfKindVisible != "" {
-			continue
-		}
-		var manager *ResourceRef
-		if idx != nil {
-			manager = resourceRefForNode(idx.nodesByID[edge.Source], dp)
-		} else {
-			manager = resourceRefForNodeID(edge.Source, topo, dp)
-		}
-		if manager == nil {
-			continue
-		}
-		if manager.Kind == "Application" && manager.Group == argoApplicationGroup ||
-			manager.Kind == "Kustomization" && manager.Group == fluxKustomizeGroup ||
-			manager.Kind == "HelmRelease" && manager.Group == fluxHelmGroup {
-			return manager
-		}
 	}
 	return topRef
 }
