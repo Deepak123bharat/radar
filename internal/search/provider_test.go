@@ -188,9 +188,9 @@ func completeCRDDiscovery(t *testing.T, dynamic *k8score.DynamicResourceCache) {
 	}
 }
 
-// Until CRD discovery completes, kinds Radar is about to watch eagerly still
-// look unwatched, so search can't rule them out: the catalog reports loading
-// while what is already cached keeps answering.
+// Until API discovery has answered and CRD discovery completes, kinds Radar is
+// about to watch eagerly still look unwatched or absent, so search can't rule
+// them out: the catalog reports loading while what is cached keeps answering.
 func TestCacheProviderCatalogLoadsUntilCRDDiscoveryCompletes(t *testing.T) {
 	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
 	discovery, err := k8score.NewResourceDiscovery(fake.NewClientset().Discovery())
@@ -202,8 +202,11 @@ func TestCacheProviderCatalogLoadsUntilCRDDiscoveryCompletes(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(dynamic.Stop)
-	discovery.AddAPIResource(k8score.APIResource{Group: gvr.Group, Version: gvr.Version, Name: gvr.Resource, Kind: "Widget", Namespaced: true, Verbs: []string{"get", "list", "watch"}})
 	p := &CacheProvider{dynamic: &k8s.DynamicResourceCache{DynamicResourceCache: dynamic}, discovery: &k8s.ResourceDiscovery{ResourceDiscovery: discovery}}
+	if _, err := p.DynamicResources(); !errors.Is(err, k8s.ErrDynamicNotReady) {
+		t.Fatalf("empty API catalog: %v", err)
+	}
+	discovery.AddAPIResource(k8score.APIResource{Group: gvr.Group, Version: gvr.Version, Name: gvr.Resource, Kind: "Widget", Namespaced: true, Verbs: []string{"get", "list", "watch"}})
 	gvrs, err := p.DynamicResources()
 	if !errors.Is(err, k8s.ErrDynamicNotReady) || !slices.Contains(gvrs, gvr) {
 		t.Fatalf("before CRD discovery: %v %v", gvrs, err)

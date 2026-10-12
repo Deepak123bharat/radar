@@ -70,6 +70,11 @@ func (p *CacheProvider) DynamicResources() ([]schema.GroupVersionResource, error
 	if err != nil {
 		return nil, err
 	}
+	// Every cluster serves core resources, so an empty catalog is discovery
+	// that hasn't succeeded yet (its errors are logged, not returned).
+	if len(resources) == 0 {
+		return nil, fmt.Errorf("%w: API discovery", k8s.ErrDynamicNotReady)
+	}
 	// Until CRD discovery completes, kinds Radar is about to watch still look
 	// unwatched; until API discovery answers for every group, a kind may be
 	// missing from the catalog.
