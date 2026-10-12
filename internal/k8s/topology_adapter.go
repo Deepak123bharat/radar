@@ -409,3 +409,7 @@ func readTypedTopologyInventory[T any](a *topologyResourceProvider, resource str
 	}
 	return items, err
 }
+
+func (a *topologyDynamicProvider) AdmissionWebhookConsumers(gvr schema.GroupVersionResource, namespace, name string) ([]*unstructured.Unstructured, bool, error) {
+	return a.dynCache.AdmissionWebhookConsumers(gvr, namespace, name)
+}

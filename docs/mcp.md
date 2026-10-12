@@ -570,6 +570,24 @@ instead of an empty expiry map, leaves disabled optional certificate annotations
 empty, and retains
 its map of observed certificates for namespace-limited caches.
 
+Admission webhook configuration context includes its declared in-cluster Service
+backends in `dependencies`, including readable references to absent Services.
+Service context uses an informer index to find readable cluster-scoped
+MutatingWebhookConfiguration and ValidatingWebhookConfiguration consumers in
+`dependents`. References retain the Service namespace and use the shared bounded
+permission filter. Unsynced or unobserved inventories report `cache_cold`, with
+partial indexed matches retained. A Service whose dynamic provider is not yet
+available also reports `cache_cold`, retaining any other known dependents.
+Denied inventories report `rbac_denied`;
+unsupported watch sources and SDK providers without the optional lookup report
+`unavailable`. Reads do not start informers, wait for discovery or probe
+access. Producers must watch both configuration kinds; Radar includes them in
+background warmup. Hot lookups read matching index entries without full
+configuration scans or object API Gets. URL targets
+are not Kubernetes references. This context does not establish API-server
+reachability, TLS validity or webhook health. CRD conversion webhooks and graph
+materialization are separate from this admission-context slice.
+
 Resource context distinguishes observed dependency references (`dependencies` and
 `dependents`) from autoscalers (`scaledBy`). A Certificate depends on its issuer;
 it does not scale it. These references carry API group and namespace identity,
