@@ -11,7 +11,7 @@ import (
 func TestContourDelegatedTLSUsesSecretNamespace(t *testing.T) {
 	hpGVR := schema.GroupVersionResource{Group: "projectcontour.io", Version: "v1", Resource: "httpproxies"}
 	certGVR := schema.GroupVersionResource{Group: "cert-manager.io", Version: "v1", Resource: "certificates"}
-	for _, secretName := range []string{"certs/wildcard", "wildcard"} {
+	for _, secretName := range []string{"certs/wildcard", "wildcard", "/wildcard"} {
 		t.Run(secretName, func(t *testing.T) {
 			ns := "app"
 			if secretName == "certs/wildcard" {

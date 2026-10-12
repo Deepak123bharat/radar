@@ -5353,6 +5353,9 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		// Secret → HTTPProxy configuration edges
 		for _, secretRef := range configrefs.ContourSecretReferences(res) {
 			secretNS, tlsSecretName := secretRef.Namespace, secretRef.Name
+			if !opts.MatchesNamespaceFilter(secretNS) {
+				continue
+			}
 			secretNodeID := fmt.Sprintf("secret/%s/%s", secretNS, tlsSecretName)
 			// Create stub Secret node if it doesn't already exist (same pattern as Traefik)
 			ensureSecretNode(secretNS, tlsSecretName)

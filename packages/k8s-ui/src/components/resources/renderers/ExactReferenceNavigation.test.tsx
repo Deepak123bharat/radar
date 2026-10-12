@@ -60,10 +60,10 @@ describe('exact reference navigation', () => {
    if(link) {await act(async()=>link.click());expect(navigate).toHaveBeenCalledWith({kind:'services',group:'',namespace:'prod',name:'api'})}
   })
  })
- it('preserves delegated namespaces for all Contour TLS secrets',async()=>{
+ it.each([['tls/', 'tls'], ['/', 'app']])('resolves Contour TLS secret prefix %s to namespace %s',async(prefix, namespace)=>{
   const navigate=vi.fn()
-  await rendered(<ContourHTTPProxyRenderer data={{metadata:{namespace:'app'},spec:{virtualhost:{fqdn:'example.test',tls:{secretName:'tls/server',clientValidation:{caSecret:'tls/ca',crlSecret:'tls/crl'}}}}}} onNavigate={navigate}/>,async container=>{
-   for(const name of ['server','ca','crl']) {await click(container,`tls/${name}`);expect(navigate).toHaveBeenLastCalledWith({kind:'secrets',group:'',namespace:'tls',name})}
+  await rendered(<ContourHTTPProxyRenderer data={{metadata:{namespace:'app'},spec:{virtualhost:{fqdn:'example.test',tls:{secretName:`${prefix}server`,clientValidation:{caSecret:`${prefix}ca`,crlSecret:`${prefix}crl`}}}}}} onNavigate={navigate}/>,async container=>{
+   for(const name of ['server','ca','crl']) {await click(container,`${prefix}${name}`);expect(navigate).toHaveBeenLastCalledWith({kind:'secrets',group:'',namespace,name})}
   })
  })
  it('uses the v1beta2 ClusterClass reference namespace',async()=>{

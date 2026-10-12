@@ -36,6 +36,7 @@ func TestConfigSecretMetadataWithoutWorkloadSecretNodes(t *testing.T) {
 					{"tlsoption/app/options", "app", "opt-ca"},
 					{"tlsstore/app/store", "app", "store-cert"},
 					{"httpproxy/app/proxy", "certs", "observed"},
+					{"httpproxy/app/local", "app", "observed"},
 				}
 				for _, item := range []struct {
 					group, plural, kind, name string
@@ -45,6 +46,7 @@ func TestConfigSecretMetadataWithoutWorkloadSecretNodes(t *testing.T) {
 					{"traefik.io", "tlsoptions", "TLSOption", "options", map[string]any{"clientAuth": map[string]any{"secretNames": []any{"opt-ca"}}}},
 					{"traefik.io", "tlsstores", "TLSStore", "store", map[string]any{"defaultCertificate": map[string]any{"secretName": "store-cert"}}},
 					{"projectcontour.io", "httpproxies", "HTTPProxy", "proxy", map[string]any{"virtualhost": map[string]any{"tls": map[string]any{"secretName": "certs/observed"}}}},
+					{"projectcontour.io", "httpproxies", "HTTPProxy", "local", map[string]any{"virtualhost": map[string]any{"tls": map[string]any{"secretName": "/observed"}}}},
 				} {
 					gvr := schema.GroupVersionResource{Group: item.group, Version: "v1alpha1", Resource: item.plural}
 					if item.group == "projectcontour.io" {
@@ -52,9 +54,11 @@ func TestConfigSecretMetadataWithoutWorkloadSecretNodes(t *testing.T) {
 					}
 					x := genericIdentityObject(gvr, item.kind, "app", item.name)
 					x.Object["spec"] = item.spec
-					watched = append(watched, gvr)
+					if _, exists := kinds[gvr]; !exists {
+						watched = append(watched, gvr)
+					}
 					kinds[gvr] = item.kind
-					resources[gvr] = []*unstructured.Unstructured{x}
+					resources[gvr] = append(resources[gvr], x)
 				}
 				provider := &countingSecretProvider{mockProvider: &mockProvider{}}
 				if available {
@@ -67,7 +71,7 @@ func TestConfigSecretMetadataWithoutWorkloadSecretNodes(t *testing.T) {
 				dynamic := &genericIdentityDynamic{watched: watched, kinds: kinds, resources: resources, listCalls: map[schema.GroupVersionResource]int{}}
 				opts := DefaultBuildOptions()
 				opts.IncludeSecrets = includeSecrets
-				opts.Namespaces = []string{"app"}
+				opts.Namespaces = []string{"app", "certs"}
 				topo, err := NewBuilder(provider).WithDynamic(dynamic).Build(opts)
 				if err != nil {
 					t.Fatal(err)

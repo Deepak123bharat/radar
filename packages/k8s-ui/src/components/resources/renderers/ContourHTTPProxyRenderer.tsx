@@ -1,7 +1,7 @@
-import { getContourSecretReference } from '../resource-utils-contour'
 import { Globe, Route, Layers, Lock } from 'lucide-react'
 import { Section, PropertyList, Property, AlertBanner, ConditionsSection, ResourceLink } from '../../ui/drawer-components'
 import {
+  getContourSecretReference,
   getHTTPProxyFQDN,
   getHTTPProxyRouteCount,
   getHTTPProxyServiceCount,
