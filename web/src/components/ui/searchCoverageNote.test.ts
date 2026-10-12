@@ -77,6 +77,14 @@ describe('searchCoverageNote', () => {
     expect(searchCoverageNote([ns('namespace_excluded', ['payments-prd'])], {})?.text).toBe("Namespace 'payments-prd' wasn't found in what you can see.")
   })
 
+  it('keeps a read failure visible beside namespace notes', () => {
+    const ns = (reason: string, namespaces: string[]) => ({ kind: '*', group: '', reason, namespaces })
+    const mixed = [ns('namespace_excluded', ['gone']), ns('collector_scope_limited', ['rel-owner']), entry('SpStall', 'kind_sync_failed', 'stall.sp-live.test')]
+    expect(searchCoverageNote(mixed, { seesAllNamespaces: true })?.text).toBe(
+      "Couldn't read SpStall; matches of that kind may be missing. Namespace 'gone' doesn't exist on this cluster.",
+    )
+  })
+
   it('ignores reasons it does not know', () => {
     expect(searchCoverageNote([entry('Widget', 'reason_from_the_future')], {})).toBeUndefined()
   })

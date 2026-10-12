@@ -91,6 +91,14 @@ export function searchCoverageNote(unsearched: SearchCoverageEntry[] | undefined
   // A read_error "*" without a count beside an unknown kind: some API groups
   // failed discovery, so the kind may exist there.
   const groupsUnread = unknown.length > 0 && unsearched.some((e) => e.kind === '*' && e.reason === 'read_error' && !e.count)
+  // Loading and failures lead: they are the facts a retry or a fix can change.
+  const failed = unsearched.filter((e) => FAILURE_REASONS.has(e.reason) && !(groupsUnread && e.kind === '*' && !e.count))
+  if (failed.length) {
+    const { text, one } = failedKinds(failed, (e) => label(e))
+    say(`Couldn't read ${text}; matches of ${one ? 'that kind' : 'those kinds'} may be missing.`)
+  }
+  const unchecked = unsearched.filter((e) => e.reason === 'permission_check_failed')
+  if (unchecked.length) say(`Couldn't check your access to ${failedKinds(unchecked, (e) => label(e, true)).text}.`)
   if (unknown.length) {
     const noun = `No ${unknown.length === 1 ? 'kind' : 'kinds'} named ${names(unknown, 'or', false)}`
     say(groupsUnread ? `${noun} found, but some API groups couldn't be read.` : `${noun} here — not installed, or misspelled?`)
@@ -125,13 +133,7 @@ export function searchCoverageNote(unsearched: SearchCoverageEntry[] | undefined
   if (denied.length) say(`Your access doesn't include all ${names(denied, 'or')}.`)
   const collector = named('collector_access_denied')
   if (collector.length) say(`Radar isn't allowed to read ${names(collector, 'or')} on this cluster.`)
-  const failed = unsearched.filter((e) => FAILURE_REASONS.has(e.reason) && !(groupsUnread && e.kind === '*' && !e.count))
-  if (failed.length) {
-    const { text, one } = failedKinds(failed, (e) => label(e))
-    say(`Couldn't read ${text}; matches of ${one ? 'that kind' : 'those kinds'} may be missing.`)
-  }
-  const unchecked = unsearched.filter((e) => e.reason === 'permission_check_failed')
-  if (unchecked.length) say(`Couldn't check your access to ${failedKinds(unchecked, (e) => label(e, true)).text}.`)
+
 
   if (!sentences.length) return undefined
   const shown = sentences.slice(0, MAX_SENTENCES)
