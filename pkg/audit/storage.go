@@ -64,14 +64,14 @@ func checkStorage(tr *evalTracker, input *CheckInput, now time.Time) []Finding {
 				continue
 			}
 			checkID = "pvcNoConsumer"
-			message = "No consumer observed among Pods or built-in workload templates Radar can see. CRD consumers may still reference this claim."
+			message = "No consumer observed among Pods, built-in workload templates, or Pending clones Radar can see. CRD consumers or snapshot operations may still reference this claim."
 		case corev1.ClaimPending:
 			tr.record("pvcLongPending", pvc.Namespace)
 			if consumed {
 				continue
 			}
 			checkID = "pvcLongPending"
-			message = "Pending since creation, " + storageAge(pvc.CreationTimestamp, now) + " ago. No consumer observed among Pods or built-in workload templates Radar can see; CRD consumers may still reference it."
+			message = "Pending since creation, " + storageAge(pvc.CreationTimestamp, now) + " ago. No consumer observed among Pods, built-in workload templates, or Pending clones Radar can see. CRD consumers or snapshot operations may still reference this claim."
 			if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "" {
 				sc := defaultClass
 				if pvc.Spec.StorageClassName != nil {
@@ -133,12 +133,16 @@ func checkStorage(tr *evalTracker, input *CheckInput, now time.Time) []Finding {
 			// this check has no verdict on it, so it is not a passing subject.
 			continue
 		}
-		releasedAt := pv.CreationTimestamp
+		var releasedAt metav1.Time
 		if pv.Status.LastPhaseTransitionTime != nil && !pv.Status.LastPhaseTransitionTime.IsZero() {
 			releasedAt = *pv.Status.LastPhaseTransitionTime
 		}
-		inDeleteGrace := releasedAt.IsZero() || now.Sub(releasedAt.Time) <= pvDeleteGrace
 		recentFailure := hasWarning && now.Sub(warning.at) <= pvDeleteEventWindow
+		if pv.Spec.PersistentVolumeReclaimPolicy == corev1.PersistentVolumeReclaimDelete && releasedAt.IsZero() && !recentFailure {
+			tr.skip("pv-release-time")
+			continue
+		}
+		inDeleteGrace := !releasedAt.IsZero() && now.Sub(releasedAt.Time) <= pvDeleteGrace
 		if pv.Spec.PersistentVolumeReclaimPolicy == corev1.PersistentVolumeReclaimDelete && inDeleteGrace && !recentFailure && !deletionEventsComplete {
 			// A warning Radar can't see may already show this deletion failing.
 			tr.skip("pv-deletion-events")
@@ -148,10 +152,13 @@ func checkStorage(tr *evalTracker, input *CheckInput, now time.Time) []Finding {
 		message := ""
 		switch pv.Spec.PersistentVolumeReclaimPolicy {
 		case corev1.PersistentVolumeReclaimRetain:
-			if releasedAt.IsZero() || now.Sub(releasedAt.Time) <= pvRetainGrace {
+			if !releasedAt.IsZero() && now.Sub(releasedAt.Time) <= pvRetainGrace {
 				continue
 			}
 			message = "Released PV is kept after its claim was deleted (reclaim policy Retain)."
+			if releasedAt.IsZero() {
+				message = "Released PV is kept after its claim was deleted (reclaim policy Retain); release time unknown."
+			}
 		case corev1.PersistentVolumeReclaimDelete:
 			if recentFailure {
 				message = "Released PV deletion is failing: " + asSentence(warning.event.Message)
@@ -222,6 +229,21 @@ func collectPVCConsumers(input *CheckInput) map[string]bool {
 	}
 	for _, cj := range input.CronJobs {
 		add(cj.Namespace, cj.Spec.JobTemplate.Spec.Template.Spec)
+	}
+	for _, pvc := range input.PersistentVolumeClaims {
+		if pvc.Status.Phase != corev1.ClaimPending {
+			continue
+		}
+		if source := pvc.Spec.DataSource; source != nil && source.Kind == "PersistentVolumeClaim" && (source.APIGroup == nil || *source.APIGroup == "") {
+			refs[pvc.Namespace+"/"+source.Name] = true
+		}
+		if source := pvc.Spec.DataSourceRef; source != nil && source.Kind == "PersistentVolumeClaim" && (source.APIGroup == nil || *source.APIGroup == "") {
+			namespace := pvc.Namespace
+			if source.Namespace != nil && *source.Namespace != "" {
+				namespace = *source.Namespace
+			}
+			refs[namespace+"/"+source.Name] = true
+		}
 	}
 	// Match retained ordinals too: scaling to zero does not relinquish data.
 	generated := map[string]bool{}

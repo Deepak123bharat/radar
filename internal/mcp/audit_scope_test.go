@@ -74,7 +74,7 @@ func TestAuditToolStoragePVGrantOnlyGatesPVMetadataAndFindings(t *testing.T) {
 		}
 		// Without the grant PVs are outside the caller's subjects; the claim
 		// finding carries the caveat instead of a skipped-check input.
-		if slices.Contains(result.MissingInputs, "persistentvolumes") {
+		if slices.Contains(result.MissingInputs, "persistentvolumes") || slices.Contains(result.MissingInputs, "pv-release-time") {
 			t.Fatalf("PV grant denial reported as a skipped check: %+v", result)
 		}
 		want := 1
@@ -91,6 +91,36 @@ func TestAuditToolStoragePVGrantOnlyGatesPVMetadataAndFindings(t *testing.T) {
 			if f.Check != "pvcNoConsumer" && f.Check != "releasedPV" || f.Remediation == "" {
 				t.Fatalf("unexpected finding: %+v", f)
 			}
+		}
+	}
+}
+
+func TestAuditToolPVReleaseTimeMissingInputRequiresPVGrant(t *testing.T) {
+	pv := &corev1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "disk", CreationTimestamp: metav1.NewTime(time.Now().Add(-72 * time.Hour))},
+		Spec:       corev1.PersistentVolumeSpec{PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimDelete},
+		Status:     corev1.PersistentVolumeStatus{Phase: corev1.VolumeReleased},
+	}
+	if err := k8s.InitTestResourceCache(fake.NewClientset(pv)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(k8s.ResetTestState)
+	for _, allowed := range []bool{true, false, true} {
+		ctx := withTestUserPerms(t, "release-time-reader", nil, []string{"app"})
+		getPermCache().Get("release-time-reader", nil).SetCanI("list", "", "persistentvolumes", "", allowed)
+		raw, _, err := handleGetAudit(ctx, nil, auditInput{Namespace: "app", Category: "Efficiency"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var result auditToolResult
+		if err := json.Unmarshal([]byte(extractText(t, raw)), &result); err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(result.MissingInputs, "pv-release-time") != allowed {
+			t.Fatalf("PV release-time missing input differs from grant=%v: %+v", allowed, result)
+		}
+		if slices.Contains(result.MissingInputs, "pv-deletion-events") || result.TotalCount != 0 || len(result.Findings) != 0 {
+			t.Fatalf("unknown release age reported as deletion finding or event gap: %+v", result)
 		}
 	}
 }

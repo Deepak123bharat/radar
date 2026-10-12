@@ -53,7 +53,8 @@ func TestStorageCacheScopeAndCoverage(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "claim", Namespace: "app", CreationTimestamp: metav1.NewTime(time.Now().Add(-48 * time.Hour))}, Spec: corev1.PersistentVolumeClaimSpec{VolumeName: "bound"}, Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound}}
-			pv := &corev1.PersistentVolume{ObjectMeta: metav1.ObjectMeta{Name: "released", UID: "released-uid", CreationTimestamp: metav1.NewTime(time.Now().Add(-48 * time.Hour))}, Spec: corev1.PersistentVolumeSpec{PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimDelete}, Status: corev1.PersistentVolumeStatus{Phase: corev1.VolumeReleased}}
+			releasedAt := metav1.NewTime(time.Now().Add(-48 * time.Hour))
+			pv := &corev1.PersistentVolume{ObjectMeta: metav1.ObjectMeta{Name: "released", UID: "released-uid", CreationTimestamp: releasedAt}, Spec: corev1.PersistentVolumeSpec{PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimDelete}, Status: corev1.PersistentVolumeStatus{Phase: corev1.VolumeReleased, LastPhaseTransitionTime: &releasedAt}}
 			hidden := &corev1.Event{ObjectMeta: metav1.ObjectMeta{Name: "hidden", Namespace: "other"}, InvolvedObject: corev1.ObjectReference{Kind: "PersistentVolume", APIVersion: "v1", Name: "released", UID: "released-uid"}, Type: corev1.EventTypeWarning, Reason: "VolumeFailedDelete", Message: "private failure", LastTimestamp: metav1.NewTime(time.Now())}
 			scopes := map[string]k8score.ResourceScope{}
 			for _, resource := range append(slices.Clone(typedPVCConsumers), k8score.PersistentVolumeClaims, k8score.PersistentVolumes, k8score.StorageClasses, k8score.Events) {
@@ -92,7 +93,7 @@ func TestStorageCacheScopeAndCoverage(t *testing.T) {
 			if (!tc.pods || tc.podNS == "other") && (!slices.Contains(r.MissingInputs, "pvc-consumers") || r.CheckCounts["pvcNoConsumer"].Evaluated != 0) {
 				t.Fatal("unknown consumer coverage became passing")
 			}
-			if slices.Contains(r.MissingInputs, "pv-deletion-events") {
+			if slices.Contains(r.MissingInputs, "pv-deletion-events") || slices.Contains(r.MissingInputs, "pv-release-time") {
 				t.Fatalf("flagged volume reported as skipped: %v", r.MissingInputs)
 			}
 		})
