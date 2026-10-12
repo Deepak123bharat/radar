@@ -74,3 +74,30 @@ describe('Issues page query ownership', () => {
     expect(render('/issues')).toContain(fleetState === 'loading' ? 'Loading issues…' : 'Failed to load issues')
   })
 })
+
+describe('Issues page when Radar could not read Helm releases', () => {
+  const line = "Helm releases couldn't be checked, so failed or stuck releases may be missing."
+  const text = (html: string) => html.replace(/&#x27;|&#39;/g, "'")
+
+  it('shows no all-clear when nothing else was found', () => {
+    state.fleet.data = { issues: [], total: 0, total_matched: 0, helm_issues_unchecked: true }
+    const html = text(render('/issues'))
+    expect(html).toContain('No issues found')
+    expect(html).toContain(line)
+    expect(html).not.toContain('Nothing broken right now')
+  })
+
+  it('says so above the rows when there are other issues', () => {
+    state.fleet.data = { issues: [issue], total: 1, total_matched: 1, helm_issues_unchecked: true }
+    const html = text(render('/issues'))
+    expect(html).toContain(line)
+    expect(html).toContain('The selected Pod keeps crashing')
+  })
+
+  it('keeps the all-clear for a Radar that read Helm or predates the field', () => {
+    state.fleet.data = { issues: [], total: 0, total_matched: 0 }
+    const html = text(render('/issues'))
+    expect(html).toContain('Nothing broken right now')
+    expect(html).not.toContain('couldn')
+  })
+})

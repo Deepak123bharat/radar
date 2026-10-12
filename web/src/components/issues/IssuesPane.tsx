@@ -9,6 +9,7 @@ import { useCapabilitiesContext } from "../../contexts/CapabilitiesContext";
 import { useConnection } from "../../context/ConnectionContext";
 import type { SelectedResource } from "../../types";
 import {
+  EmptyState,
   IssuesView,
   PaneLoader,
   PageHeader,
@@ -152,6 +153,8 @@ export function issueSubjectState(
   return { state: "none" };
 }
 
+const HELM_UNCHECKED_LINE = "Helm releases couldn't be checked, so failed or stuck releases may be missing.";
+
 const SEVERITY_TONE: Record<IssueSeverity, SummaryTone> = {
   critical: "error",
   warning: "warning",
@@ -202,6 +205,7 @@ export function IssuesPane({
     ? subjectHidden ? undefined : related.data?.visibility
     : data?.visibility;
   const pageIssues = useMemo(() => data?.issues ?? [], [data]);
+  const helmUnchecked = !subject && !!data?.helm_issues_unchecked;
   // With a subject set, the tiles and the list both describe the subject.
   const scopeIssues = subjectState
     ? subjectState.state === "found" ? subjectState.issues : []
@@ -305,6 +309,15 @@ export function IssuesPane({
         </div>
       )}
 
+      {/* Helm honesty: the rows can't include failed Helm releases Radar
+          couldn't read. With no rows the empty state below says it instead. */}
+      {helmUnchecked && scopeIssues.length > 0 && (
+        <div className="flex items-start gap-2 rounded-lg border border-theme-border bg-theme-elevated px-3 py-2 text-xs text-theme-text-secondary">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+          <span>{HELM_UNCHECKED_LINE}</span>
+        </div>
+      )}
+
       {/* Truncation honesty: when more issues matched than were returned, say
           so — don't present a capped list as the complete picture. */}
       {!subject && data?.total_matched != null &&
@@ -371,6 +384,9 @@ export function IssuesPane({
             Clear filter
           </button>
         </div>
+      ) : helmUnchecked && scopeIssues.length === 0 ? (
+        /* Not the healthy "nothing broken" state: Helm releases weren't read. */
+        <EmptyState tone="neutral" variant="card" headline="No issues found" body={HELM_UNCHECKED_LINE} />
       ) : (
         /* anyData = the query resolved, i.e. the cluster is reachable; an empty
            list then means "nothing broken" rather than "not connected". */
