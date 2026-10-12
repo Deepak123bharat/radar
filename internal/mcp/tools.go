@@ -389,6 +389,8 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"grouped critical/warning failures across workloads, Jobs/CronJobs, HPAs, " +
 			"PVCs, Nodes, references, pod startup, native Helm, and False controller conditions. " +
 			"Use CEL `filter` for source/taxonomy slices; no source parameter. " +
+			"`helm_issues_unchecked: true` means Helm releases couldn't be read, so failed " +
+			"Helm releases may be missing; don't call Helm healthy. " +
 			"`diagnostic_context.role` marks roots, rollups, symptoms, or context; " +
 			"`related_issues[].count` is the root's affected subset, not the linked issue total. " +
 			"Confidence: `high` declared edge, `medium` lead to verify, `low` heuristic. " +
@@ -3158,7 +3160,7 @@ func nativeHelmIssuesForContext(ctx context.Context, namespaces []string, filter
 	}
 	releases, err := helmClient.ListIssueReleasesAcrossNamespaces(ctx, helmNamespaces, username, groups)
 	if err != nil {
-		if !errors.Is(ctx.Err(), context.Canceled) && !helm.IsForbiddenError(err) {
+		if !errors.Is(ctx.Err(), context.Canceled) && !helm.IssueReadDenied(err) {
 			log.Printf("[mcp] Failed to list Helm releases for issue stream: %v", err)
 		}
 		return nil, helm.IssueReadUnchecked(ctx, err)

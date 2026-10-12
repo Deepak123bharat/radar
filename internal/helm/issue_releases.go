@@ -61,13 +61,20 @@ func (c *Client) ListIssueReleasesAcrossNamespaces(ctx context.Context, namespac
 	return listIssueReleasesWithClients(ctx, client, labelsClient, contextName, namespaces)
 }
 
+// IssueReadDenied reports whether a failed ListIssueReleasesAcrossNamespaces
+// was Kubernetes refusing the caller's release Secret list. A 401 is not: it
+// is Radar's own credentials failing, not the caller's permissions.
+func IssueReadDenied(err error) bool {
+	return err != nil && isReleaseReadForbidden(err)
+}
+
 // IssueReadUnchecked reports whether a failed ListIssueReleasesAcrossNamespaces
-// leaves the caller's Helm issues unknown. A denial is not: the caller may not
-// read release Secrets, so it sees no Helm issues, like any other kind it can't
-// list. Neither is a caller that left, since nobody gets the answer. Radar's
-// own request deadline is a failure: the caller is still waiting.
+// leaves the caller's Helm issues unknown. A denial does not: the caller may
+// not read release Secrets, so it sees no Helm issues, like any other kind it
+// can't list. Neither does a caller that left, since nobody gets the answer.
+// Radar's own request deadline does: the caller is still waiting.
 func IssueReadUnchecked(ctx context.Context, err error) bool {
-	return err != nil && !IsForbiddenError(err) && !errors.Is(ctx.Err(), context.Canceled)
+	return err != nil && !IssueReadDenied(err) && !errors.Is(ctx.Err(), context.Canceled)
 }
 
 func listIssueReleasesWithClients(ctx context.Context, client kubernetes.Interface, labelsClient metadata.Interface, contextName string, namespaces []string) ([]HelmRelease, error) {

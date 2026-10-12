@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/skyhook-io/radar/internal/helm"
+	"github.com/skyhook-io/radar/internal/issues"
 	"github.com/skyhook-io/radar/internal/k8s"
 )
 
@@ -37,6 +38,13 @@ func TestIssuesToolSaysWhenHelmReleasesCouldNotBeChecked(t *testing.T) {
 			name:   "caller may not list release Secrets",
 			status: http.StatusForbidden,
 			body:   `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"secrets is forbidden","reason":"Forbidden","code":403}`,
+		},
+		{
+			// Radar's own credentials failing is not the caller's permissions.
+			name:          "API server rejects Radar's credentials",
+			status:        http.StatusUnauthorized,
+			body:          `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"Unauthorized","reason":"Unauthorized","code":401}`,
+			wantUnchecked: true,
 		},
 		{
 			name:   "read succeeded",
@@ -84,5 +92,20 @@ func TestIssuesToolSaysWhenHelmReleasesCouldNotBeChecked(t *testing.T) {
 				t.Errorf("helm_issues_unchecked = %v, want it absent", got)
 			}
 		})
+	}
+}
+
+// A caller that already left gets no answer, so its read cut short is not
+// a failed check.
+func TestNativeHelmIssuesDoNotSayUncheckedWhenCallerLeft(t *testing.T) {
+	helm.ResetClient()
+	if err := helm.InitializeWithRESTConfig(&rest.Config{Host: "http://127.0.0.1:1"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(helm.ResetClient)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, unchecked := nativeHelmIssuesForContext(ctx, []string{"shop"}, issues.Filters{}); unchecked {
+		t.Error("a caller that left was told Helm releases couldn't be checked")
 	}
 }

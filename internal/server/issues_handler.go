@@ -231,7 +231,7 @@ func (s *Server) nativeHelmIssuesForRequest(r *http.Request, namespaces []string
 		switch {
 		case errors.Is(ctx.Err(), context.Canceled):
 			// The caller went away; nobody is left to tell.
-		case !helm.IsForbiddenError(err):
+		case !helm.IssueReadDenied(err):
 			log.Printf("[issues] Failed to list Helm releases for issue stream: %v", err)
 		default:
 			if _, seen := helmIssuesDeniedLogged.LoadOrStore(pkgauth.IdentityCacheKey(username, groups), struct{}{}); !seen {
