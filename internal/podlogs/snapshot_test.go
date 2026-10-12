@@ -144,3 +144,25 @@ func TestLogWireContracts(t *testing.T) {
 		t.Fatalf("empty pods=%s", raw)
 	}
 }
+
+func TestSnapshotClipUnknownTimestampStillReportsIncompleteData(t *testing.T) {
+	for _, body := range []string{strings.Repeat("x", 65538), strings.Repeat("not a timestamp but a complete line\n", 3000)} {
+		t.Run(fmt.Sprintf("prefix_%s", body[:3]), func(t *testing.T) {
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, body) }))
+			defer api.Close()
+			client, err := kubernetes.NewForConfig(&rest.Config{Host: api.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := CollectSources(context.Background(), client, "test", []Source{{Pod: "db-1", Container: "database"}}, 0, nil, true)
+			if len(got.Clipped) != 1 || !got.Clipped[0].Last.IsZero() {
+				t.Fatalf("unknown clip=%+v", got.Clipped)
+			}
+			end := time.Now()
+			notice := got.Summarize(func(c Clip) bool { return c.Last.IsZero() || c.Last.Before(end) })
+			if notice != "1 source reached the 64 KiB snapshot limit." {
+				t.Fatalf("unknown clipping was hidden: %q", notice)
+			}
+		})
+	}
+}

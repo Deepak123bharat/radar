@@ -41,7 +41,8 @@ type Snapshot struct {
 	Notice     string
 	// Clipped lists the sources that reached maxSnapshotSourceBytes, with the
 	// timestamp of the last line kept from each, so a caller filtering by time
-	// can tell whether the clip cut into its window.
+	// can tell whether the clip cut into its window. A zero Last means no
+	// complete timestamped line was kept; window filters must count that clip.
 	Clipped []Clip
 	shown   int
 	total   int
