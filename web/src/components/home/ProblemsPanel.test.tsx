@@ -9,13 +9,14 @@ const issue: Issue = {
   kind: 'Pod', group: '', namespace: 'db', name: 'pg-1', reason: 'CrashLoopBackOff', message: 'The selected Pod keeps crashing',
 }
 
-function render(props: { issues?: Issue[]; helmUnchecked?: boolean }) {
+function render(props: { issues?: Issue[]; helmUnchecked?: boolean; visibility?: { impact?: string } }) {
   const issues = props.issues ?? []
   return renderToString(
     <ProblemsPanel
       issues={issues}
       issueCount={issues.length}
       helmUnchecked={props.helmUnchecked}
+      visibility={props.visibility}
       hasData
       isLoading={false}
       isRefreshing={false}
@@ -34,6 +35,13 @@ describe('Home Active Issues when Radar could not read Helm releases', () => {
     expect(html).toContain(line)
     expect(html).not.toContain('No active issues')
     expect(html).not.toContain('status-healthy')
+    expect(html).not.toContain('text-green-500')
+  })
+
+  it('keeps the line when limited visibility owns the empty state', () => {
+    const html = render({ helmUnchecked: true, visibility: { impact: 'Pods are not readable.' } })
+    expect(html).toContain('No visible active issues')
+    expect(html).toContain(line)
   })
 
   it('says so above the rows when there are other issues', () => {

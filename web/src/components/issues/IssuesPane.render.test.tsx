@@ -85,6 +85,7 @@ describe('Issues page when Radar could not read Helm releases', () => {
     expect(html).toContain('No issues found')
     expect(html).toContain(line)
     expect(html).not.toContain('Nothing broken right now')
+    expect(html.split(line).length - 1).toBe(1)
   })
 
   it('says so above the rows when there are other issues', () => {

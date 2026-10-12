@@ -384,7 +384,6 @@ export function IssuesPane({
           </button>
         </div>
       ) : helmUnchecked && scopeIssues.length === 0 ? (
-        /* Not the healthy "nothing broken" state: Helm releases weren't read. */
         <EmptyState tone="neutral" variant="card" headline="No issues found" body={HELM_UNCHECKED_LINE} />
       ) : (
         /* anyData = the query resolved, i.e. the cluster is reachable; an empty
