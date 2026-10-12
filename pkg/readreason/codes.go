@@ -40,11 +40,11 @@ const (
 	// CollectionNotSupported: the API cannot be watched, or Radar reads it
 	// directly by policy; warming a watch will not help.
 	CollectionNotSupported Code = "collection_not_supported"
-	// NamespaceExcluded: the caller's RBAC leaves out a requested namespace;
-	// it says nothing about whether the namespace exists.
+	// NamespaceExcluded: caller visibility or a namespace selection left out
+	// requested namespaces; it says nothing about whether they exist.
 	NamespaceExcluded Code = "namespace_excluded"
-	// NamespaceScopeLimited: the saved namespace pick or the --namespace-scope
-	// pin leaves out a requested namespace the caller may see.
+	// NamespaceScopeLimited: the saved namespace pick or --namespace-scope
+	// narrowed a query that asked for more namespaces.
 	NamespaceScopeLimited Code = "namespace_scope_limited"
 	// OutsideNamespaceScope: the requested namespace is outside Radar's
 	// --namespace-scope pin.
