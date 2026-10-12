@@ -148,6 +148,8 @@ func memoKey(opts BuildOptions) string {
 	b.WriteByte('|')
 	b.WriteString(strconv.FormatBool(opts.ForRelationshipCache))
 	b.WriteByte('|')
+	b.WriteString(strconv.FormatBool(opts.IndividualPods))
+	b.WriteByte('|')
 	b.WriteString(strconv.FormatBool(opts.ShowPolicyEffect))
 	return b.String()
 }

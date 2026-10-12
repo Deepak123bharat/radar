@@ -230,6 +230,7 @@ func mcpTopologyForContext(namespace string) (*topo.Topology, topo.ResourceProvi
 	// resourceContext for MCP callers.
 	opts.IncludeReplicaSets = true
 	opts.ForRelationshipCache = true
+	opts.IndividualPods = true
 	if namespace != "" {
 		opts.Namespaces = []string{namespace}
 	}

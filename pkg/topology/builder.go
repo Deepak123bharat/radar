@@ -3299,9 +3299,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		}
 
 		for _, group := range groupingResult.Groups {
-			// Relationship lookups answer for one Pod at a time, so the cache
-			// never collapses Pods into a group that no lookup can name.
-			if opts.ForRelationshipCache || len(group.Pods) <= maxIndividualPods {
+			if opts.IndividualPods || len(group.Pods) <= maxIndividualPods {
 				// Small group - add as individual nodes
 				for _, pod := range group.Pods {
 					podID := GetPodID(pod)

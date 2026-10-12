@@ -387,6 +387,7 @@ type BuildOptions struct {
 	Namespaces           []string // Filter to specific namespaces (empty = all)
 	ViewMode             ViewMode // How to display topology
 	MaxIndividualPods    int      // Above this, pods are grouped (default: 5)
+	IndividualPods       bool     // Retain every Pod for per-resource relationship lookups
 	IncludeSecrets       bool     // Include Secret nodes
 	IncludeConfigMaps    bool     // Include ConfigMap nodes
 	IncludePVCs          bool     // Include PersistentVolumeClaim nodes

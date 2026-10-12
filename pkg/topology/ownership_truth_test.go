@@ -8,6 +8,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -64,6 +65,7 @@ func ownershipFixture(t *testing.T) *Topology {
 	opts.ViewMode = ViewModeResources
 	opts.IncludeReplicaSets = true
 	opts.ForRelationshipCache = true
+	opts.IndividualPods = true
 	topo, err := NewBuilder(provider).WithDynamic(dynamic).Build(opts)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -180,6 +182,7 @@ func TestCascadePreviewHoldsBackDependentsWithUnseenOwners(t *testing.T) {
 	opts.ViewMode = ViewModeResources
 	opts.IncludeReplicaSets = true
 	opts.ForRelationshipCache = true
+	opts.IndividualPods = true
 	topo, err := NewBuilder(provider).Build(opts)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -239,6 +242,7 @@ func TestWatchedAnalysisRunKeepsItsRolloutOwnership(t *testing.T) {
 		}
 		opts := DefaultBuildOptions()
 		opts.ForRelationshipCache = true
+		opts.IndividualPods = true
 		topo, err := NewBuilder(&mockProvider{}).WithDynamic(dynamic).Build(opts)
 		if err != nil {
 			t.Fatalf("Build: %v", err)
@@ -354,5 +358,47 @@ func TestCascadePreviewRevisitsSharedDependents(t *testing.T) {
 		if got := refNames(p.Dependents); fmt.Sprint(got) != "[A/a B/b X/x]" {
 			t.Errorf("order %v: dependents %v (possible %v)", order, got, refNames(p.PossibleDependents))
 		}
+	}
+}
+
+func TestCompactNeighborhoodKeepsWorkloadContextAtHighReplicaCounts(t *testing.T) {
+	labels := map[string]string{"app": "web"}
+	provider := &mockProvider{
+		deployments: []*appsv1.Deployment{{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "team", UID: "deployment"}, Spec: appsv1.DeploymentSpec{Selector: &metav1.LabelSelector{MatchLabels: labels}, Template: corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}}}}},
+		replicaSets: []*appsv1.ReplicaSet{{ObjectMeta: metav1.ObjectMeta{Name: "web-abc", Namespace: "team", UID: "rs", OwnerReferences: []metav1.OwnerReference{ownerRef("apps/v1", "Deployment", "web", "deployment", true)}}}},
+		services:    []*corev1.Service{{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "team"}, Spec: corev1.ServiceSpec{Selector: labels}}},
+		pdbs:        []*policyv1.PodDisruptionBudget{{ObjectMeta: metav1.ObjectMeta{Name: "web", Namespace: "team"}, Spec: policyv1.PodDisruptionBudgetSpec{Selector: &metav1.LabelSelector{MatchLabels: labels}}}},
+	}
+	for i := range 30 {
+		provider.pods = append(provider.pods, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("web-abc-%d", i), Namespace: "team", UID: types.UID(fmt.Sprintf("pod-%d", i)), Labels: labels, OwnerReferences: []metav1.OwnerReference{ownerRef("apps/v1", "ReplicaSet", "web-abc", "rs", true)}}, Status: corev1.PodStatus{Phase: corev1.PodRunning}})
+	}
+	opts := DefaultBuildOptions()
+	opts.IncludeReplicaSets = true
+	opts.ForRelationshipCache = true
+	compact, err := NewBuilder(provider).Build(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	neighborhood := BuildNeighborhood(compact, ResourceRef{Kind: "Deployment", Group: "apps", Namespace: "team", Name: "web"}, NeighborhoodOptions{Hops: 2})
+	if neighborhood.Truncated {
+		t.Fatal("replica siblings consumed the neighborhood budget")
+	}
+	found := map[NodeKind]bool{}
+	for _, node := range neighborhood.Nodes {
+		found[node.Kind] = true
+	}
+	for _, kind := range []NodeKind{KindService, KindPDB, KindPodGroup} {
+		if !found[kind] {
+			t.Fatalf("compact neighborhood lost %s: %+v", kind, neighborhood.Nodes)
+		}
+	}
+	opts.IndividualPods = true
+	individual, err := NewBuilder(provider).Build(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel := GetRelationships("Pod", "team", "web-abc-29", individual, provider, nil)
+	if rel == nil || rel.Owner == nil || rel.Owner.Name != "web-abc" || rel.Deployment == nil || rel.Deployment.Name != "web" {
+		t.Fatalf("individual replica lost its relationships: %+v", rel)
 	}
 }

@@ -83,6 +83,7 @@ func relationshipCacheOptions() BuildOptions {
 	opts.ViewMode = ViewModeResources
 	opts.IncludeReplicaSets = true
 	opts.ForRelationshipCache = true
+	opts.IndividualPods = true
 	return opts
 }
 
@@ -959,6 +960,7 @@ func TestLargeClusterForRelationshipCache(t *testing.T) {
 	b := NewBuilder(largeProvider())
 	opts := DefaultBuildOptions()
 	opts.ForRelationshipCache = true
+	opts.IndividualPods = true
 	// No namespace filter, but ForRelationshipCache bypasses the guard
 
 	topo, err := b.Build(opts)

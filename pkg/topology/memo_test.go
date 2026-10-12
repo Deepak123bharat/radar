@@ -252,3 +252,12 @@ func TestMemoizer_DoesNotCacheErrors(t *testing.T) {
 		t.Errorf("expected 2 build calls, got %d", got)
 	}
 }
+
+func TestMemoSeparatesIndividualPodsFromGroupedViews(t *testing.T) {
+	grouped := DefaultBuildOptions()
+	individual := grouped
+	individual.IndividualPods = true
+	if memoKey(grouped) == memoKey(individual) {
+		t.Fatal("individual Pod snapshots share the grouped-view cache key")
+	}
+}

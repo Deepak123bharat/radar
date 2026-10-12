@@ -532,6 +532,7 @@ func (s *Server) topologyForContext(namespace string) (*topology.Topology, topol
 	}
 	opts.IncludeReplicaSets = true
 	opts.ForRelationshipCache = true
+	opts.IndividualPods = true
 
 	provider := k8s.NewTopologyResourceProvider(cache)
 	dyn := k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())
