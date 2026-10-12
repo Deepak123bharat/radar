@@ -152,3 +152,29 @@ func TestGenericParentsKeepVisibleOwnerChainBeforeOptionalChildrenAtCap(t *testi
 		t.Fatalf("priority adds cache reads: %+v", dynamic)
 	}
 }
+
+func TestGenericClusterParentCarriesExactReadIdentity(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "parents.example.io", Version: "v1", Resource: "clusterparents"}
+	parent := genericIdentityObject(gvr, "ClusterParent", "", "root")
+	parent.SetUID("parent")
+	dynamic := &genericIdentityDynamic{watched: []schema.GroupVersionResource{gvr}, kinds: map[schema.GroupVersionResource]string{gvr: "ClusterParent"}, resources: map[schema.GroupVersionResource][]*unstructured.Unstructured{gvr: {parent}}, listCalls: map[schema.GroupVersionResource]int{}}
+	seed := Node{ID: "pod/team/child", Kind: KindPod, Name: "child", uid: "child", observed: true, ownerReferences: []metav1.OwnerReference{{APIVersion: "parents.example.io/v1", Kind: "ClusterParent", Name: "root", UID: "parent"}}, Data: map[string]any{"namespace": "team"}}
+	opts := DefaultBuildOptions()
+	opts.Namespaces = []string{"team"}
+	nodes, edges := (&Builder{dynamic: dynamic}).addGenericCRDNodes([]Node{seed}, nil, opts)
+	topo := &Topology{Nodes: nodes, Edges: edges}
+	tuple := SARTuple{Group: gvr.Group, Resource: gvr.Resource}
+	tuples := topo.ClusterScopedDynamicRBACTuples()
+	if len(tuples) != 1 || tuples[0] != tuple {
+		t.Fatalf("parent lacks exact cluster read identity: %+v", tuples)
+	}
+	allowed := &Topology{Nodes: append([]Node(nil), nodes...), Edges: append([]Edge(nil), edges...)}
+	allowed.StripClusterScopedDynamicExcept(map[SARTuple]bool{tuple: true})
+	if len(allowed.Nodes) != 2 || len(allowed.Edges) != 1 {
+		t.Fatalf("authorized parent was dropped: %+v", allowed)
+	}
+	topo.StripClusterScopedDynamicExcept(nil)
+	if len(topo.Nodes) != 1 || topo.Nodes[0].ID != seed.ID || len(topo.Edges) != 0 {
+		t.Fatalf("denied parent or ownership edge leaked: %+v", topo)
+	}
+}

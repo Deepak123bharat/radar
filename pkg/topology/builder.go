@@ -9023,7 +9023,7 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 
 		for _, resource := range resources {
 			ns := resource.GetNamespace()
-			if !opts.MatchesNamespaceFilter(ns) {
+			if ns != "" && !opts.MatchesNamespaceFilter(ns) {
 				continue
 			}
 
@@ -9051,6 +9051,15 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 				}
 				ownerResources = append(ownerResources, resourceid.OwnerReference(ref.APIVersion, ref.Kind, ref.Name, string(ref.UID), ns))
 			}
+			data := map[string]any{
+				"namespace":  ns,
+				"labels":     resource.GetLabels(),
+				"apiVersion": resource.GetAPIVersion(),
+			}
+			if ns == "" {
+				data[clusterScopedGroupKey] = gvr.Group
+				data[clusterScopedResourceKey] = gvr.Resource
+			}
 			candidates = append(candidates, candidate{
 				nodeID: nodeID,
 				node: Node{
@@ -9059,11 +9068,7 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 					Kind:   NodeKind(kind),
 					Name:   name,
 					Status: extractGenericStatus(resource),
-					Data: map[string]any{
-						"namespace":  ns,
-						"labels":     resource.GetLabels(),
-						"apiVersion": resource.GetAPIVersion(),
-					},
+					Data:   data,
 				},
 				ownerRefs:   ownerResources,
 				resourceKey: resourceKey,
