@@ -67,6 +67,7 @@ Host apps can override Radar's runtime behavior without passing props:
 
 Call these before mounting `<RadarApp>`.
 
-The workspace host presentation uses k8s-ui exports introduced in 1.18.0.
-Publish `@skyhook-io/k8s-ui` 1.18.0 before publishing the next `radar-app` version;
-consumers must install a matching k8s-ui version.
+The workspace host presentation requires new k8s-ui exports. The 1.18.0 minimum
+is reserved for the coordinated resource-host and shared-component changes: both
+must land before publishing k8s-ui 1.18.0, followed by `radar-app`. If they ship
+separately, set each peer minimum to the release that contains its exports.
