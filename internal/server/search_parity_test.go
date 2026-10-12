@@ -203,8 +203,14 @@ func TestSearchCoverageMatchesAcrossRESTAndMCP(t *testing.T) {
 			if gap.Reason == "kind_sync_pending" && !strings.Contains(viaMCP.CoverageHint, "retry in a few seconds") {
 				t.Fatalf("pending hint: %q", viaMCP.CoverageHint)
 			}
-			if gap.Reason == "read_error" && viaMCP.CoverageHint != "Couldn't read ProbeWidget (retry.example.io); matches of that kind may be missing." {
-				t.Fatalf("read-error hint: %q", viaMCP.CoverageHint)
+			if gap.Reason == "read_error" {
+				want := "Couldn't read ProbeWidget (retry.example.io); matches of that kind may be missing."
+				if len(search.Parse(tc.query).KindFilter) == 0 {
+					want += " Retry with kind:ProbeWidget before concluding absence."
+				}
+				if viaMCP.CoverageHint != want {
+					t.Fatalf("read-error hint: %q, want %q", viaMCP.CoverageHint, want)
+				}
 			}
 		}
 	}

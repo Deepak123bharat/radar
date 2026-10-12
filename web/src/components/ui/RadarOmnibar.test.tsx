@@ -145,3 +145,30 @@ describe('RadarOmnibar namespace notes', () => {
   })
 })
 
+describe('RadarOmnibar read recovery', () => {
+  it('adds the suggested kind to the current query, preserves modifiers and terms, and re-checks while open', async () => {
+    unsearched = [{ kind: 'Certificate', group: 'cert-manager.io', reason: 'read_error' }]
+    await typeQuery('ns:prod')
+    act(() => host.querySelector('input')!.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true })))
+    await typeQuery('label:app=web image:nginx renewal')
+    expect(page()).toContain("Couldn't read Certificate; matches of that kind may be missing. Search kind:Certificate to re-check.")
+    const button = [...document.body.querySelectorAll('button')].find((b) => b.textContent === 'kind:Certificate')!
+    expect(button).toBeDefined()
+    act(() => button.click())
+    await advance(300)
+    await advance(100)
+    const requests = vi.mocked(fetch).mock.calls.map(([input]) => new URL(String(input), 'http://localhost').searchParams.get('q'))
+    expect(requests.at(-1)).toBe('ns:prod kind:Certificate label:app=web image:nginx renewal')
+    expect(host.querySelector('input')!.value).toContain('renewal')
+    expect(page()).toContain("Couldn't read Certificate; matches of that kind may be missing.")
+    expect([...document.body.querySelectorAll('button')].some((b) => b.textContent === 'kind:Certificate')).toBe(false)
+    expect(page()).not.toContain('to re-check.')
+  })
+
+  it.each(['kind:Certificate renewal', 'k:certificates renewal'])('keeps an explicit failed search honest: %s', async (query) => {
+    unsearched = [{ kind: 'Certificate', group: 'cert-manager.io', reason: 'read_error' }]
+    await typeQuery(query)
+    expect(page()).toContain("Couldn't read Certificate; matches of that kind may be missing.")
+    expect(page()).not.toContain('to re-check.')
+  })
+})

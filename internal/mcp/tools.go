@@ -3305,7 +3305,7 @@ func handleSearch(ctx context.Context, req *mcp.CallToolRequest, input searchInp
 		)
 	}
 	if result.Partial {
-		response.CoverageHint = coverageHint(result, ceiling == nil && !namespaceCheckFailed)
+		response.CoverageHint = coverageHint(result, ceiling == nil && !namespaceCheckFailed, len(parsed.KindFilter) > 0)
 	}
 	return toJSONResult(response)
 }

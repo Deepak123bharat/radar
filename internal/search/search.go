@@ -421,7 +421,10 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 			}
 		}
 		if settled {
-			cov.kind(kind, gvr.Group, reason)
+			gap := cov.kind(kind, gvr.Group, reason)
+			if gap != nil && reason == readreason.KindSyncFailed && observation.State == k8score.DynamicObservationDeferred {
+				gap.RetryWithKind = true
+			}
 			continue
 		}
 		namespaces := opts.Namespaces

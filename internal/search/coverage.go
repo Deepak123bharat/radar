@@ -76,13 +76,17 @@ func (c *coverage) quiet(reason readreason.Code) bool {
 }
 
 // kind records a kind-level reason for one scanned kind.
-func (c *coverage) kind(kind, group string, reason readreason.Code) {
+func (c *coverage) kind(kind, group string, reason readreason.Code) *UnsearchedKind {
 	if c.quiet(reason) {
-		return
+		return nil
 	}
-	if !slices.ContainsFunc(c.gaps, func(g UnsearchedKind) bool { return g.Kind == kind && g.Group == group && g.Reason == reason }) {
-		c.gaps = append(c.gaps, UnsearchedKind{Kind: kind, Group: group, Reason: reason})
+	for i := range c.gaps {
+		if c.gaps[i].Kind == kind && c.gaps[i].Group == group && c.gaps[i].Reason == reason {
+			return &c.gaps[i]
+		}
 	}
+	c.gaps = append(c.gaps, UnsearchedKind{Kind: kind, Group: group, Reason: reason})
+	return &c.gaps[len(c.gaps)-1]
 }
 
 // catalog records a reason that applies to an unknown set of kinds, such as

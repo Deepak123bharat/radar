@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useMemo, useState } from 'react'
+import { forwardRef, useEffect, useMemo, useState, useRef, useImperativeHandle } from 'react'
 import { Omnibar, type OmnibarHandle } from './Omnibar'
 import { useSearch, useNamespaceScope, useContexts, useCapabilities, type SearchHit, type SearchResult } from '../../api/client'
 import { useAPIResources } from '../../api/apiResources'
@@ -19,6 +19,11 @@ export const RadarOmnibar = forwardRef<OmnibarHandle, RadarOmnibarProps>(functio
   { onOpenResource, ...callbacks },
   ref,
 ) {
+  const omnibarRef = useRef<OmnibarHandle>(null)
+  useImperativeHandle(ref, () => ({
+    focus: () => omnibarRef.current?.focus(),
+    addModifier: (modifier) => omnibarRef.current?.addModifier(modifier),
+  }), [])
   // The omnibar debounces internally and emits the query to search here.
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
@@ -53,6 +58,8 @@ export const RadarOmnibar = forwardRef<OmnibarHandle, RadarOmnibarProps>(functio
   const { onNavigateKind } = callbacks
   const note = searchCoverageNote(searchData?.unsearched, {
     hits: searchData?.hits,
+    query,
+    recheckKind: (kind) => omnibarRef.current?.addModifier({ key: 'kind', value: kind }),
     pendingExhausted: exhaustedQuery === query,
     // authEnabled is omitted when false; until capabilities load, stay neutral.
     seesAllNamespaces: !!capabilities && !capabilities.authEnabled,
@@ -64,7 +71,7 @@ export const RadarOmnibar = forwardRef<OmnibarHandle, RadarOmnibarProps>(functio
 
   return (
     <Omnibar
-      ref={ref}
+      ref={omnibarRef}
       onOpenResource={onOpenResource}
       commandItems={commandItems}
       onQueryChange={(q, o) => { setQuery(q); setOpen(o) }}

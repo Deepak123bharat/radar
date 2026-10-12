@@ -277,7 +277,7 @@ func TestCoverageHintTemplates(t *testing.T) {
 			"Couldn't read Certificate (cert-manager.io); matches of that kind may be missing.", false},
 		{"failures fold", search.Result{Unsearched: []search.UnsearchedKind{
 			{Kind: "*", Reason: readreason.ReadError, Count: 1}, gap("Certificate", "cert-manager.io", readreason.KindSyncFailed), gap("Issuer", "cert-manager.io", readreason.ReadError),
-		}}, "Couldn't read 3 kinds (Certificate, Issuer, …); matches of those kinds may be missing.", false},
+		}}, "Couldn't read 3 kinds (Certificate, Issuer, …); matches of those kinds may be missing. Retry with kind:Issuer for a kind you need before concluding absence.", false},
 		{"rbac", search.Result{Unsearched: []search.UnsearchedKind{gap("Secret", "", readreason.RBACDenied)}},
 			"Your access doesn't include all Secrets; this result says nothing about the rest.", false},
 		{"rbac cluster-scoped", search.Result{Unsearched: []search.UnsearchedKind{gap("Node", "", readreason.RBACDenied), gap("ClusterRole", "rbac.authorization.k8s.io", readreason.RBACDenied)}},
@@ -308,7 +308,7 @@ func TestCoverageHintTemplates(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.res.Partial = true
-			if got := coverageHint(tc.res, tc.seesAll); got != tc.want {
+			if got := coverageHint(tc.res, tc.seesAll, false); got != tc.want {
 				t.Fatalf("coverageHint = %q\nwant           %q", got, tc.want)
 			}
 		})
@@ -325,7 +325,7 @@ func TestCoverageHintCoversEveryReason(t *testing.T) {
 		readreason.ReadError, "reason_from_the_future",
 	} {
 		res := search.Result{Partial: true, Unsearched: []search.UnsearchedKind{{Kind: "Widget", Group: "example.io", Reason: reason, Namespaces: []string{"a"}}}}
-		if hint := coverageHint(res, false); hint == "" || strings.Contains(hint, "%!") {
+		if hint := coverageHint(res, false, false); hint == "" || strings.Contains(hint, "%!") {
 			t.Fatalf("%s: hint %q", reason, hint)
 		}
 	}
@@ -404,5 +404,61 @@ func TestHandleSearchNamedNamespaceThatDoesNotExist(t *testing.T) {
 		if !reflect.DeepEqual(namespaceEntries, want) || !strings.Contains(body.CoverageHint, "Namespace 'payments-prd' doesn't exist on this cluster.") {
 			t.Fatalf("pinned=%v: %+v hint %q", pinned, namespaceEntries, body.CoverageHint)
 		}
+	}
+}
+
+func TestCoverageHintReadRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name, query   string
+		reason        readreason.Code
+		retryWithKind bool
+		want          string
+	}{
+		{"broad read error", "renewal", readreason.ReadError, false, "Couldn't read Certificate (cert-manager.io); matches of that kind may be missing. Retry with kind:Certificate before concluding absence."},
+		{"named read error", "kind:Certificate renewal", readreason.ReadError, false, "Couldn't read Certificate (cert-manager.io); matches of that kind may be missing."},
+		{"plural alias", "K:certificates renewal", readreason.ReadError, false, "Couldn't read Certificate (cert-manager.io); matches of that kind may be missing."},
+		{"watch start failed", "renewal", readreason.KindSyncFailed, true, "Couldn't read Certificate (cert-manager.io); matches of that kind may be missing. Retry with kind:Certificate before concluding absence."},
+		{"named watch start failed", "kind:Certificate", readreason.KindSyncFailed, true, "Couldn't read Certificate (cert-manager.io); matches of that kind may be missing."},
+		{"stalled watch", "renewal", readreason.KindSyncFailed, false, "Couldn't read Certificate (cert-manager.io); matches of that kind may be missing."},
+		{"credentials rejected", "renewal", readreason.CollectorUnauthorized, false, "Couldn't read Certificate (cert-manager.io); matches of that kind may be missing."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := search.Result{Partial: true, Unsearched: []search.UnsearchedKind{{Kind: "Certificate", Group: "cert-manager.io", Reason: tc.reason, RetryWithKind: tc.retryWithKind}}}
+			if got := coverageHint(res, false, len(search.Parse(tc.query).KindFilter) > 0); got != tc.want {
+				t.Fatalf("coverageHint = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCoverageHintReadRecoveryFoldAndBudget(t *testing.T) {
+	res := search.Result{Partial: true, Unsearched: []search.UnsearchedKind{
+		{Kind: "*", Reason: readreason.ReadError, Count: 4},
+		{Kind: "Certificate", Group: "cert-manager.io", Reason: readreason.ReadError},
+		{Kind: "Issuer", Group: "cert-manager.io", Reason: readreason.ReadError},
+	}}
+	want := "Couldn't read 6 kinds (Certificate, Issuer, …); matches of those kinds may be missing. Retry with kind:Certificate for a kind you need before concluding absence."
+	if got := coverageHint(res, false, false); got != want {
+		t.Fatalf("fold: %q, want %q", got, want)
+	}
+	res.Unsearched = append(res.Unsearched,
+		search.UnsearchedKind{Kind: "*", Reason: readreason.KindSyncPending, Count: 1},
+		search.UnsearchedKind{Kind: "Secret", Reason: readreason.PermissionCheckFailed},
+		search.UnsearchedKind{Kind: "Node", Reason: readreason.CollectorAccessDenied},
+	)
+	want = "1 kind was still loading; retry in a few seconds before concluding absence. Radar couldn't check your access to Secret; retry. Couldn't read 6 kinds (Certificate, Issuer, …); matches of those kinds may be missing; retry with kind:Certificate for a kind you need before concluding absence. +1 more reason."
+	if got := coverageHint(res, false, false); got != want {
+		t.Fatalf("cap/order: %q, want %q", got, want)
+	}
+	res.Unsearched = res.Unsearched[:3]
+	res.FilterErrors = 1
+	want = filterSentence(1, "") + " Couldn't read 6 kinds (Certificate, Issuer, …); matches of those kinds may be missing; retry with kind:Certificate for a kind you need before concluding absence."
+	if got := coverageHint(res, false, false); got != want {
+		t.Fatalf("filter advice budget: %q, want %q", got, want)
+	}
+	res.FilterErrors = 0
+	res.Unsearched = []search.UnsearchedKind{{Kind: "*", Reason: readreason.ReadError}}
+	if got := coverageHint(res, false, false); got != "Couldn't read some kinds; matches of those kinds may be missing." {
+		t.Fatalf("catalog invented a kind: %q", got)
 	}
 }

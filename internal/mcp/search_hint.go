@@ -107,7 +107,7 @@ var coverageTemplates = []coverageTemplate{
 //
 // seesAllNamespaces says the caller's RBAC covers every namespace, so a
 // namespace_excluded entry can only mean the named namespace doesn't exist.
-func coverageHint(res search.Result, seesAllNamespaces bool) string {
+func coverageHint(res search.Result, seesAllNamespaces bool, namedKinds bool) string {
 	if seesAllNamespaces {
 		res.Unsearched = slices.Clone(res.Unsearched)
 		for i := range res.Unsearched {
@@ -117,6 +117,8 @@ func coverageHint(res search.Result, seesAllNamespaces bool) string {
 		}
 	}
 	var sentences []string
+	retryIndex := -1
+	retry := ""
 	used := map[readreason.Code]bool{}
 	for _, tmpl := range coverageTemplates {
 		if tmpl.sentence == nil {
@@ -135,6 +137,20 @@ func coverageHint(res search.Result, seesAllNamespaces bool) string {
 		if len(entries) > 0 {
 			if sentence := tmpl.sentence(entries, res.Unsearched); sentence != "" {
 				sentences = append(sentences, sentence)
+				if !namedKinds && slices.Contains(tmpl.reasons, readreason.ReadError) {
+					for _, entry := range entries {
+						if entry.Kind != "*" && (entry.Reason == readreason.ReadError || entry.RetryWithKind) {
+							retryIndex = len(sentences) - 1
+							_, n := kindsLabel(entries)
+							if n == 1 {
+								retry = fmt.Sprintf("Retry with kind:%s before concluding absence.", entry.Kind)
+							} else {
+								retry = fmt.Sprintf("Retry with kind:%s for a kind you need before concluding absence.", entry.Kind)
+							}
+							break
+						}
+					}
+				}
 			}
 		}
 	}
@@ -146,6 +162,17 @@ func coverageHint(res search.Result, seesAllNamespaces bool) string {
 	}
 	if len(other) > 0 {
 		sentences = append(sentences, fmt.Sprintf("Some kinds weren't searched (%s); see unsearched.", strings.Join(other, ", ")))
+	}
+	if retryIndex >= 0 && retryIndex < maxCoverageSentences {
+		sentenceCount := len(sentences)
+		if res.FilterErrors > 0 {
+			sentenceCount++
+		}
+		if sentenceCount < maxCoverageSentences {
+			sentences[retryIndex] += " " + retry
+		} else {
+			sentences[retryIndex] = strings.TrimSuffix(sentences[retryIndex], ".") + "; " + strings.ToLower(retry[:1]) + retry[1:]
+		}
 	}
 	if extra := len(sentences) - maxCoverageSentences; extra > 0 {
 		sentences = append(sentences[:maxCoverageSentences], fmt.Sprintf("+%d more %s.", extra, pluralWord(extra, "reason", "reasons")))

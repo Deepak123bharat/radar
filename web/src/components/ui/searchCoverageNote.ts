@@ -18,6 +18,8 @@ export interface SearchCoverageNoteOptions {
   /** The search's hits: a kind that shares its name with a hit of another
    *  API group is named with its group. */
   hits?: { kind: string; group?: string }[]
+  query?: string
+  recheckKind?: (kind: string) => void
   /** Re-querying a still-loading search ran out of budget. */
   pendingExhausted?: boolean
   /** The caller can see every namespace (no auth), so a named namespace left
@@ -96,7 +98,18 @@ export function searchCoverageNote(unsearched: SearchCoverageEntry[] | undefined
   const failed = unsearched.filter((e) => FAILURE_REASONS.has(e.reason) && !(groupsUnread && e.kind === '*' && !e.count))
   if (failed.length) {
     const { text, one } = failedKinds(failed, (e) => label(e))
-    say(`Couldn't read ${text}; matches of ${one ? 'that kind' : 'those kinds'} may be missing.`)
+    const warning = `Couldn't read ${text}; matches of ${one ? 'that kind' : 'those kinds'} may be missing.`
+    const tokens = (opts.query ?? '').match(/(?:[^\s"]|"[^"]*(?:"|$))+/g) ?? []
+    const namedKind = tokens.some((token) => /^(kind|k):.+/i.test(token.replaceAll('"', '')))
+    const retry = !namedKind && failed.find((e) => e.kind !== '*' && (e.reason === 'read_error' || e.retryWithKind))
+    if (retry) {
+      const modifier = `kind:${retry.kind}`
+      sentences.push(opts.recheckKind
+        ? { text: `${warning} Search`, action: { label: modifier, suffix: ' to re-check.', keepOpen: true, onSelect: () => opts.recheckKind?.(retry.kind) } }
+        : { text: `${warning} Search ${modifier} to re-check.` })
+    } else {
+      say(warning)
+    }
   }
   const unchecked = unsearched.filter((e) => e.reason === 'permission_check_failed')
   if (unchecked.length) say(`Couldn't check your access to ${failedKinds(unchecked, (e) => label(e, true)).text}.`)

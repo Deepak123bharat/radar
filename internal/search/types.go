@@ -85,6 +85,9 @@ type UnsearchedKind struct {
 	Reason     readreason.Code `json:"reason"`
 	Namespaces []string        `json:"namespaces,omitempty"`
 	Count      int             `json:"count,omitempty"`
+	// RetryWithKind distinguishes a deferred watch-start failure from a stalled
+	// watch: only the former can be restarted by an explicit kind search.
+	RetryWithKind bool `json:"retryWithKind,omitempty"`
 }
 
 type FailedObject struct {

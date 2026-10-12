@@ -1942,6 +1942,8 @@ export interface SearchHit {
  *  `pkg/readreason`. `kind: "*"` stands for several kinds (`count` of them when
  *  known) or, with `namespaces`, for the named namespaces left out. */
 export interface SearchCoverageEntry {
+  /** A failed watch start can be retried by explicitly naming the kind. */
+  retryWithKind?: boolean;
   kind: string;
   group: string;
   reason: string;

@@ -5,6 +5,38 @@ import { PENDING_RETRY_BUDGET_MS, kindPluralLabel, searchCoverageNote } from './
 const entry = (kind: string, reason: string, group = '', count?: number): SearchCoverageEntry => ({ kind, group, reason, count })
 
 describe('searchCoverageNote', () => {
+  it('offers a kind re-check for a broad read error, with an action when supported', () => {
+    const failed = [entry('Certificate', 'read_error', 'cert-manager.io')]
+    expect(searchCoverageNote(failed, { query: 'renewal' })?.text).toBe("Couldn't read Certificate; matches of that kind may be missing. Search kind:Certificate to re-check.")
+    const recheckKind = vi.fn()
+    const note = searchCoverageNote(failed, { query: 'renewal', recheckKind })
+    expect(note?.text).toBe("Couldn't read Certificate; matches of that kind may be missing. Search")
+    expect(note?.action).toMatchObject({ label: 'kind:Certificate', suffix: ' to re-check.', keepOpen: true })
+    note?.action?.onSelect()
+    expect(recheckKind).toHaveBeenCalledWith('Certificate')
+  })
+
+  it.each(['kind:Certificate renewal', 'K:certificates renewal', 'kind:"Certificate" renewal', '"kind:Certificate" renewal', 'kind:"Certificate'])(
+    'does not suggest naming an already named kind: %s', (query) => {
+      expect(searchCoverageNote([entry('Certificate', 'read_error', 'cert-manager.io')], { query, recheckKind: vi.fn() })).toEqual({
+        text: "Couldn't read Certificate; matches of that kind may be missing.", action: undefined,
+      })
+    },
+  )
+
+  it('offers watch-start recovery only when the server says naming the kind retries it', () => {
+    const failed = { ...entry('Certificate', 'kind_sync_failed', 'cert-manager.io'), retryWithKind: true }
+    expect(searchCoverageNote([failed], { query: 'renewal' })?.text).toBe("Couldn't read Certificate; matches of that kind may be missing. Search kind:Certificate to re-check.")
+    expect(searchCoverageNote([failed], { query: 'kind:Certificate renewal' })?.text).toBe("Couldn't read Certificate; matches of that kind may be missing.")
+    expect(searchCoverageNote([entry('*', 'read_error')], {})?.text).toBe("Couldn't read some kinds; matches of those kinds may be missing.")
+    expect(searchCoverageNote([entry('Certificate', 'collector_unauthorized')], {})?.action).toBeUndefined()
+  })
+
+  it('uses the first recoverable kind as the example for a folded failure', () => {
+    const gaps = [entry('*', 'read_error', '', 4), entry('Certificate', 'read_error'), entry('Issuer', 'read_error')]
+    expect(searchCoverageNote(gaps, { query: 'renewal' })?.text).toBe("Couldn't read Certificate, Issuer and 4 more kinds; matches of those kinds may be missing. Search kind:Certificate to re-check.")
+  })
+
   it('says nothing for an older Radar or a complete search', () => {
     expect(searchCoverageNote(undefined, {})).toBeUndefined()
     expect(searchCoverageNote([], {})).toBeUndefined()
@@ -40,14 +72,14 @@ describe('searchCoverageNote', () => {
     expect(searchCoverageNote(pending, { pendingExhausted: true })?.text).toBe('Still loading — try again shortly.')
   })
 
-  it('ends loading that turns into a failure on the failure, with nothing to retry', () => {
+  it('does not offer a kind retry for a stalled watch', () => {
     const note = searchCoverageNote([entry('SpStall', 'kind_sync_failed', 'stall.sp-live.test')], {})
     expect(note).toEqual({ text: "Couldn't read SpStall; matches of that kind may be missing.", action: undefined })
   })
 
   it('names up to three failed kinds and counts the rest', () => {
     const failed = [entry('Certificate', 'kind_sync_failed'), entry('Issuer', 'read_error'), entry('*', 'read_error', '', 4)]
-    expect(searchCoverageNote(failed, {})?.text).toBe("Couldn't read Certificate, Issuer and 4 more kinds; matches of those kinds may be missing.")
+    expect(searchCoverageNote(failed, {})?.text).toBe("Couldn't read Certificate, Issuer and 4 more kinds; matches of those kinds may be missing. Search kind:Issuer to re-check.")
     expect(searchCoverageNote([entry('*', 'permission_check_failed')], {})?.text).toBe("Couldn't check your access to some kinds.")
   })
 

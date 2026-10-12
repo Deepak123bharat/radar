@@ -35,7 +35,7 @@ export interface OmnibarSearchResult {
 // own search response; the omnibar only renders the text and optional action.
 export interface OmnibarNote {
   text: string
-  action?: { label: string; onSelect: () => void }
+  action?: { label: string; suffix?: string; onSelect: () => void; keepOpen?: boolean }
 }
 
 // Health → dot color (summaryContext.health is the same vocabulary as the rest
@@ -91,6 +91,7 @@ function useDebounced<T>(value: T, ms: number): T {
 }
 
 export interface OmnibarHandle {
+  addModifier: (modifier: SearchModifier) => void
   focus: () => void
 }
 
@@ -192,7 +193,13 @@ export const Omnibar = forwardRef<OmnibarHandle, OmnibarProps>(function Omnibar(
   // whole top bar.
   const [anchor, setAnchor] = useState<{ centerX: number; top: number; width: number } | null>(null)
 
-  useImperativeHandle(ref, () => ({ focus: () => { inputRef.current?.focus(); inputRef.current?.select() } }), [])
+  useImperativeHandle(ref, () => ({
+    focus: () => { inputRef.current?.focus(); inputRef.current?.select() },
+    addModifier: (modifier) => {
+      setPills((prev) => prev.some((p) => p.key === modifier.key && p.value === modifier.value) ? prev : [...prev, modifier])
+      inputRef.current?.focus()
+    },
+  }), [])
 
   // Usage data: one count per opening, one per opening that searched. Never
   // the query itself.
@@ -494,7 +501,10 @@ export const Omnibar = forwardRef<OmnibarHandle, OmnibarProps>(function Omnibar(
                 </div>
                 {/* Above the rows: with a full page of hits a note below them
                     would sit under the fold. */}
-                {shownNote && <OmnibarNoteRow note={shownNote} onAction={(action) => { action.onSelect(); close() }} />}
+                {shownNote && <OmnibarNoteRow note={shownNote} onAction={(action) => {
+                  action.onSelect()
+                  if (!action.keepOpen) close()
+                }} />}
                 {isError ? (
                   <div className="flex items-center gap-2 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
                     <AlertTriangle className="w-3.5 h-3.5 shrink-0" /> Search is unavailable right now.
@@ -639,9 +649,13 @@ function OmnibarNoteRow({ note: { text, action }, onAction }: { note: OmnibarNot
       <span>
         {text}
         {action && (
-          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => onAction(action)} className="ml-1.5 text-[var(--color-brand)] hover:underline">
-            {action.label}
-          </button>
+          <>
+            {' '}
+            <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => onAction(action)} className="text-[var(--color-brand)] hover:underline">
+              {action.label}
+            </button>
+            {action.suffix}
+          </>
         )}
       </span>
     </div>

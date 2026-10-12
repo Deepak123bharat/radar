@@ -366,6 +366,9 @@ func TestDeferredKindsSeparateSetupFromFailure(t *testing.T) {
 			if got := reasonsOf(res); !reflect.DeepEqual(got, nonEmpty(tc.broad)) || len(p.warmed) != 0 {
 				t.Fatalf("broad: %+v warmed=%v", res.Unsearched, p.warmed)
 			}
+			if len(res.Unsearched) > 0 && res.Unsearched[0].RetryWithKind != (tc.code == "watch_start_failed") {
+				t.Fatalf("incorrect kind retry guidance: %+v", res.Unsearched)
+			}
 			res, _ = Search(context.Background(), p, Parse("kind:Widget"), Options{})
 			if res.Partial || len(p.warmed) != 1 {
 				t.Fatalf("named kind was not warmed: %+v warmed=%v", res.Unsearched, p.warmed)
@@ -395,5 +398,20 @@ func TestRateLimitedWarmIsPending(t *testing.T) {
 	err := fmt.Errorf("no access to widgets.example.io/v1: %w", fmt.Errorf("client rate limiter Wait returned an error: %w", fmt.Errorf("rate: Wait(n=1) would exceed context deadline")))
 	if got := listErrorReason(err); got != readreason.KindSyncPending {
 		t.Fatalf("rate-limited warm = %q, want kind_sync_pending", got)
+	}
+}
+
+func TestStalledWatchDoesNotOfferKindRetry(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	p := &fakeProvider{
+		kinds:        map[schema.GroupVersionResource]string{gvr: "Widget"},
+		namespaced:   map[schema.GroupVersionResource]bool{gvr: false},
+		observations: map[schema.GroupVersionResource]k8score.DynamicResourceObservation{gvr: {State: k8score.DynamicObservationSyncing, ReasonCode: "sync_stalled"}},
+	}
+	for _, query := range []string{"renewal", "kind:Widget renewal"} {
+		res, _ := Search(context.Background(), p, Parse(query), Options{})
+		if len(res.Unsearched) != 1 || res.Unsearched[0].Reason != readreason.KindSyncFailed || res.Unsearched[0].RetryWithKind || len(p.warmed) != 0 {
+			t.Fatalf("%s: %+v warm=%v", query, res.Unsearched, p.warmed)
+		}
 	}
 }

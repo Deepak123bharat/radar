@@ -555,7 +555,7 @@ of typed kinds are skipped, so `kind:Event` does not duplicate core Events throu
 Events are excluded from broad searches.
 
 Every response includes `partial` and an `unsearched` array of
-`{kind, group, reason, namespaces?, count?}`. Core resources use `group: ""`.
+`{kind, group, reason, namespaces?, count?, retryWithKind?}`. Core resources use `group: ""`.
 
 **`partial: true` means this result can't rule out a match for what you asked:
 something was loading or failed, or a kind or namespace you named couldn't be
@@ -634,7 +634,13 @@ rejecting Radar's credentials (401) is reported as `collector_access_denied`, no
 `collector_unauthorized`: the collector's permission probes don't keep 401 apart from
 403.
 
-On MCP, a partial result also carries `coverageHint`: one sentence per reason present,
+A failed dynamic watch start carries `retryWithKind: true`: an explicit `kind:`
+search can retry starting that watch. Stalled watches and failed typed informers
+omit it because naming the kind cannot restart them. On a broad search, read-error
+hints and retryable watch-start hints suggest a `kind:` search to re-check; a search
+that already names the kind reports the failure without suggesting the same query.
+
+On MCP, a partial result also carries `coverageHint`: an explanation per reason present,
 most actionable first (a typo, an unsearchable kind, a failing filter, loading), at
 most three sentences and then `+N more reasons.`. It is present whenever `partial` is
 true, whether or not the hit limit added a `narrowHint`, and REST never carries it.
