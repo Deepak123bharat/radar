@@ -5117,6 +5117,7 @@ func (s *Server) writeTimelineStoreUnavailable(w http.ResponseWriter) {
 // writeTimelineQueryError answers a timeline query that failed.
 func (s *Server) writeTimelineQueryError(w http.ResponseWriter, err error) {
 	if timeline.DatabaseUnreachable(err) {
+		timeline.NoteDatabaseError(timeline.GetStore(), err)
 		s.writeTimelineDatabaseUnreachable(w, err.Error())
 		return
 	}
@@ -5139,14 +5140,14 @@ func (s *Server) writeTimelineQueryError(w http.ResponseWriter, err error) {
 const timelineQueryPingTimeout = 2 * time.Second
 
 // writeTimelineDatabaseUnreachable is the one answer for a PostgreSQL database
-// Radar can't reach, whether it never answered at startup or went away later,
+// Radar can't connect to, whether it never answered at startup or went away later,
 // so the page says the same thing in both cases. `detail` is the driver's error
 // with the password already redacted, for the operator to act on.
 func (s *Server) writeTimelineDatabaseUnreachable(w http.ResponseWriter, detail string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusServiceUnavailable)
 	payload := map[string]string{
-		"error":      "Timeline history is unavailable because Radar can't reach its PostgreSQL database. Radar keeps retrying in the background.",
+		"error":      "Timeline history is unavailable because Radar can't connect to its PostgreSQL database. Radar keeps retrying. Its logs have the details: search them for [timeline].",
 		"error_code": "timeline_database_unreachable",
 		"detail":     detail,
 	}

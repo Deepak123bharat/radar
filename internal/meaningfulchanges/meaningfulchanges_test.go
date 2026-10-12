@@ -1585,7 +1585,7 @@ func TestRecentNamesTheUnreachableDatabase(t *testing.T) {
 	}
 
 	_, err := Recent(context.Background(), Query{Since: DefaultSince, Limit: 5})
-	if err == nil || !strings.Contains(err.Error(), "can't reach its PostgreSQL database") || !strings.Contains(err.Error(), "127.0.0.1") {
+	if err == nil || !strings.Contains(err.Error(), "can't connect to its PostgreSQL database") || !strings.Contains(err.Error(), "127.0.0.1") {
 		t.Fatalf("err = %v, want the database named with the driver's error", err)
 	}
 }

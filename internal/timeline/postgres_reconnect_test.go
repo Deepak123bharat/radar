@@ -31,7 +31,9 @@ func setPostgresReconnectForTest(t *testing.T, dial func(StoreConfig) (*Postgres
 
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	// Opening a real store runs migrations, which can take seconds on a busy
+	// machine; a passing run returns as soon as cond holds.
+	deadline := time.Now().Add(15 * time.Second)
 	for !cond() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
@@ -89,9 +91,9 @@ func TestReconnectWorkerInstallsTheStoreOnceTheDatabaseAnswers(t *testing.T) {
 	if attempts.Load() < 3 {
 		t.Fatalf("store appeared after %d attempts; the worker did not retry", attempts.Load())
 	}
-	if TimelineUnavailableReason() != "" {
-		t.Fatalf("reason lingered after recovery: %s", TimelineUnavailableReason())
-	}
+	// The reason is cleared just after the store is published, so give it the
+	// same wait rather than reading it the instant the store appears.
+	waitFor(t, "the reason to clear after recovery", func() bool { return TimelineUnavailableReason() == "" })
 	if ObservationStart().IsZero() {
 		t.Fatal("observation window never opened after recovery")
 	}

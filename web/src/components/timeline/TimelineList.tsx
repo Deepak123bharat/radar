@@ -1,6 +1,5 @@
 import { useState, useCallback, useMemo } from 'react'
 import {
-  SEVERITY_TEXT,
   TimelineList as TimelineListUI,
   eventsForApplication,
   isTimelineProblem,
@@ -15,8 +14,7 @@ import { useTimelineSource } from '../../context/TimelineSource'
 import { isManagedTimelineEvent } from '../../api/timelineSource'
 import { useHasLimitedAccess } from '../../contexts/CapabilitiesContext'
 import type { NavigateToResource } from '../../utils/navigation'
-import { AlertTriangle } from 'lucide-react'
-import { TimelineLoadError } from './TimelineLoadError'
+import { TimelineLoadError, TimelineStaleNote } from './TimelineLoadError'
 import { useStickyError } from './useStickyError'
 import { ViewModeToggle } from './ViewModeToggle'
 
@@ -170,13 +168,7 @@ export function TimelineList({ namespaces, onViewChange, currentView, onResource
   // view-level banner already reports the shared failure, and a second note
   // would double up.
   const staleNote = isError && fetchedEvents && !selectionWindow ? (
-    <div className="flex items-center gap-1.5 border-b border-theme-border px-4 py-1.5 text-xs text-theme-text-tertiary">
-      <AlertTriangle className={`h-3.5 w-3.5 shrink-0 ${SEVERITY_TEXT.warning}`} />
-      Live updates are failing — the list may be stale.
-      <button type="button" onClick={() => refetch()} className="underline hover:text-theme-text-primary">
-        Retry now
-      </button>
-    </div>
+    <TimelineStaleNote error={error} subject="list" onRetry={() => refetch()} />
   ) : null
 
   return (

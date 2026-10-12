@@ -287,7 +287,7 @@ export function isKindSyncFailed(error: unknown): boolean {
 }
 
 // timelineDatabaseError returns the driver's error when a timeline read failed
-// because Radar can't reach its PostgreSQL database, and null for any other
+// because Radar can't connect to its PostgreSQL database, and null for any other
 // failure. The server redacts the password before it sends the error.
 export function timelineDatabaseError(error: unknown): string | null {
   if (

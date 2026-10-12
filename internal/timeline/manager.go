@@ -334,6 +334,10 @@ func ResetStore() {
 	defer globalStoreInitMu.Unlock()
 
 	stopPostgresReconnect()
+	// Again once the store is cleared: a write failing against the old store
+	// between the two can start a watch on it. Deferred so it runs after the
+	// unlock below, keeping the watch's lock ahead of the store's.
+	defer stopPostgresOutageWatch()
 
 	globalStoreMu.Lock()
 	defer globalStoreMu.Unlock()
@@ -361,7 +365,9 @@ func RecordEvent(ctx context.Context, event TimelineEvent) error {
 	if store == nil {
 		return fmt.Errorf("event store not initialized")
 	}
-	return store.Append(ctx, event)
+	err := store.Append(ctx, event)
+	NoteDatabaseError(store, err)
+	return err
 }
 
 // RecordEvents is a convenience function to record multiple events to the global store
@@ -370,7 +376,9 @@ func RecordEvents(ctx context.Context, events []TimelineEvent) error {
 	if store == nil {
 		return fmt.Errorf("event store not initialized")
 	}
-	return store.AppendBatch(ctx, events)
+	err := store.AppendBatch(ctx, events)
+	NoteDatabaseError(store, err)
+	return err
 }
 
 // QueryEvents is a convenience function to query events from the global store

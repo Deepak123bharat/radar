@@ -21,7 +21,7 @@ import {
   useDebouncedValue,
 } from '@skyhook-io/k8s-ui'
 import { TimelineList } from './TimelineList'
-import { TimelineLoadError } from './TimelineLoadError'
+import { TimelineLoadError, TimelineStaleNote } from './TimelineLoadError'
 import { ViewModeToggle } from './ViewModeToggle'
 import { useStickyError } from './useStickyError'
 import type { ActivityFilterKey } from './TimelineList'
@@ -867,13 +867,7 @@ export function TimelineView({ namespaces, onResourceClick, initialViewMode, ini
         {/* Failing background polls with a loaded ring: keep the data, say
             it's going stale. The full-screen error is reserved for no-data. */}
         {isError && activity && (
-          <div className="flex items-center gap-1.5 border-b border-theme-border px-4 py-1.5 text-xs text-theme-text-tertiary">
-            <AlertTriangle className={`h-3.5 w-3.5 shrink-0 ${SEVERITY_TEXT.warning}`} />
-            Live updates are failing — the timeline may be stale.
-            <button type="button" onClick={() => refetch()} className="underline hover:text-theme-text-primary">
-              Retry now
-            </button>
-          </div>
+          <TimelineStaleNote error={error} subject="timeline" onRetry={() => refetch()} />
         )}
         {isRetained ? (
           <RetainedTimelineScrubber

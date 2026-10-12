@@ -49,23 +49,26 @@ func dialPostgres(cfg StoreConfig) (*PostgresStore, error) {
 	return NewPostgresStore(cfg.DSN)
 }
 
-// recordPostgresUnavailable notes why the timeline has no store.
-func recordPostgresUnavailable(err error) {
+// recordPostgresUnavailable notes why the timeline has no store. The log line
+// is what the timeline page points operators to, so it names the outcome, the
+// database, the next attempt and the error. The database is named separately
+// because a migration or permission error does not name it.
+func recordPostgresUnavailable(err error, target string, retryIn time.Duration) {
 	postgresUnavailableReason.Store(err.Error())
-	log.Printf("[timeline] PostgreSQL timeline unavailable, cluster views are unaffected: %v", err)
+	log.Printf("[timeline] can't connect to PostgreSQL (%s); the timeline is not recording changes and the rest of Radar is unaffected. Retrying in %s: %v", target, retryIn, err)
 }
 
 // recordWorkerUnavailable records a worker's failed attempt. A retired worker
 // must not overwrite the reason: its failure describes a connection nobody is
 // waiting on any more. The ownership check and the write share the lock that
 // stopPostgresReconnect takes, so a reset cannot land between them.
-func recordWorkerUnavailable(err error, quit chan struct{}) {
+func recordWorkerUnavailable(err error, target string, retryIn time.Duration, quit chan struct{}) {
 	postgresReconnectMu.Lock()
 	defer postgresReconnectMu.Unlock()
 	if postgresReconnectQuit != quit {
 		return
 	}
-	recordPostgresUnavailable(err)
+	recordPostgresUnavailable(err, target, retryIn)
 }
 
 // installPostgresStore publishes an opened store. The first attempt and every
@@ -80,9 +83,13 @@ func installPostgresStore(store *PostgresStore, cfg StoreConfig) {
 	// would claim coverage for the window the store was down. It is set before
 	// the store is published so no reader sees a store without its epoch.
 	observationStartNanos.Store(time.Now().UnixNano())
+	wasUnavailable := TimelineUnavailableReason() != ""
 	setGlobalStore(store)
-	forgetDeletedWhileUnavailable(store)
 	postgresUnavailableReason.Store("")
+	forgetDeletedWhileUnavailable(store)
+	if wasUnavailable {
+		log.Printf("[timeline] connected to PostgreSQL (%s); the timeline is recording changes. Changes made while it was unavailable were not recorded", store.target)
+	}
 	if cfg.RetentionAge > 0 {
 		store.StartCleanupLoop(cfg.RetentionAge, time.Hour, 0)
 		log.Printf("Initialized PostgreSQL timeline store (retention: %s)", cfg.RetentionAge)
@@ -96,7 +103,7 @@ func installPostgresStore(store *PostgresStore, cfg StoreConfig) {
 func openPostgresStore(cfg StoreConfig) bool {
 	store, err := dialPostgres(cfg)
 	if err != nil {
-		recordPostgresUnavailable(err)
+		recordPostgresUnavailable(err, postgresTarget(cfg.DSN), postgresReconnectInitialInterval)
 		return false
 	}
 	installPostgresStore(store, cfg)
@@ -129,8 +136,8 @@ func startPostgresReconnect(cfg StoreConfig) {
 
 			store, err := dial(cfg)
 			if err != nil {
-				recordWorkerUnavailable(err, quit)
 				interval = min(interval*2, maxInterval)
+				recordWorkerUnavailable(err, postgresTarget(cfg.DSN), interval, quit)
 				continue
 			}
 			// Claim and install under one lock. A ResetStore landing between the
@@ -163,6 +170,7 @@ func stopPostgresReconnect() {
 	}
 	postgresUnavailableReason.Store("")
 	takeDeletedWhileUnavailable()
+	stopPostgresOutageWatch()
 }
 
 // TimelineUnavailableReason reports why no timeline store is installed, or an
@@ -190,6 +198,9 @@ func Unavailable(ctx context.Context) error {
 		return nil
 	}
 	err := pg.Ping(ctx)
+	// The alerting metric and diagnostics check through here, often with no
+	// timeline traffic at all, so a failure here starts the outage log too.
+	NoteDatabaseError(pg, err)
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("PostgreSQL did not answer in time: %w", err)
 	}
@@ -254,4 +265,123 @@ func forgetDeletedWhileUnavailable(store *PostgresStore) {
 	if err := store.forgetSeen(ctx, keys); err != nil {
 		log.Printf("[timeline] failed to clear seen marks for %d resource(s) deleted while PostgreSQL was unreachable: %v", len(keys), err)
 	}
+}
+
+// postgresOutageCheckInterval is how often a store that lost its database is
+// pinged until it answers. A variable so tests need not wait.
+var postgresOutageCheckInterval = 5 * time.Second
+
+var (
+	// The store being watched after it lost its database, and the channel that
+	// stops the watch. Both nil when there is no outage.
+	postgresOutageMu    sync.Mutex
+	postgresOutageStore *PostgresStore
+	postgresOutageQuit  chan struct{}
+)
+
+// NoteDatabaseError reports a failed read or write against the installed
+// store. When the failure means PostgreSQL went away after a good start, it
+// logs the outage once and watches the database until it answers, then logs
+// the recovery. The timeline page sends operators to these lines, so they have
+// to appear even on a quiet cluster where nothing else touches the database.
+// A query the server rejected is not an outage and is ignored. Anything else
+// is confirmed with a ping first: one dropped pooled connection, or one slow
+// query, is not an outage either.
+func NoteDatabaseError(store EventStore, err error) {
+	pg, ok := store.(*PostgresStore)
+	if !ok || err == nil {
+		return
+	}
+	if !DatabaseUnreachable(err) && !errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+
+	postgresOutageMu.Lock()
+	if postgresOutageStore != nil || GetStore() != store {
+		postgresOutageMu.Unlock()
+		return
+	}
+	quit := make(chan struct{})
+	postgresOutageStore, postgresOutageQuit = pg, quit
+	interval := postgresOutageCheckInterval
+	postgresOutageMu.Unlock()
+
+	go watchPostgresOutage(pg, err, interval, quit)
+}
+
+func watchPostgresOutage(pg *PostgresStore, cause error, interval time.Duration, quit chan struct{}) {
+	ping := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), postgresPingTimeout)
+		defer cancel()
+		return pg.Ping(ctx)
+	}
+	if ping() == nil {
+		endPostgresOutage(quit, "")
+		return
+	}
+	since := time.Now()
+	if !logIfStillWatching(pg, quit, fmt.Sprintf("[timeline] lost the connection to PostgreSQL (%s); the timeline is not recording changes, and the rest of Radar is unaffected. Checking again in %s, and until it answers: %v",
+		pg.target, interval, cause)) {
+		return
+	}
+	for {
+		select {
+		case <-quit:
+			return
+		case <-time.After(interval):
+		}
+		// A store closed by a context switch is not coming back.
+		if GetStore() != EventStore(pg) {
+			endPostgresOutage(quit, "")
+			return
+		}
+		if ping() == nil {
+			endPostgresOutage(quit, fmt.Sprintf("[timeline] PostgreSQL (%s) is answering again after %s; the timeline is recording changes again. Changes made in between were not recorded",
+				pg.target, time.Since(since).Round(time.Second)))
+			return
+		}
+	}
+}
+
+// logIfStillWatching logs line only if this watch has not been stopped and its
+// store is still the installed one, checked under the lock that
+// stopPostgresOutageWatch takes, so a context switch cannot slip between the
+// check and the line. It reports whether the watch should go on.
+func logIfStillWatching(pg *PostgresStore, quit chan struct{}, line string) bool {
+	postgresOutageMu.Lock()
+	defer postgresOutageMu.Unlock()
+	if postgresOutageQuit != quit {
+		return false
+	}
+	if GetStore() != EventStore(pg) {
+		postgresOutageStore, postgresOutageQuit = nil, nil
+		return false
+	}
+	log.Print(line)
+	return true
+}
+
+// endPostgresOutage clears the watch if it is still this one's, and logs line
+// when it is not empty.
+func endPostgresOutage(quit chan struct{}, line string) {
+	postgresOutageMu.Lock()
+	defer postgresOutageMu.Unlock()
+	if postgresOutageQuit != quit {
+		return
+	}
+	postgresOutageStore, postgresOutageQuit = nil, nil
+	if line != "" {
+		log.Print(line)
+	}
+}
+
+// stopPostgresOutageWatch ends any watch without logging a recovery: the
+// store it watched is being replaced.
+func stopPostgresOutageWatch() {
+	postgresOutageMu.Lock()
+	defer postgresOutageMu.Unlock()
+	if postgresOutageQuit != nil {
+		close(postgresOutageQuit)
+	}
+	postgresOutageStore, postgresOutageQuit = nil, nil
 }

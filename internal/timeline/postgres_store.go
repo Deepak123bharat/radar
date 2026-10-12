@@ -97,6 +97,10 @@ var postgresMigrations embed.FS
 
 type PostgresStore struct {
 	db *sql.DB
+	// target names the database for log lines, without the password: a
+	// connection dropped mid-run fails with a bare EOF or timeout that does
+	// not say which database it was.
+	target string
 
 	seenResources map[string]bool
 	seenMu        sync.RWMutex
@@ -167,6 +171,7 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 
 	store := &PostgresStore{
 		db:            db,
+		target:        postgresTarget(dsn),
 		seenResources: make(map[string]bool),
 		filterCache:   make(map[string]*CompiledFilter),
 		seenWrites:    make(chan seenResourceWrite, seenWriteQueueDepth),
@@ -1446,6 +1451,16 @@ func DatabaseUnreachable(err error) bool {
 // unreachable database from an empty one, so diagnostics asks this first.
 func (s *PostgresStore) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
+}
+
+// postgresTarget describes the database a DSN points at, leaving out the
+// password.
+func postgresTarget(dsn string) string {
+	config, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		return "the configured database"
+	}
+	return fmt.Sprintf("host=%s port=%d database=%s user=%s", config.Host, config.Port, config.Database, config.User)
 }
 
 func postgresConnectionError(operation string, err error, dsn string) error {

@@ -1,12 +1,16 @@
 package timeline
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/url"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -286,6 +290,7 @@ func TestDeleteNotedAfterTheReconnectStillClearsItsMark(t *testing.T) {
 		t.Fatalf("NewPostgresStore: %v", err)
 	}
 	installPostgresStore(reconnected, StoreConfig{})
+	t.Cleanup(ResetStore) // before the test schema is dropped
 	NoteDeletedWhileUnavailable("ctx", "apps", "Deployment", "shop", "late")
 
 	if reconnected.IsResourceSeen("ctx", "apps", "Deployment", "shop", "late") {
@@ -325,6 +330,9 @@ func TestStalledQueryTimesOutAndTheCheckReportsTheOutage(t *testing.T) {
 		t.Fatalf("NewPostgresStore: %v", err)
 	}
 	installPostgresStore(store, StoreConfig{})
+	// Registered after the test database's own cleanup, so it runs first: the
+	// schema can't be dropped while this store is still building indexes.
+	t.Cleanup(ResetStore)
 
 	proxy.stall()
 
@@ -338,5 +346,204 @@ func TestStalledQueryTimesOutAndTheCheckReportsTheOutage(t *testing.T) {
 	defer cancel()
 	if Unavailable(ctx) == nil {
 		t.Fatal("availability check passed with the database not answering")
+	}
+}
+
+// syncBuffer is a log sink the outage watcher's goroutine can write to while
+// the test reads it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func captureLog(t *testing.T) *syncBuffer {
+	t.Helper()
+	out := &syncBuffer{}
+	log.SetOutput(out)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	return out
+}
+
+func waitForLog(t *testing.T, out *syncBuffer, want string) {
+	t.Helper()
+	deadline := time.Now().Add(15 * time.Second)
+	for !strings.Contains(out.String(), want) {
+		if time.Now().After(deadline) {
+			t.Fatalf("log never contained %q:\n%s", want, out.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// The timeline page sends operators to the logs. A database that goes away
+// after a good start has to show there once when it is lost, naming the
+// database, and once when it answers again, even if nothing else writes in
+// between.
+func TestRuntimeOutageIsLoggedWithTheDatabaseAndItsRecovery(t *testing.T) {
+	ResetStore()
+	t.Cleanup(ResetStore)
+	prevInterval := postgresOutageCheckInterval
+	postgresOutageCheckInterval = 100 * time.Millisecond
+	t.Cleanup(func() { postgresOutageCheckInterval = prevInterval })
+
+	dsn, err := url.Parse(testPostgresDSN(t))
+	if err != nil {
+		t.Fatalf("parse DSN: %v", err)
+	}
+	proxy := startDBProxy(t, dsn.Host)
+	dsn.Host = proxy.addr
+	q := dsn.Query()
+	q.Set("connect_timeout", "2")
+	dsn.RawQuery = q.Encode()
+	store, err := NewPostgresStore(dsn.String())
+	if err != nil {
+		t.Fatalf("NewPostgresStore: %v", err)
+	}
+	installPostgresStore(store, StoreConfig{})
+	// Registered after the test database's own cleanup, so it runs first: the
+	// schema can't be dropped while this store is still building indexes.
+	t.Cleanup(ResetStore)
+	out := captureLog(t)
+
+	proxy.down()
+	event := TimelineEvent{ID: "lost", Timestamp: time.Now().UTC(), Source: SourceInformer, Kind: "Deployment", Namespace: "default", Name: "web", EventType: EventTypeUpdate}
+	for range 3 {
+		if err := RecordEvent(t.Context(), event); err == nil {
+			t.Fatal("RecordEvent succeeded with the database gone")
+		}
+	}
+	waitForLog(t, out, "[timeline] lost the connection to PostgreSQL (host=127.0.0.1 port=")
+	for _, want := range []string{"database=radar user=radar", "Checking again in 100ms", "connection refused"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("outage line lacks %q:\n%s", want, out.String())
+		}
+	}
+	if n := strings.Count(out.String(), "lost the connection"); n != 1 {
+		t.Fatalf("outage logged %d times, want 1:\n%s", n, out.String())
+	}
+	// The test password matches the user name, so look for it the way a DSN
+	// carries it rather than on its own.
+	if pw, ok := dsn.User.Password(); ok && (strings.Contains(out.String(), ":"+pw+"@") || strings.Contains(out.String(), "password=")) {
+		t.Fatalf("log carries the database password:\n%s", out.String())
+	}
+
+	proxy.up(proxy.addr)
+	waitForLog(t, out, "[timeline] PostgreSQL (host=127.0.0.1 port=")
+	if !strings.Contains(out.String(), "is answering again after") {
+		t.Fatalf("recovery line missing:\n%s", out.String())
+	}
+}
+
+// The alerting metric and diagnostics check the database with no timeline
+// traffic at all. When one of those checks finds it gone, the logs have to say
+// so too, or an alert sends the operator to logs with nothing in them.
+func TestOutageFoundByTheHealthCheckIsLogged(t *testing.T) {
+	ResetStore()
+	t.Cleanup(ResetStore)
+	prevInterval := postgresOutageCheckInterval
+	postgresOutageCheckInterval = 100 * time.Millisecond
+	t.Cleanup(func() { postgresOutageCheckInterval = prevInterval })
+
+	dsn, err := url.Parse(testPostgresDSN(t))
+	if err != nil {
+		t.Fatalf("parse DSN: %v", err)
+	}
+	proxy := startDBProxy(t, dsn.Host)
+	dsn.Host = proxy.addr
+	q := dsn.Query()
+	q.Set("connect_timeout", "2")
+	dsn.RawQuery = q.Encode()
+	store, err := NewPostgresStore(dsn.String())
+	if err != nil {
+		t.Fatalf("NewPostgresStore: %v", err)
+	}
+	installPostgresStore(store, StoreConfig{})
+	// Registered after the test database's own cleanup, so it runs first: the
+	// schema can't be dropped while this store is still building indexes.
+	t.Cleanup(ResetStore)
+	out := captureLog(t)
+
+	proxy.down()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	err = Unavailable(ctx)
+	cancel()
+	if err == nil {
+		t.Fatal("Unavailable reported a working timeline with the database gone")
+	}
+	waitForLog(t, out, "[timeline] lost the connection to PostgreSQL")
+
+	proxy.up(proxy.addr)
+	waitForLog(t, out, "is answering again after")
+}
+
+// A query the server rejected is not an outage, and neither is a timeout or a
+// dropped pooled connection when the database still answers a ping.
+func TestRejectedQueriesAndOneOffFailuresAreNotLoggedAsAnOutage(t *testing.T) {
+	ResetStore()
+	t.Cleanup(ResetStore)
+	store, err := NewPostgresStore(testPostgresDSN(t))
+	if err != nil {
+		t.Fatalf("NewPostgresStore: %v", err)
+	}
+	installPostgresStore(store, StoreConfig{})
+	// Registered after the test database's own cleanup, so it runs first: the
+	// schema can't be dropped while this store is still building indexes.
+	t.Cleanup(ResetStore)
+	out := captureLog(t)
+
+	for _, failure := range []error{
+		&pgconn.PgError{Code: "23505"},
+		fmt.Errorf("query: %w", context.DeadlineExceeded),
+		fmt.Errorf("query: %w", io.ErrUnexpectedEOF),
+	} {
+		NoteDatabaseError(store, failure)
+		deadline := time.Now().Add(15 * time.Second)
+		for {
+			postgresOutageMu.Lock()
+			watching := postgresOutageStore != nil
+			postgresOutageMu.Unlock()
+			if !watching {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the check after %v never finished", failure)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if strings.Contains(out.String(), "lost the connection") {
+			t.Fatalf("%v with a healthy database was logged as an outage:\n%s", failure, out.String())
+		}
+	}
+}
+
+// At startup the log line is the operator's lead: it says what is off, when the
+// next attempt is, and which database failed, without the password.
+func TestStartupOutageLogNamesTheDatabaseAndTheNextAttempt(t *testing.T) {
+	ResetStore()
+	t.Cleanup(ResetStore)
+	out := captureLog(t)
+	if err := InitStore(StoreConfig{Type: StoreTypePostgres, DSN: "postgres://radar:s3cret-pw@127.0.0.1:1/radar?connect_timeout=2"}); err != nil {
+		t.Fatalf("InitStore: %v", err)
+	}
+	line := out.String()
+	for _, want := range []string{"[timeline] can't connect to PostgreSQL (host=127.0.0.1 port=1 database=radar user=radar)", "Retrying in 5s", "connect"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("startup log lacks %q:\n%s", want, line)
+		}
+	}
+	if strings.Contains(line, "s3cret-pw") {
+		t.Fatalf("startup log carries the password:\n%s", line)
 	}
 }
