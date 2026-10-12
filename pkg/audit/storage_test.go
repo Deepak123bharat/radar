@@ -131,6 +131,100 @@ func TestPVCNoConsumer(t *testing.T) {
 	}
 }
 
+func TestPVCUnusedCondition(t *testing.T) {
+	now := time.Date(2026, time.October, 12, 12, 0, 0, 0, time.UTC)
+	recent := metav1.NewTime(now.Add(-2 * time.Hour))
+	old := metav1.NewTime(now.Add(-10 * 24 * time.Hour))
+	evidence := "No non-terminal Pod has referenced it for at least 10d (Unused condition since 2026-10-02T12:00:00Z)."
+	for _, tc := range []struct {
+		name              string
+		status            corev1.ConditionStatus
+		since             metav1.Time
+		change            func(*CheckInput)
+		evaluated, passed int
+		finding           bool
+		evidence          string
+		missingConsumers  bool
+	}{
+		{name: "False without observed consumer", status: corev1.ConditionFalse, since: recent, evaluated: 1, passed: 1},
+		{name: "False with unreadable Pods", status: corev1.ConditionFalse, change: func(i *CheckInput) { i.Pods = nil }, evaluated: 1, passed: 1},
+		{name: "False with unknown coverage", status: corev1.ConditionFalse, change: func(i *CheckInput) { i.PVCConsumerNamespaces = nil }, evaluated: 1, passed: 1},
+		{name: "True recently unused", status: corev1.ConditionTrue, since: recent},
+		{name: "True at age floor", status: corev1.ConditionTrue, since: metav1.NewTime(now.Add(-24 * time.Hour))},
+		{name: "True just past age floor", status: corev1.ConditionTrue, since: metav1.NewTime(now.Add(-24*time.Hour - time.Second)), evaluated: 1, finding: true, evidence: "No non-terminal Pod has referenced it for at least 1d (Unused condition since 2026-10-11T11:59:59Z)."},
+		{name: "True future transition", status: corev1.ConditionTrue, since: metav1.NewTime(now.Add(time.Hour))},
+		{name: "True with unknown coverage during grace", status: corev1.ConditionTrue, since: recent, change: func(i *CheckInput) { i.PVCConsumerNamespaces = nil }},
+		{name: "True unused for ten days", status: corev1.ConditionTrue, since: old, evaluated: 1, finding: true, evidence: evidence},
+		{name: "True uses transition instead of creation", status: corev1.ConditionTrue, since: old, change: func(i *CheckInput) {
+			i.PersistentVolumeClaims[0].CreationTimestamp = recent
+		}, evaluated: 1, finding: true, evidence: evidence},
+		{name: "True zero transition", status: corev1.ConditionTrue, evaluated: 1, finding: true},
+		{name: "True zero transition on young claim", status: corev1.ConditionTrue, change: func(i *CheckInput) {
+			i.PersistentVolumeClaims[0].CreationTimestamp = recent
+		}},
+		{name: "True with zero replica StatefulSet template", status: corev1.ConditionTrue, since: old, change: func(i *CheckInput) {
+			i.StatefulSets = []*appsv1.StatefulSet{{ObjectMeta: metav1.ObjectMeta{Namespace: "app", Name: "db"}, Spec: appsv1.StatefulSetSpec{Replicas: ptr(int32(0)), VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{ObjectMeta: metav1.ObjectMeta{Name: "data"}}}}}}
+		}, evaluated: 1, passed: 1},
+		{name: "True with observed Pod", status: corev1.ConditionTrue, since: old, change: func(i *CheckInput) {
+			i.Pods = []*corev1.Pod{{ObjectMeta: metav1.ObjectMeta{Namespace: "app"}, Spec: pvcPodSpec("data-db-0")}}
+		}, evaluated: 1, passed: 1},
+		{name: "True with unknown coverage", status: corev1.ConditionTrue, since: old, change: func(i *CheckInput) { i.PVCConsumerNamespaces = nil }, missingConsumers: true},
+		{name: "absent", evaluated: 1, finding: true},
+		{name: "Unknown", status: corev1.ConditionUnknown, since: recent, evaluated: 1, finding: true},
+		{name: "unrelated False condition", change: func(i *CheckInput) {
+			i.PersistentVolumeClaims[0].Status.Conditions = []corev1.PersistentVolumeClaimCondition{{Type: corev1.PersistentVolumeClaimResizing, Status: corev1.ConditionFalse}}
+		}, evaluated: 1, finding: true},
+		{name: "unrelated condition before Unused", status: corev1.ConditionFalse, change: func(i *CheckInput) {
+			pvc := i.PersistentVolumeClaims[0]
+			pvc.Status.Conditions = append([]corev1.PersistentVolumeClaimCondition{{Type: corev1.PersistentVolumeClaimResizing, Status: corev1.ConditionTrue}}, pvc.Status.Conditions...)
+		}, evaluated: 1, passed: 1},
+		{name: "Pending ignores False", status: corev1.ConditionFalse, change: func(i *CheckInput) { i.PersistentVolumeClaims[0].Status.Phase = corev1.ClaimPending }, evaluated: 1, finding: true},
+		{name: "Pending ignores recent True", status: corev1.ConditionTrue, since: recent, change: func(i *CheckInput) { i.PersistentVolumeClaims[0].Status.Phase = corev1.ClaimPending }, evaluated: 1, finding: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			i := storageInput()
+			pvc := i.PersistentVolumeClaims[0]
+			pvc.CreationTimestamp = metav1.NewTime(now.Add(-30 * 24 * time.Hour))
+			if tc.status != "" {
+				pvc.Status.Conditions = []corev1.PersistentVolumeClaimCondition{{Type: corev1.PersistentVolumeClaimUnused, Status: tc.status, LastTransitionTime: tc.since}}
+			}
+			if tc.change != nil {
+				tc.change(i)
+			}
+			tr := newEvalTracker()
+			r := buildResults(checkStorage(tr, i, now), tr, nil)
+			checkID := "pvcNoConsumer"
+			if pvc.Status.Phase == corev1.ClaimPending {
+				checkID = "pvcLongPending"
+			}
+			if got := findingNames(r.Findings, checkID)[pvc.Name]; got != tc.finding {
+				t.Fatalf("finding=%v want=%v: %+v", got, tc.finding, r.Findings)
+			}
+			if count := r.CheckCounts[checkID]; count.Evaluated != tc.evaluated || count.Passed != tc.passed {
+				t.Fatalf("counts=%+v want evaluated=%d passed=%d", count, tc.evaluated, tc.passed)
+			}
+			if slices.Contains(r.MissingInputs, "pvc-consumers") != tc.missingConsumers {
+				t.Fatalf("missing consumer input=%v want=%v", r.MissingInputs, tc.missingConsumers)
+			}
+			for _, f := range r.Findings {
+				if f.CheckID != checkID {
+					continue
+				}
+				if tc.evidence != "" {
+					if !strings.Contains(f.Message, tc.evidence) {
+						t.Errorf("missing evidence %q in %q", tc.evidence, f.Message)
+					}
+				} else if strings.Contains(f.Message, "Unused condition") || strings.Contains(f.Message, "at least") {
+					t.Errorf("unexpected Unused evidence in %q", f.Message)
+				}
+				if !strings.Contains(f.Message, "No consumer observed") || !strings.Contains(f.Message, "CRD consumers or snapshot operations may still reference this claim.") {
+					t.Errorf("lost consumer caveat in %q", f.Message)
+				}
+			}
+		})
+	}
+}
+
 func TestPVCCloneConsumers(t *testing.T) {
 	now := time.Now()
 	for _, phase := range []corev1.PersistentVolumeClaimPhase{corev1.ClaimBound, corev1.ClaimPending} {

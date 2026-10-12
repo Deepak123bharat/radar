@@ -44,13 +44,35 @@ func checkStorage(tr *evalTracker, input *CheckInput, now time.Time) []Finding {
 	consumers := collectPVCConsumers(input)
 	var findings []Finding
 	for _, pvc := range input.PersistentVolumeClaims {
-		if pvc.DeletionTimestamp != nil || hasControllerOwnerReference(pvc.OwnerReferences) || pvc.CreationTimestamp.IsZero() || now.Sub(pvc.CreationTimestamp.Time) <= pvcReviewAge {
+		if pvc.DeletionTimestamp != nil || hasControllerOwnerReference(pvc.OwnerReferences) {
 			continue
 		}
 		if pvc.Status.Phase != corev1.ClaimBound && pvc.Status.Phase != corev1.ClaimPending {
 			continue
 		}
 		consumed := consumers[pvc.Namespace+"/"+pvc.Name]
+		reviewSince := pvc.CreationTimestamp
+		var unusedSince metav1.Time
+		if pvc.Status.Phase == corev1.ClaimBound {
+			for _, condition := range pvc.Status.Conditions {
+				if condition.Type != corev1.PersistentVolumeClaimUnused {
+					continue
+				}
+				switch condition.Status {
+				case corev1.ConditionFalse:
+					consumed = true
+				case corev1.ConditionTrue:
+					unusedSince = condition.LastTransitionTime
+					if !unusedSince.IsZero() {
+						reviewSince = unusedSince
+					}
+				}
+				break
+			}
+		}
+		if reviewSince.IsZero() || now.Sub(reviewSince.Time) <= pvcReviewAge {
+			continue
+		}
 		complete := consumerNamespaces[pvc.Namespace] && input.Pods != nil && input.Deployments != nil && input.ReplicaSets != nil && input.StatefulSets != nil && input.DaemonSets != nil && input.Jobs != nil && input.CronJobs != nil
 		if !consumed && !complete {
 			tr.skip("pvc-consumers")
@@ -65,6 +87,9 @@ func checkStorage(tr *evalTracker, input *CheckInput, now time.Time) []Finding {
 			}
 			checkID = "pvcNoConsumer"
 			message = "No consumer observed among Pods, built-in workload templates, or Pending clones Radar can see. CRD consumers or snapshot operations may still reference this claim."
+			if !unusedSince.IsZero() {
+				message += fmt.Sprintf(" No non-terminal Pod has referenced it for at least %s (Unused condition since %s).", timeutil.FormatAgeShort(now.Sub(unusedSince.Time)), unusedSince.UTC().Format(time.RFC3339))
+			}
 		case corev1.ClaimPending:
 			tr.record("pvcLongPending", pvc.Namespace)
 			if consumed {

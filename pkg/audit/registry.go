@@ -321,7 +321,7 @@ var CheckRegistry = map[string]CheckMeta{
 		ID:          "pvcNoConsumer",
 		Title:       "PVC with no consumer observed",
 		Category:    CategoryEfficiency,
-		Description: "A Bound claim older than 24 hours, without a controller owner, has no reference from the Pods, built-in workload templates, or Pending clones Radar can see. StatefulSet generated claims count even at zero replicas. CRD consumers, snapshot operations, and intentional retained data may still need this storage.",
+		Description: "A Bound claim without a controller owner has no reference from the Pods, built-in workload templates, or Pending clones Radar can see. Where Kubernetes reports the claim's Unused condition (1.37+), the 24 hours count from when it became unused, and a claim it reports in use is never flagged. StatefulSet generated claims count even at zero replicas. CRD consumers, snapshot operations, and intentional retained data may still need this storage.",
 		Remediation: "Confirm whether an operator, virtual machine, external consumer, or recovery plan still needs the data. Check the bound volume's reclaim policy and backups before deciding what to retain.",
 		References:  []Reference{refPV},
 	},
