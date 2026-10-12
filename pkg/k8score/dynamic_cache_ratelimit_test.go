@@ -56,14 +56,16 @@ func TestRateLimitedProbeIsNotAGrant(t *testing.T) {
 	}{
 		// Refused once at the candidate's own deadline, then answered from
 		// the walk's budget: the true answer wins.
-		{"answered on retry", map[string]int{"team-a": 1, "team-denied": 1}, []string{"team-a"}, true},
+		{"answered on retry", map[string]int{"team-a": 1, "team-denied": 1}, []string{"team-b", "team-a"}, true},
 		// Never answered: the namespace is left out and the walk retried later.
-		{"never answered", map[string]int{"team-a": 1, "team-denied": 100}, []string{"team-a"}, false},
+		{"never answered", map[string]int{"team-a": 1, "team-denied": 100}, []string{"team-b", "team-a"}, false},
+		// Every refused candidate gets its retry, not just the first.
+		{"all refused once", map[string]int{"team-a": 1, "team-b": 1, "team-denied": 1}, []string{"team-a", "team-b"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d, err := NewDynamicResourceCache(DynamicCacheConfig{
-				DynamicClient:      rateLimitedLists(gvr, []string{"team-a"}, tc.throttled),
-				NamespaceFallbacks: []string{"team-a", "team-denied"},
+				DynamicClient:      rateLimitedLists(gvr, []string{"team-a", "team-b"}, tc.throttled),
+				NamespaceFallbacks: []string{"team-a", "team-b", "team-denied"},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -102,5 +104,30 @@ func TestRateLimitedProbeStartsNoWatch(t *testing.T) {
 				t.Fatalf("rate-limited probe recorded as denial: %+v", got)
 			}
 		})
+	}
+}
+
+// A walk that granted nothing because some candidates never answered is not
+// a denial: it neither reports Forbidden (which a resource list would turn
+// into "you can't") nor records the kind as denied.
+func TestUnansweredWalkIsNotADenial(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	d, err := NewDynamicResourceCache(DynamicCacheConfig{
+		DynamicClient:      rateLimitedLists(gvr, []string{"team-a"}, map[string]int{"team-a": 100}),
+		NamespaceFallbacks: []string{"team-a", "team-denied"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(d.Stop)
+	err = d.EnsureWatchingContext(t.Context(), gvr, "")
+	if err == nil || apierrors.IsForbidden(err) || !IsClientRateLimited(err) {
+		t.Fatalf("unanswered walk returned %v", err)
+	}
+	if watched := d.GetWatchedResources(); len(watched) != 0 {
+		t.Fatalf("unanswered walk started a watch: %v", watched)
+	}
+	if got := d.Observation(gvr); got.State != DynamicObservationDeferred || got.ReasonCode != "scope_probe_incomplete" {
+		t.Fatalf("unanswered walk observation = %+v", got)
 	}
 }

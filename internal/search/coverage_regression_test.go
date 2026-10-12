@@ -231,18 +231,10 @@ func TestDynamicCollisionIgnoresTypedSkipKinds(t *testing.T) {
 func TestDynamicObservationReasonsAndRequestedScope(t *testing.T) {
 	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
 	p := &fakeProvider{kinds: map[schema.GroupVersionResource]string{gvr: "Widget"}, namespaced: map[schema.GroupVersionResource]bool{gvr: true}, observations: map[schema.GroupVersionResource]k8score.DynamicResourceObservation{}}
-	for _, tc := range []struct {
-		state        k8score.DynamicObservationState
-		code, reason string
-	}{
-		{k8score.DynamicObservationSyncing, "sync_stalled", "kind_sync_failed"},
-		{k8score.DynamicObservationDeferred, "scope_probe_incomplete", "kind_sync_pending"},
-	} {
-		p.observations[gvr] = k8score.DynamicResourceObservation{State: tc.state, ReasonCode: tc.code}
-		res, _ := Search(context.Background(), p, Parse("kind:Widget"), Options{})
-		if !res.Partial || len(res.Unsearched) != 1 || string(res.Unsearched[0].Reason) != tc.reason || len(p.warmed) != 0 {
-			t.Fatalf("reason %s: %+v", tc.code, res)
-		}
+	p.observations[gvr] = k8score.DynamicResourceObservation{State: k8score.DynamicObservationSyncing, ReasonCode: "sync_stalled"}
+	res, _ := Search(context.Background(), p, Parse("kind:Widget"), Options{})
+	if !res.Partial || len(res.Unsearched) != 1 || string(res.Unsearched[0].Reason) != "kind_sync_failed" || len(p.warmed) != 0 {
+		t.Fatalf("stalled sync: %+v", res)
 	}
 	p.warmError = fmt.Errorf("watch failed")
 	p.observations[gvr] = k8score.DynamicResourceObservation{State: k8score.DynamicObservationSynced, Scope: k8score.DynamicObservationScopeExplicitNamespaces, Namespaces: []string{"a"}, Truncated: true}
@@ -250,7 +242,7 @@ func TestDynamicObservationReasonsAndRequestedScope(t *testing.T) {
 		ns      []string
 		partial bool
 	}{{[]string{"a"}, false}, {[]string{"a", "b"}, true}, {nil, true}} {
-		res, _ := Search(context.Background(), p, Parse("kind:Widget"), Options{Namespaces: tc.ns})
+		res, _ = Search(context.Background(), p, Parse("kind:Widget"), Options{Namespaces: tc.ns})
 		if res.Partial != tc.partial {
 			t.Fatalf("namespace %v: %+v", tc.ns, res)
 		}

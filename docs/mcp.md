@@ -593,11 +593,13 @@ What gets reported follows from that:
   `unknown_kind`, beside a `*` `read_error` without a `count`: the kind may live in
   a group Radar couldn't discover. Broad searches don't report failed groups.
 - **A kind Radar doesn't watch yet is setup**, whether it was too large to watch
-  eagerly or its access or size probe went unanswered; a `kind:` term warms it and
-  reports what happens. Only a watch that was granted but couldn't start reports
+  eagerly or its access or size probe went unanswered or didn't finish; a `kind:`
+  term warms it, retrying the probe, and reports what happens. Only a watch that was granted but couldn't start reports
   `kind_sync_failed` on every search. A probe the client-side rate limiter refused
   never reached the API server, so it is neither a grant nor a denial: Radar never
-  watches a namespace on its strength.
+  watches a namespace on its strength, and a namespace its own credentials can't
+  list stays outside its collection (silent on broad searches,
+  `collector_scope_limited` when an `ns:` term names it).
 - **When your namespace access couldn't be determined**, namespaced kinds are not
   searched (fail closed) and the result reports `permission_check_failed` (per named
   kind, or one `*` entry), never `namespace_excluded`.

@@ -1,6 +1,7 @@
 package k8score
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -372,6 +373,8 @@ func (d *DynamicResourceCache) EnsureWatchingContext(ctx context.Context, gvr sc
 		if err != nil {
 			if isAuthProbeError(err) {
 				d.retainDeniedObservation(gvr, preferredNS, complete)
+			} else if errors.Is(err, errScopeProbeIncomplete) {
+				d.retainObservation(gvr, DynamicObservationDeferred, "scope_probe_incomplete", true)
 			}
 			return nil, fmt.Errorf("no access to %s.%s/%s: %w", gvr.Resource, gvr.Group, gvr.Version, err)
 		}
@@ -564,6 +567,10 @@ func IsClientRateLimited(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "client rate limiter Wait returned an error")
 }
 
+// errScopeProbeIncomplete marks a namespace walk that ended before every
+// candidate answered and granted none: not a denial, so not retained as one.
+var errScopeProbeIncomplete = errors.New("namespace access probe incomplete")
+
 // probeUnanswered reports a probe the API server never answered: it ran out
 // of time or the client-side rate limiter refused to send it. Either says
 // nothing about access, so it is neither a grant nor a denial.
@@ -665,43 +672,71 @@ func (d *DynamicResourceCache) probeScopes(gvr schema.GroupVersionResource, pref
 	}
 	granted := make([]string, 0, len(fallbacks))
 	complete = true
+	var unanswered error
+	// probe lists one candidate under its own deadline and records the
+	// answer. It reports whether the walk can go on, and the probe's error.
+	probe := func(ns string, deadline time.Duration) (bool, error) {
+		// Per-candidate sub-deadline: without it a single consistently slow
+		// namespace eats the whole walk budget on every retry, and since
+		// retries restart from the first candidate, later namespaces would
+		// never be reached at all.
+		nsCtx, nsCancel := context.WithTimeout(ctx, deadline)
+		probeErr := d.listProbe(nsCtx, gvr, ns)
+		nsCancel()
+		switch {
+		case ctx.Err() != nil:
+			// The probe ran into the shared deadline. Treat the walk as
+			// incomplete so it retries on the next read.
+			complete, unanswered = false, probeErr
+			return false, probeErr
+		case IsClientRateLimited(probeErr):
+		case probeUnanswered(probeErr):
+			complete, unanswered = false, probeErr
+		default:
+			if scoped, nsErr := d.classifyScope(gvr, ns, probeErr); nsErr == nil {
+				granted = append(granted, scoped)
+			}
+		}
+		return true, probeErr
+	}
+	// The client-side rate limiter refuses a request whose wait would run past
+	// its deadline, which says nothing about the namespace. Candidates it
+	// refused are retried after the others, each with an equal share of what
+	// is left of the budget, so none can starve the rest.
+	var throttled []string
 	for _, ns := range fallbacks {
 		if ctx.Err() != nil {
 			complete = false
 			break
 		}
-		// Per-candidate sub-deadline: without it a single consistently slow
-		// namespace eats the whole walk budget on every retry, and since
-		// retries restart from the first candidate, later namespaces would
-		// never be reached at all.
-		nsCtx, nsCancel := context.WithTimeout(ctx, 2*time.Second)
-		probeErr := d.listProbe(nsCtx, gvr, ns)
-		nsCancel()
-		if IsClientRateLimited(probeErr) {
-			// The client-side limiter refused to queue past the candidate's
-			// own deadline, which says nothing about this namespace. Queue
-			// within the walk's budget instead.
-			probeErr = d.listProbe(ctx, gvr, ns)
+		ok, probeErr := probe(ns, 2*time.Second)
+		if !ok {
+			break
 		}
-		scoped, nsErr := d.classifyScope(gvr, ns, probeErr)
+		if IsClientRateLimited(probeErr) {
+			throttled = append(throttled, ns)
+		}
+	}
+	deadline, _ := ctx.Deadline()
+	for i, ns := range throttled {
 		if ctx.Err() != nil {
-			// The probe ran into the shared deadline — classifyScope's
-			// fail-open would turn the deadline error into a grant, starting
-			// informers in namespaces that were never verified. Treat the
-			// walk as incomplete instead so it retries on the next read.
 			complete = false
 			break
 		}
-		if probeUnanswered(probeErr) {
-			complete = false
-			continue
+		ok, probeErr := probe(ns, time.Until(deadline)/time.Duration(len(throttled)-i))
+		if !ok {
+			break
 		}
-		if nsErr == nil {
-			granted = append(granted, scoped)
+		if IsClientRateLimited(probeErr) {
+			complete, unanswered = false, probeErr
 		}
 	}
 	if len(granted) == 0 {
-		return nil, complete, err // original cluster-wide forbidden — no candidate granted
+		if !complete {
+			// Not every candidate answered, so this is not a denial.
+			return nil, false, fmt.Errorf("%w: %w", errScopeProbeIncomplete, cmp.Or(unanswered, ctx.Err(), err))
+		}
+		return nil, true, err // original cluster-wide forbidden — no candidate granted
 	}
 	return granted, complete, nil
 }
@@ -723,9 +758,9 @@ func (d *DynamicResourceCache) listProbe(ctx context.Context, gvr schema.GroupVe
 }
 
 // classifyScope maps a namespace probe result to (scope, err): success → watch
-// ns; auth error or no answer at all → no scope; any other error from the API
-// server → fail open and watch ns anyway, matching the cluster-wide fail-open
-// path.
+// ns; auth error, or a probe that was never sent or ran out of time → no
+// scope; any other error → fail open and watch ns anyway, matching the
+// cluster-wide fail-open path.
 func (d *DynamicResourceCache) classifyScope(gvr schema.GroupVersionResource, ns string, err error) (string, error) {
 	if err == nil {
 		return ns, nil
@@ -1758,6 +1793,8 @@ func (d *DynamicResourceCache) WarmupParallel(gvrs []schema.GroupVersionResource
 		if r.err != nil {
 			if isAuthProbeError(r.err) {
 				d.retainDeniedObservation(r.gvr, "", r.complete)
+			} else if errors.Is(r.err, errScopeProbeIncomplete) {
+				d.retainObservation(r.gvr, DynamicObservationDeferred, "scope_probe_incomplete", true)
 			} else {
 				d.retainObservation(r.gvr, DynamicObservationDeferred, "scope_probe_failed", false)
 			}

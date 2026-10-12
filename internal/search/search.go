@@ -393,8 +393,7 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		reason := dynamicObservationReason(observation)
 		// A kind: term warms a kind Radar isn't watching, including one whose
 		// deferred probe or watch start failed, instead of reporting it.
-		warm := len(q.KindFilter) > 0 && (reason == readreason.KindNotWatched ||
-			observation.State == k8score.DynamicObservationDeferred && observation.ReasonCode != "scope_probe_incomplete")
+		warm := len(q.KindFilter) > 0 && (reason == readreason.KindNotWatched || observation.State == k8score.DynamicObservationDeferred)
 		// Namespace informers sync independently, so while one is still
 		// loading the others can answer: their readiness is judged per
 		// namespace below.
