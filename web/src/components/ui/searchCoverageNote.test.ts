@@ -105,7 +105,8 @@ describe('helpers', () => {
     expect(['Secret', 'Ingress', 'Endpoints', 'NetworkPolicy', 'Lease'].map(kindPluralLabel)).toEqual(['Secrets', 'Ingresses', 'Endpoints', 'NetworkPolicies', 'Leases'])
   })
 
-  it('re-queries a loading search past the point where Radar gives up on a kind', () => {
-    expect(PENDING_RETRY_BUDGET_MS).toBeGreaterThan(30_000)
+  it('re-queries a loading search past the point where Radar gives up on a late-starting kind', () => {
+    // A watch can start ~21 s into warm-up and is reported failed 30 s later.
+    expect(PENDING_RETRY_BUDGET_MS).toBeGreaterThanOrEqual(60_000)
   })
 })

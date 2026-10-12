@@ -54,7 +54,8 @@ export const RadarOmnibar = forwardRef<OmnibarHandle, RadarOmnibarProps>(functio
   const note = searchCoverageNote(searchData?.unsearched, {
     hits: searchData?.hits,
     pendingExhausted: exhaustedQuery === query,
-    seesAllNamespaces: capabilities?.authEnabled === false,
+    // authEnabled is omitted when false; until capabilities load, stay neutral.
+    seesAllNamespaces: !!capabilities && !capabilities.authEnabled,
     openKindList: (kind, group) => {
       const resource = apiResources?.find((r) => r.kind === kind && r.group === group)
       return resource ? () => onNavigateKind(resource.name, resource.group) : undefined

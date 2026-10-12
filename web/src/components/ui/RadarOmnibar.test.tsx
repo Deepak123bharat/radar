@@ -9,11 +9,12 @@ vi.mock('../../api/usage-data', () => ({ recordUsageEvent: vi.fn() }))
 vi.mock('../../hooks/useRecentResources', () => ({ loadRecentResources: () => [], recordRecentResource: vi.fn() }))
 vi.mock('../../api/apiResources', async (importOriginal) => ({ ...(await importOriginal<object>()), useAPIResources: () => ({ data: [] }) }))
 vi.mock('./command-items', async (importOriginal) => ({ ...(await importOriginal<object>()), useCommandItems: () => [] }))
+const caps = vi.hoisted(() => ({ data: undefined as undefined | { authEnabled?: boolean } }))
 vi.mock('../../api/client', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   useNamespaceScope: () => ({ data: undefined }),
   useContexts: () => ({ data: [] }),
-  useCapabilities: () => ({ data: undefined }),
+  useCapabilities: () => caps,
 }))
 
 import { RadarOmnibar } from './RadarOmnibar'
@@ -29,6 +30,7 @@ const failed: SearchCoverageEntry[] = [{ kind: 'SpStall', group: 'stall.sp-live.
 
 beforeEach(() => {
   vi.useFakeTimers()
+  caps.data = undefined
   searches = 0
   vi.stubGlobal('fetch', vi.fn(async (input: string) => {
     const url = new URL(input, 'http://localhost')
@@ -98,10 +100,33 @@ describe('RadarOmnibar while results load', () => {
   it('stops re-querying after its budget and says so', async () => {
     unsearched = pending
     await typeQuery('sp-live')
-    await advance(46_000)
+    await advance(55_000)
+    expect(page()).toContain('Still loading — results may change.')
+    await advance(6_000)
     expect(page()).toContain('Still loading — try again shortly.')
     const settled = searches
     await advance(30_000)
     expect(searches).toBe(settled)
   })
 })
+
+describe('RadarOmnibar namespace notes', () => {
+  const missing: SearchCoverageEntry[] = [{ kind: '*', group: '', reason: 'namespace_excluded', namespaces: ['payments-prd'] }]
+
+  it('says a namespace does not exist when auth is off, which capabilities report by omitting authEnabled', async () => {
+    caps.data = {}
+    unsearched = missing
+    await typeQuery('ns:payments-prd web')
+    expect(page()).toContain("Namespace 'payments-prd' doesn't exist on this cluster.")
+  })
+
+  it('stays scoped to what the caller can see when auth is on or capabilities have not loaded', async () => {
+    for (const data of [{ authEnabled: true }, undefined]) {
+      caps.data = data
+      unsearched = missing
+      await typeQuery(`ns:payments-prd web${data ? '' : 's'}`)
+      expect(page()).toContain("Namespace 'payments-prd' wasn't found in what you can see.")
+    }
+  })
+})
+

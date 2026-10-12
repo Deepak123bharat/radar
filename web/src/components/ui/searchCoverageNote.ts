@@ -3,11 +3,12 @@ import type { SearchCoverageEntry } from '../../api/client'
 import type { OmnibarNote } from './Omnibar'
 
 // While a search reports kinds still loading, the open omnibar re-queries every
-// PENDING_RETRY_MS for at most PENDING_RETRY_BUDGET_MS. Radar gives up on a
-// kind that never syncs after about 30 s and reports it failed, so the budget
-// outlasts that and the note ends on the outcome rather than "still loading".
+// PENDING_RETRY_MS for at most PENDING_RETRY_BUDGET_MS. Radar reports a kind
+// failed 30 s after its watch starts, and on a collector-limited install a
+// watch can start 20 s or more into warm-up, so the budget outlasts both and
+// the note ends on the outcome rather than "still loading".
 export const PENDING_RETRY_MS = 5000
-export const PENDING_RETRY_BUDGET_MS = 45000
+export const PENDING_RETRY_BUDGET_MS = 60000
 
 const FAILURE_REASONS = new Set(['kind_sync_failed', 'read_error', 'collector_unauthorized'])
 const MAX_SENTENCES = 2
