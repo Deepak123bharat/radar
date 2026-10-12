@@ -402,3 +402,28 @@ func TestCompactNeighborhoodKeepsWorkloadContextAtHighReplicaCounts(t *testing.T
 		t.Fatalf("individual replica lost its relationships: %+v", rel)
 	}
 }
+
+func TestInventoryManagerSurvivesVerifiedOwnerWalk(t *testing.T) {
+	nodes := []Node{
+		{ID: "application/team/app", Kind: KindApplication, Name: "app", Data: map[string]any{"namespace": "team", "apiVersion": "argoproj.io/v1alpha1"}},
+		{ID: "deployment/team/web", Kind: KindDeployment, Name: "web", uid: "deployment", observed: true, Data: map[string]any{"namespace": "team"}},
+		{ID: "replicaset/team/web-abc", Kind: KindReplicaSet, Name: "web-abc", uid: "rs", observed: true, ownerReferences: []metav1.OwnerReference{ownerRef("apps/v1", "Deployment", "web", "deployment", true)}, Data: map[string]any{"namespace": "team"}},
+		{ID: "pod/team/web-abc-0", Kind: KindPod, Name: "web-abc-0", uid: "pod", observed: true, ownerReferences: []metav1.OwnerReference{ownerRef("apps/v1", "ReplicaSet", "web-abc", "rs", true)}, Data: map[string]any{"namespace": "team"}},
+	}
+	edges := addObservedOwnerEdges(nodes, []Edge{{Source: nodes[0].ID, Target: nodes[1].ID, Type: EdgeManages}})
+	topo := &Topology{Nodes: nodes, Edges: edges}
+	for _, index := range []*RelationshipsIndex{nil, IndexByResource(topo)} {
+		refs := SynthesizeManagedBy(nil, "Pod", "team", "web-abc-0", topo, nil, index)
+		if len(refs) != 1 || refs[0].Kind != "Application" || refs[0].Group != "argoproj.io" || refs[0].Name != "app" {
+			t.Fatalf("inventory manager lost: %+v", refs)
+		}
+	}
+	deployment := GetRelationships("Deployment", "team", "web", topo, nil, nil)
+	if deployment.Owner != nil || len(deployment.Managers) != 1 {
+		t.Fatalf("inventory became ownership: %+v", deployment)
+	}
+	preview := GetCascadeDeletePreview(ResourceRef{Kind: "Application", Group: "argoproj.io", Namespace: "team", Name: "app"}, topo, nil)
+	if len(preview.Dependents) != 0 {
+		t.Fatalf("inventory became garbage collection: %+v", preview)
+	}
+}

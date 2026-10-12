@@ -35,11 +35,12 @@ const (
 //  3. ArgoCD Application via argocd.argoproj.io/tracking-id annotation
 //  4. ArgoCD Application via argocd.argoproj.io/instance label
 //  5. Helm release via meta.helm.sh/release-name annotation
-//  6. Topmost K8s owner via topology EdgeManages chain (Pod -> ReplicaSet -> Deployment)
+//  6. GitOps management of the topmost K8s owner via inventory or label edges
+//  7. Topmost K8s owner via verified owner references (Pod -> ReplicaSet -> Deployment)
 //
-// Cases 1-5 inspect the queried resource's own labels/annotations. Case 6 walks
-// owner references via the topology graph. If obj is nil, only the topology
-// owner walk runs.
+// Cases 1-5 inspect the queried resource's own labels/annotations. The graph
+// fallback keeps management separate from ownership: a GitOps inventory does
+// not establish garbage collection. If obj is nil, only the graph walk runs.
 //
 // idx is the topology inverted edges index. When non-nil, the owner walk
 // uses it for O(depth) lookup; when nil, the walk falls back to scanning
@@ -180,8 +181,8 @@ func walkTopmostOwnerFromNodeID(startID string, topo *Topology, dp DynamicProvid
 		return nil
 	}
 
-	// Controller metadata wins when classified; unclassified graph ownership
-	// preserves its existing order, including logical controller relationships.
+	// Metadata ownership and GitOps management are separate: an inventory
+	// manager can own the configuration without owning the Kubernetes object.
 	var ownerOf func(target string) string
 	if idx != nil {
 		ownerOf = func(target string) string {
@@ -221,12 +222,37 @@ func walkTopmostOwnerFromNodeID(startID string, topo *Topology, dp DynamicProvid
 			break
 		}
 		visited[next] = true
-		ref := resourceRefForNodeID(next, topo, dp)
+		var ref *ResourceRef
+		if idx != nil {
+			ref = resourceRefForNode(idx.nodesByID[next], dp)
+		} else {
+			ref = resourceRefForNodeID(next, topo, dp)
+		}
 		if ref == nil {
 			break
 		}
 		topRef = ref
 		cur = next
+	}
+	incoming, _ := edgesForNode(topo, idx, cur)
+	for _, edge := range incoming {
+		if edge.Type != EdgeManages || edge.OwnerController != nil || edge.SkipIfKindVisible != "" {
+			continue
+		}
+		var manager *ResourceRef
+		if idx != nil {
+			manager = resourceRefForNode(idx.nodesByID[edge.Source], dp)
+		} else {
+			manager = resourceRefForNodeID(edge.Source, topo, dp)
+		}
+		if manager == nil {
+			continue
+		}
+		if manager.Kind == "Application" && manager.Group == argoApplicationGroup ||
+			manager.Kind == "Kustomization" && manager.Group == fluxKustomizeGroup ||
+			manager.Kind == "HelmRelease" && manager.Group == fluxHelmGroup {
+			return manager
+		}
 	}
 	return topRef
 }
