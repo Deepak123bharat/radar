@@ -135,7 +135,7 @@ func TestPVCUnusedCondition(t *testing.T) {
 	now := time.Date(2026, time.October, 12, 12, 0, 0, 0, time.UTC)
 	recent := metav1.NewTime(now.Add(-2 * time.Hour))
 	old := metav1.NewTime(now.Add(-10 * 24 * time.Hour))
-	evidence := "No non-terminal Pod has referenced it for at least 10d (Unused condition since 2026-10-02T12:00:00Z)."
+	evidence := "Kubernetes reports it unused by any Pod since 2026-10-02T12:00:00Z (10d ago)."
 	for _, tc := range []struct {
 		name              string
 		status            corev1.ConditionStatus
@@ -151,7 +151,7 @@ func TestPVCUnusedCondition(t *testing.T) {
 		{name: "False with unknown coverage", status: corev1.ConditionFalse, change: func(i *CheckInput) { i.PVCConsumerNamespaces = nil }, evaluated: 1, passed: 1},
 		{name: "True recently unused", status: corev1.ConditionTrue, since: recent},
 		{name: "True at age floor", status: corev1.ConditionTrue, since: metav1.NewTime(now.Add(-24 * time.Hour))},
-		{name: "True just past age floor", status: corev1.ConditionTrue, since: metav1.NewTime(now.Add(-24*time.Hour - time.Second)), evaluated: 1, finding: true, evidence: "No non-terminal Pod has referenced it for at least 1d (Unused condition since 2026-10-11T11:59:59Z)."},
+		{name: "True just past age floor", status: corev1.ConditionTrue, since: metav1.NewTime(now.Add(-24*time.Hour - time.Second)), evaluated: 1, finding: true, evidence: "Kubernetes reports it unused by any Pod since 2026-10-11T11:59:59Z (1d ago)."},
 		{name: "True future transition", status: corev1.ConditionTrue, since: metav1.NewTime(now.Add(time.Hour))},
 		{name: "True with unknown coverage during grace", status: corev1.ConditionTrue, since: recent, change: func(i *CheckInput) { i.PVCConsumerNamespaces = nil }},
 		{name: "True unused for ten days", status: corev1.ConditionTrue, since: old, evaluated: 1, finding: true, evidence: evidence},
@@ -214,7 +214,7 @@ func TestPVCUnusedCondition(t *testing.T) {
 					if !strings.Contains(f.Message, tc.evidence) {
 						t.Errorf("missing evidence %q in %q", tc.evidence, f.Message)
 					}
-				} else if strings.Contains(f.Message, "Unused condition") || strings.Contains(f.Message, "at least") {
+				} else if strings.Contains(f.Message, "reports it unused") {
 					t.Errorf("unexpected Unused evidence in %q", f.Message)
 				}
 				if !strings.Contains(f.Message, "No consumer observed") || !strings.Contains(f.Message, "CRD consumers or snapshot operations may still reference this claim.") {
@@ -493,6 +493,40 @@ func TestReleasedPVCounts(t *testing.T) {
 	}
 	if got := findingNames(r.Findings, "releasedPV"); len(got) != 1 || !got["failed"] {
 		t.Fatalf("releasedPV findings: %+v", r.Findings)
+	}
+}
+
+// Deleting volumes belong to stuckTerminating, like deleting claims: releasedPV
+// neither passes a deleting Bound volume nor double-reports a deleting
+// Released or Failed one.
+func TestReleasedPVLeavesDeletingVolumesToStuckTerminating(t *testing.T) {
+	i := storageInput()
+	i.PersistentVolumeClaims = []*corev1.PersistentVolumeClaim{}
+	deleted := metav1.NewTime(time.Now().Add(-2 * time.Hour))
+	released := metav1.NewTime(time.Now().Add(-48 * time.Hour))
+	i.PersistentVolumes = nil
+	for name, phase := range map[string]corev1.PersistentVolumePhase{"bound": corev1.VolumeBound, "released": corev1.VolumeReleased, "failed": corev1.VolumeFailed} {
+		i.PersistentVolumes = append(i.PersistentVolumes, &corev1.PersistentVolume{
+			ObjectMeta: metav1.ObjectMeta{Name: name, UID: types.UID(name), DeletionTimestamp: &deleted, Finalizers: []string{"kubernetes.io/pv-protection"}},
+			Spec:       corev1.PersistentVolumeSpec{PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimRetain},
+			Status:     corev1.PersistentVolumeStatus{Phase: phase, LastPhaseTransitionTime: &released},
+		})
+	}
+	if slices.ContainsFunc(i.PersistentVolumes, PVNeedsReclaimEvents) {
+		t.Fatal("deleting volumes must not request reclaim events")
+	}
+	r := RunChecks(i)
+	if count, ok := r.CheckCounts["releasedPV"]; ok && (count.Evaluated != 0 || count.Passed != 0) {
+		t.Fatalf("releasedPV counts: %+v", count)
+	}
+	if got := findingNames(r.Findings, "releasedPV"); len(got) != 0 {
+		t.Fatalf("releasedPV findings: %+v", got)
+	}
+	if got := findingNames(r.Findings, "stuckTerminating"); len(got) != 3 {
+		t.Fatalf("stuckTerminating findings: %+v", got)
+	}
+	if slices.Contains(r.MissingInputs, "persistentvolumes") || slices.Contains(r.MissingInputs, "pv-deletion-events") || slices.Contains(r.MissingInputs, "pv-release-time") {
+		t.Fatalf("missing inputs: %v", r.MissingInputs)
 	}
 }
 

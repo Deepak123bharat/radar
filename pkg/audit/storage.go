@@ -88,7 +88,7 @@ func checkStorage(tr *evalTracker, input *CheckInput, now time.Time) []Finding {
 			checkID = "pvcNoConsumer"
 			message = "No consumer observed among Pods, built-in workload templates, or Pending clones Radar can see. CRD consumers or snapshot operations may still reference this claim."
 			if !unusedSince.IsZero() {
-				message += fmt.Sprintf(" No non-terminal Pod has referenced it for at least %s (Unused condition since %s).", timeutil.FormatAgeShort(now.Sub(unusedSince.Time)), unusedSince.UTC().Format(time.RFC3339))
+				message += fmt.Sprintf(" Kubernetes reports it unused by any Pod since %s (%s ago).", unusedSince.UTC().Format(time.RFC3339), timeutil.FormatAgeShort(now.Sub(unusedSince.Time)))
 			}
 		case corev1.ClaimPending:
 			tr.record("pvcLongPending", pvc.Namespace)
@@ -131,6 +131,11 @@ func checkStorage(tr *evalTracker, input *CheckInput, now time.Time) []Finding {
 	reclaimWarnings := latestPVReclaimWarnings(input.PersistentVolumes, input.Events, now)
 	deletionEventsComplete := input.Events != nil && input.PVDeletionEventsComplete
 	for _, pv := range input.PersistentVolumes {
+		if pv.DeletionTimestamp != nil {
+			// A deleting volume is a stuckTerminating subject, as a deleting
+			// claim is.
+			continue
+		}
 		warning, hasWarning := reclaimWarnings[pv.UID]
 		switch pv.Status.Phase {
 		case corev1.VolumeBound:
@@ -326,6 +331,9 @@ func storageAge(created metav1.Time, now time.Time) string {
 // on reclaim warning events: a Released volume awaiting deletion, or a volume
 // whose reclaim already failed.
 func PVNeedsReclaimEvents(pv *corev1.PersistentVolume) bool {
+	if pv.DeletionTimestamp != nil {
+		return false
+	}
 	return pv.Status.Phase == corev1.VolumeFailed || pv.Status.Phase == corev1.VolumeReleased && pv.Spec.PersistentVolumeReclaimPolicy == corev1.PersistentVolumeReclaimDelete
 }
 

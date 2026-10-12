@@ -758,8 +758,9 @@ default). Radar uses it when present:
 - `Unused=False` (a running Pod uses the claim) counts as a consumer, even if
   Radar did not observe the Pod.
 - With `Unused=True`, the 24 h floor counts from when the claim became unused
-  rather than from its creation, and the finding says how long, as **at least**
-  that long: the controller's timestamp can lag. Right after the feature is
+  rather than from its creation, and the finding reports the condition's time.
+  That time is approximate: Kubernetes notes it can be off in either direction
+  because of controller delays. Right after the feature is
   enabled (for example, after an upgrade to 1.37), every unused claim's
   timestamp is the enable time, so long-unused claims are held back for 24 h
   and then reported with that shorter age.
@@ -778,6 +779,7 @@ visible**, **StorageClass binding mode not visible** or **Deletion warning
 events not fully visible**.
 
 - Bound PVs count as passing `releasedPV` subjects; Available and Pending PVs are not counted.
+- Deleting claims and volumes (`metadata.deletionTimestamp` set) are `stuckTerminating` subjects, not storage-check subjects: that check flags them after 5 minutes. When the blocking finalizer is `kubernetes.io/pvc-protection` or `kubernetes.io/pv-protection`, the finding explains what holds the deletion and what happens when it is released, and warns against removing the finalizer by hand. A deletion can't be cancelled, so it doesn't tell you to complete it either.
 - In a namespace whose consumer inventories are unreadable or unsynced, an eligible claim with an observed consumer or a Bound claim with `Unused=False` still passes; any other eligible claim is neither a finding nor a pass (`pvc-consumers`).
 - A Released Delete PV within its 1 h grace, with incomplete event coverage (complete only when the caller can see all namespaces) and no observed current warning, is unknown: neither evaluated nor passed (`pv-deletion-events`).
 - PV thresholds use time since `status.lastPhaseTransitionTime`, which also excludes warnings from before the current phase. Without a nonzero transition time, release duration is unknown: a Released Delete PV without a recent deletion warning is neither evaluated nor passed (`pv-release-time`); a recent warning still establishes failure. A Released Retain PV is flagged with **release time unknown** and **PV age**, without implying the 24 h grace elapsed.
