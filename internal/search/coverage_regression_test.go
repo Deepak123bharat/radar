@@ -101,7 +101,7 @@ func TestBroadSearchPermissionChecksDoNotScaleWithNamespacedCRDs(t *testing.T) {
 	}
 }
 
-func TestBroadCoverageCollapsesColdAndOmitsUnsupportedBeforeSAR(t *testing.T) {
+func TestBroadCoverageOmitsColdAndUnsupportedBeforeSAR(t *testing.T) {
 	p := &fakeProvider{kinds: map[schema.GroupVersionResource]string{}, namespaced: map[schema.GroupVersionResource]bool{}, observations: map[schema.GroupVersionResource]k8score.DynamicResourceObservation{}}
 	for i, state := range []k8score.DynamicObservationState{k8score.DynamicObservationUnwatched, k8score.DynamicObservationUnwatched, k8score.DynamicObservationUnsupported} {
 		gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: fmt.Sprintf("things%d", i)}
@@ -114,7 +114,7 @@ func TestBroadCoverageCollapsesColdAndOmitsUnsupportedBeforeSAR(t *testing.T) {
 		}
 		return true, true
 	}})
-	if !res.Partial || len(res.Unsearched) != 1 || !reflect.DeepEqual(res.Unsearched[0], UnsearchedKind{Kind: "*", Group: "", Reason: "kind_not_watched"}) || len(p.warmed) != 0 {
+	if res.Partial || len(res.Unsearched) != 0 || len(p.warmed) != 0 {
 		t.Fatalf("broad coverage: %+v", res)
 	}
 	res, _ = Search(context.Background(), p, Parse("kind:Thing2"), Options{CanReadClusterScoped: func(string, string, string) (bool, bool) { t.Fatal("unsupported kind issued SAR"); return false, true }})
@@ -132,22 +132,57 @@ func TestBroadOnlyUnsupportedIsComplete(t *testing.T) {
 	}
 }
 
-func TestTypedReadinessPrecedesCallerPermissionChecks(t *testing.T) {
-	p := &fakeProvider{typedReasons: map[string]string{"Secret": "kind_sync_pending", "Node": "collector_access_denied"}}
-	for _, kind := range []string{"Secret", "Node"} {
-		res, _ := Search(context.Background(), p, Parse("kind:"+kind), Options{
-			NamespacedRBAC: func([]string, string, string) (string, []string) {
-				t.Fatal("unready typed informer issued SAR")
-				return "skip", nil
-			},
-			CanReadClusterScoped: func(string, string, string) (bool, bool) {
-				t.Fatal("unavailable typed informer issued SAR")
-				return false, true
-			},
-		})
-		if !res.Partial || len(res.Unsearched) != 1 || string(res.Unsearched[0].Reason) != p.typedReasons[kind] {
-			t.Fatalf("readiness coverage: %+v", res)
+// Radar's setup is reported without asking about the caller, but the caller's
+// own access decides whether a loading or failed kind is reported at all: a
+// kind they can't read is never "still loading" for them.
+func TestCallerAccessPrecedesTransientCoverage(t *testing.T) {
+	collectorDenied := &fakeProvider{typedReasons: map[string]string{"Node": "collector_access_denied"}}
+	res, _ := Search(context.Background(), collectorDenied, Parse("kind:Node"), Options{
+		CanReadClusterScoped: func(string, string, string) (bool, bool) {
+			t.Fatal("collector-denied typed kind issued SAR")
+			return false, true
+		},
+	})
+	if !res.Partial || len(res.Unsearched) != 1 || res.Unsearched[0].Reason != "collector_access_denied" {
+		t.Fatalf("collector coverage: %+v", res)
+	}
+
+	loading := &fakeProvider{typedReasons: map[string]string{"Secret": "kind_sync_pending", "Node": "kind_sync_failed"}}
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "gadgets"}
+	loading.kinds = map[schema.GroupVersionResource]string{gvr: "Gadget"}
+	loading.namespaced = map[schema.GroupVersionResource]bool{gvr: false}
+	loading.observations = map[schema.GroupVersionResource]k8score.DynamicResourceObservation{gvr: {State: k8score.DynamicObservationSyncing}}
+	denied := Options{
+		NamespacedRBAC:       func([]string, string, string) (string, []string) { return "skip", nil },
+		CanReadClusterScoped: func(string, string, string) (bool, bool) { return false, true },
+	}
+	for _, query := range []string{"robusta", "ns:team-a robusta"} {
+		q := Parse(query)
+		opts := denied
+		opts.ScopeNamespaces(q, nil, nil)
+		if res, _ := Search(context.Background(), loading, q, opts); res.Partial || len(res.Unsearched) != 0 {
+			t.Fatalf("%s: unreadable kinds reported to the caller: %+v", query, res.Unsearched)
 		}
+	}
+	res, _ = Search(context.Background(), loading, Parse("kind:Secret kind:Node kind:Gadget"), denied)
+	want := []UnsearchedKind{
+		{Kind: "Gadget", Group: "example.io", Reason: "rbac_denied"},
+		{Kind: "Node", Reason: "rbac_denied"},
+		{Kind: "Secret", Reason: "rbac_denied"},
+	}
+	if !reflect.DeepEqual(res.Unsearched, want) {
+		t.Fatalf("named unreadable kinds = %+v, want %+v", res.Unsearched, want)
+	}
+	res, _ = Search(context.Background(), loading, Parse("robusta"), Options{
+		NamespacedRBAC:       func([]string, string, string) (string, []string) { return "", nil },
+		CanReadClusterScoped: func(string, string, string) (bool, bool) { return true, true },
+	})
+	want = []UnsearchedKind{
+		{Kind: "*", Reason: "kind_sync_pending", Count: 2},
+		{Kind: "Node", Reason: "kind_sync_failed"},
+	}
+	if !reflect.DeepEqual(res.Unsearched, want) {
+		t.Fatalf("readable loading kinds = %+v, want %+v", res.Unsearched, want)
 	}
 }
 
@@ -191,9 +226,10 @@ func TestDynamicObservationReasonsAndRequestedScope(t *testing.T) {
 	}
 }
 
-// Warming an uncovered namespace talks to the API server as Radar; a rejected
-// credential there is the collector's access, not an unclassified failure.
-func TestWarmingRejectedCollectorCredentialsReportAccessDenied(t *testing.T) {
+// Warming an uncovered namespace of a kind Radar already watches elsewhere
+// talks to the API server as Radar; a refusal there is the collector's
+// namespace scope, reported only for a namespace the query names.
+func TestWarmingRefusedNamespaceIsCollectorScope(t *testing.T) {
 	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
 	p := &fakeProvider{
 		kinds:        map[schema.GroupVersionResource]string{gvr: "Widget"},
@@ -201,13 +237,16 @@ func TestWarmingRejectedCollectorCredentialsReportAccessDenied(t *testing.T) {
 		observations: map[schema.GroupVersionResource]k8score.DynamicResourceObservation{gvr: {State: k8score.DynamicObservationSynced, Scope: k8score.DynamicObservationScopeExplicitNamespaces, Namespaces: []string{"a"}}},
 		warmError:    apierrors.NewUnauthorized("token expired"),
 	}
-	res, _ := Search(context.Background(), p, Parse("kind:Widget"), Options{Namespaces: []string{"a", "b"}})
-	want := []UnsearchedKind{
-		{Kind: "Widget", Group: "example.io", Reason: "collector_access_denied"},
-		{Kind: "Widget", Group: "example.io", Reason: "collector_scope_limited"},
+	if res, _ := Search(context.Background(), p, Parse("kind:Widget"), Options{Namespaces: []string{"a", "b"}}); res.Partial || len(res.Unsearched) != 0 {
+		t.Fatalf("kind: alone reported namespace scope: %+v", res.Unsearched)
 	}
+	q := Parse("kind:Widget ns:a ns:b")
+	var opts Options
+	opts.ScopeNamespaces(q, nil, nil)
+	res, _ := Search(context.Background(), p, q, opts)
+	want := []UnsearchedKind{{Kind: "*", Reason: "collector_scope_limited", Namespaces: []string{"b"}}}
 	if !res.Partial || !reflect.DeepEqual(res.Unsearched, want) {
-		t.Fatalf("rejected collector credentials while warming = %+v, want %+v", res.Unsearched, want)
+		t.Fatalf("refused named namespace = %+v, want %+v", res.Unsearched, want)
 	}
 }
 

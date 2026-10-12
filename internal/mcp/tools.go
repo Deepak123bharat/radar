@@ -442,8 +442,8 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"kind:Pod, ns:foo, label:app=bar, and image:redis narrow a " +
 			"term match; modifier-only queries are enumeration, so use list_resources when " +
 			"you already know the kind/namespace. Returns ranked hits with snippets and " +
-			"summaryContext, partial and unsearched coverage. Broad scans report kind_not_watched; " +
-			"explicit kind: warms them. CEL examples: has(object.subjects); \"app\" in labels; " +
+			"summaryContext. Covers what you can list; big CRDs need kind:. partial=true: absence " +
+			"unproven, see coverageHint. CEL examples: has(object.subjects); \"app\" in labels; " +
 			"kind == \"Application\" && has(spec.sources) && spec.sources.exists(s, has(s.repoURL)).",
 		Annotations: readOnly,
 	}, logToolCall("search", handleSearch))
@@ -3290,24 +3290,26 @@ func handleSearch(ctx context.Context, req *mcp.CallToolRequest, input searchInp
 	if err != nil {
 		return nil, nil, err
 	}
-	// Steering hint when the result was capped.
+	response := searchResponseMCP{Result: result}
 	if result.TotalMatched > result.Total {
-		return toJSONResult(searchResponseMCP{
-			Result: result,
-			NarrowHint: fmt.Sprintf(
-				"returned %d of %d hits — narrow with modifiers (kind:, ns:, label:k=v, image:), tighten the query, add a filter= CEL expression, or raise limit (cap 500)",
-				result.Total, result.TotalMatched,
-			),
-		})
+		response.NarrowHint = fmt.Sprintf(
+			"returned %d of %d hits — narrow with modifiers (kind:, ns:, label:k=v, image:), tighten the query, add a filter= CEL expression, or raise limit (cap 500)",
+			result.Total, result.TotalMatched,
+		)
 	}
-	return toJSONResult(result)
+	if result.Partial {
+		response.CoverageHint = coverageHint(result)
+	}
+	return toJSONResult(response)
 }
 
 // searchResponseMCP embeds search.Result so the JSON shape stays identical
-// except for the added narrowHint field.
+// except for the added hints: narrowHint when the hit limit cut the result,
+// coverageHint whenever it is partial.
 type searchResponseMCP struct {
 	search.Result
-	NarrowHint string `json:"narrowHint,omitempty"`
+	NarrowHint   string `json:"narrowHint,omitempty"`
+	CoverageHint string `json:"coverageHint,omitempty"`
 }
 
 // toJSONResult marshals data into a text content MCP result.

@@ -73,15 +73,18 @@ type MatchSnippet struct {
 	Snippet string `json:"snippet"`
 }
 
-// UnsearchedKind is one coverage gap. Namespaces is set only for namespace
-// selection reasons: for namespace_excluded it lists requested namespaces that
-// were not searched; for namespace_scope_limited it lists the only namespaces
-// that were.
+// UnsearchedKind is one coverage entry. Kind-level entries name a kind; "*"
+// entries either stand for several kinds or carry Namespaces. Namespaces is set
+// only for namespace_excluded, namespace_scope_limited and
+// collector_scope_limited, and lists the namespaces the query named that were
+// not searched for that reason. Count is set only on a "*" entry that folds
+// kinds: how many it stands for.
 type UnsearchedKind struct {
 	Kind       string          `json:"kind"`
 	Group      string          `json:"group"`
 	Reason     readreason.Code `json:"reason"`
 	Namespaces []string        `json:"namespaces,omitempty"`
+	Count      int             `json:"count,omitempty"`
 }
 
 type FailedObject struct {
@@ -92,6 +95,11 @@ type FailedObject struct {
 
 // Result is the full response shape for a search request.
 type Result struct {
+	// Partial: true means this result can't rule out a match for what you
+	// asked: something was loading or failed, or a kind or namespace you named
+	// couldn't be searched. false means no such problem was reported; it is
+	// not proof that nothing exists outside your access or Radar's collection.
+	// Result limits (Total vs TotalMatched) are separate.
 	Partial             bool             `json:"partial"`
 	Unsearched          []UnsearchedKind `json:"unsearched"`
 	FilterFailedObjects []FailedObject   `json:"filter_failed_objects,omitempty"`

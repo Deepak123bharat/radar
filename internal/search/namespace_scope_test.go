@@ -22,16 +22,16 @@ func TestScopeNamespaces(t *testing.T) {
 		visible, ceiling  []string
 		wantScan          []string
 		wantExcluded      []string
-		wantScoped        []string
+		wantSelection     []string
 		wantNoNamespaceOK bool
 	}{
 		{name: "unrestricted", query: "x"},
 		{name: "rbac ceiling is not a gap", query: "x", visible: []string{"a", "b"}, ceiling: []string{"b", "a"}, wantScan: []string{"a", "b"}},
-		{name: "pick narrows", query: "x", visible: []string{"b", "a"}, ceiling: nil, wantScan: []string{"b", "a"}, wantScoped: []string{"a", "b"}},
-		{name: "pick narrows a restricted ceiling", query: "x", visible: []string{"a"}, ceiling: []string{"a", "b"}, wantScan: []string{"a"}, wantScoped: []string{"a"}},
+		{name: "pick narrows silently", query: "x", visible: []string{"b", "a"}, ceiling: nil, wantScan: []string{"b", "a"}},
 		{name: "terms within pick", query: "x ns:a", visible: []string{"a"}, ceiling: nil, wantScan: []string{"a"}},
-		{name: "terms outside pick", query: "x ns:a ns:b ns:b", visible: []string{"a"}, ceiling: nil, wantScan: []string{"a"}, wantExcluded: []string{"b"}},
-		{name: "every term excluded", query: "x ns:b ns:c", visible: []string{"a"}, ceiling: []string{"a"}, wantScan: []string{}, wantExcluded: []string{"b", "c"}, wantNoNamespaceOK: true},
+		{name: "terms outside pick", query: "x ns:a ns:b ns:b", visible: []string{"a"}, ceiling: nil, wantScan: []string{"a"}, wantSelection: []string{"b"}},
+		{name: "terms outside rbac", query: "x ns:b ns:c", visible: []string{"a"}, ceiling: []string{"a"}, wantScan: []string{}, wantExcluded: []string{"b", "c"}, wantNoNamespaceOK: true},
+		{name: "rbac and pick", query: "x ns:a ns:b ns:c", visible: []string{"a"}, ceiling: []string{"a", "b"}, wantScan: []string{"a"}, wantExcluded: []string{"c"}, wantSelection: []string{"b"}},
 		{name: "unrestricted terms", query: "x ns:b", wantScan: []string{"b"}},
 		{name: "no namespace access", query: "x", visible: []string{}, ceiling: []string{}, wantScan: []string{}, wantNoNamespaceOK: true},
 	} {
@@ -39,8 +39,8 @@ func TestScopeNamespaces(t *testing.T) {
 			var opts Options
 			opts.ScopeNamespaces(Parse(tc.query), tc.visible, tc.ceiling)
 			if !reflect.DeepEqual(opts.Namespaces, tc.wantScan) || !reflect.DeepEqual(opts.ExcludedNamespaces, tc.wantExcluded) ||
-				!reflect.DeepEqual(opts.ScopedNamespaces, tc.wantScoped) || opts.NamespaceExcluded != tc.wantNoNamespaceOK {
-				t.Fatalf("got scan=%#v excluded=%#v scoped=%#v noNamespace=%v", opts.Namespaces, opts.ExcludedNamespaces, opts.ScopedNamespaces, opts.NamespaceExcluded)
+				!reflect.DeepEqual(opts.SelectionExcludedNamespaces, tc.wantSelection) || opts.NamespaceExcluded != tc.wantNoNamespaceOK {
+				t.Fatalf("got scan=%#v excluded=%#v selection=%#v noNamespace=%v", opts.Namespaces, opts.ExcludedNamespaces, opts.SelectionExcludedNamespaces, opts.NamespaceExcluded)
 			}
 		})
 	}
@@ -92,7 +92,13 @@ func TestClusterScopedHitsIgnoreNamespaceVisibilityAndSelection(t *testing.T) {
 			if got, want := hitNames(res), []string{"ClusterRole//robusta-cr", "Pod/a/robusta-a"}; !reflect.DeepEqual(got, want) {
 				t.Fatalf("hits = %v, want %v", got, want)
 			}
-			if denied := gapsWithReason(res, "rbac_denied"); len(denied) != 1 || denied[0].Kind != "Node" {
+			if res.Partial || len(res.Unsearched) != 0 {
+				t.Fatalf("a broad search reported the caller's scope: %+v", res.Unsearched)
+			}
+			q = Parse("kind:Node robusta")
+			opts.ScopeNamespaces(q, tc.visible, tc.ceiling)
+			res, _ = Search(context.Background(), namespaceFixture(), q, opts)
+			if denied := gapsWithReason(res, "rbac_denied"); len(res.Hits) != 0 || len(denied) != 1 || denied[0].Kind != "Node" {
 				t.Fatalf("cluster-scoped gate: %+v", res.Unsearched)
 			}
 		})
@@ -121,54 +127,43 @@ func TestExplicitNamespaceTermsAndClusterScopedKinds(t *testing.T) {
 	}
 }
 
-func TestNamespaceCoverageCollapsesOnBroadQueries(t *testing.T) {
-	p := namespaceFixture()
-	q := Parse("ns:b ns:c robusta")
-	opts := Options{Include: IncludeNone}
-	opts.ScopeNamespaces(q, []string{"a"}, []string{"a"})
-	res, _ := Search(context.Background(), p, q, opts)
-	want := []UnsearchedKind{{Kind: "*", Reason: "namespace_excluded", Namespaces: []string{"b", "c"}}}
-	if !res.Partial || len(res.Hits) != 0 || !reflect.DeepEqual(res.Unsearched, want) {
-		t.Fatalf("broad excluded coverage = %+v, want %+v", res.Unsearched, want)
-	}
-
-	q = Parse("kind:Pod kind:ClusterRole ns:a ns:b robusta")
-	opts = Options{Include: IncludeNone}
-	opts.ScopeNamespaces(q, []string{"a"}, []string{"a"})
-	res, _ = Search(context.Background(), p, q, opts)
-	want = []UnsearchedKind{{Kind: "Pod", Reason: "namespace_excluded", Namespaces: []string{"b"}}}
-	if got := hitNames(res); !reflect.DeepEqual(res.Unsearched, want) || len(got) != 2 {
-		t.Fatalf("explicit excluded coverage = %v %+v, want %+v", got, res.Unsearched, want)
-	}
-
-	p.typedReasons = map[string]string{"Pod": "collector_scope_limited", "ConfigMap": "collector_scope_limited", "Secret": "collector_scope_limited"}
-	q = Parse("robusta")
-	opts = Options{Include: IncludeNone}
-	opts.ScopeNamespaces(q, []string{"a"}, nil)
-	res, _ = Search(context.Background(), p, q, opts)
-	// Collector coverage and the namespace selection stay separate entries:
-	// only the selection names the namespaces that were searched.
-	want = []UnsearchedKind{{Kind: "*", Reason: "collector_scope_limited"}, {Kind: "*", Reason: "namespace_scope_limited", Namespaces: []string{"a"}}}
-	if !reflect.DeepEqual(res.Unsearched, want) {
-		t.Fatalf("broad scope coverage = %+v, want %+v", res.Unsearched, want)
-	}
-}
-
-func TestSelectionCoverageNamesOnlyNamespacedKinds(t *testing.T) {
+// Namespace entries name only namespaces the query named, once per reason
+// whatever the kinds searched, and say which of the caller's RBAC, the
+// namespace selection or Radar's collection left each one out.
+func TestNamespaceCoverageNamesOnlyNamedNamespaces(t *testing.T) {
 	for _, tc := range []struct {
-		query string
-		want  []UnsearchedKind
+		name             string
+		query            string
+		visible, ceiling []string
+		collectorLimited bool
+		want             []UnsearchedKind
+		hits             int
 	}{
-		{"kind:Pod robusta", []UnsearchedKind{{Kind: "Pod", Reason: "namespace_scope_limited", Namespaces: []string{"a"}}}},
-		{"kind:ClusterRole robusta", []UnsearchedKind{}},
+		{"rbac", "ns:b ns:c robusta", []string{"a"}, []string{"a"}, false, []UnsearchedKind{{Kind: "*", Reason: "namespace_excluded", Namespaces: []string{"b", "c"}}}, 0},
+		{"rbac with kinds", "kind:Pod kind:ClusterRole ns:a ns:b robusta", []string{"a"}, []string{"a"}, false, []UnsearchedKind{{Kind: "*", Reason: "namespace_excluded", Namespaces: []string{"b"}}}, 2},
+		{"selection", "kind:Pod ns:b robusta", []string{"a"}, nil, false, []UnsearchedKind{{Kind: "*", Reason: "namespace_scope_limited", Namespaces: []string{"b"}}}, 0},
+		{"rbac and selection", "ns:a ns:b ns:c robusta", []string{"a"}, []string{"a", "b"}, false, []UnsearchedKind{
+			{Kind: "*", Reason: "namespace_excluded", Namespaces: []string{"c"}},
+			{Kind: "*", Reason: "namespace_scope_limited", Namespaces: []string{"b"}},
+		}, 1},
+		{"collection", "ns:a robusta", nil, nil, true, []UnsearchedKind{{Kind: "*", Reason: "collector_scope_limited", Namespaces: []string{"a"}}}, 1},
+		{"selection without ns:", "robusta", []string{"a"}, nil, true, []UnsearchedKind{}, 3},
+		{"kind: without ns:", "kind:Pod robusta", []string{"a"}, nil, true, []UnsearchedKind{}, 1},
+		{"cluster-scoped kind", "kind:ClusterRole ns:b robusta", []string{"a"}, []string{"a"}, false, []UnsearchedKind{}, 1},
 	} {
-		q := Parse(tc.query)
-		opts := Options{Include: IncludeNone}
-		opts.ScopeNamespaces(q, []string{"a"}, nil)
-		res, _ := Search(context.Background(), namespaceFixture(), q, opts)
-		if !reflect.DeepEqual(res.Unsearched, tc.want) || res.Partial != (len(tc.want) > 0) || len(res.Hits) != 1 {
-			t.Fatalf("%s: coverage %+v hits %v, want %+v", tc.query, res.Unsearched, hitNames(res), tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			p := namespaceFixture()
+			if tc.collectorLimited {
+				p.typedReasons = map[string]string{"Pod": "collector_scope_limited", "ConfigMap": "collector_scope_limited", "Secret": "collector_scope_limited"}
+			}
+			q := Parse(tc.query)
+			opts := Options{Include: IncludeNone}
+			opts.ScopeNamespaces(q, tc.visible, tc.ceiling)
+			res, _ := Search(context.Background(), p, q, opts)
+			if !reflect.DeepEqual(res.Unsearched, tc.want) || res.Partial != (len(tc.want) > 0) || len(res.Hits) != tc.hits {
+				t.Fatalf("coverage %+v hits %v, want %+v and %d hits", res.Unsearched, hitNames(res), tc.want, tc.hits)
+			}
+		})
 	}
 }
 
@@ -191,11 +186,8 @@ func TestDynamicNamespaceCoveragePrecedesReadiness(t *testing.T) {
 		query string
 		want  []UnsearchedKind
 	}{
-		{"kind:Widget", []UnsearchedKind{
-			{Kind: "Widget", Group: "example.io", Reason: "kind_sync_pending"},
-			{Kind: "Widget", Group: "example.io", Reason: "namespace_scope_limited", Namespaces: []string{"a"}},
-		}},
-		{"kind:Widget ns:b", []UnsearchedKind{{Kind: "Widget", Group: "example.io", Reason: "namespace_excluded", Namespaces: []string{"b"}}}},
+		{"kind:Widget", []UnsearchedKind{{Kind: "Widget", Group: "example.io", Reason: "kind_sync_pending"}}},
+		{"kind:Widget ns:b", []UnsearchedKind{{Kind: "*", Reason: "namespace_scope_limited", Namespaces: []string{"b"}}}},
 	} {
 		q := Parse(tc.query)
 		var opts Options
@@ -222,11 +214,8 @@ func TestDynamicNamespaceReadinessInEveryScope(t *testing.T) {
 	}{
 		{"ready namespace only", "kind:Widget", []string{"a"}, []UnsearchedKind{}},
 		{"stalled namespace", "kind:Widget", []string{"a", "b"}, []UnsearchedKind{{Kind: "Widget", Group: "example.io", Reason: "kind_sync_failed"}}},
-		{"all namespaces", "robusta", nil, []UnsearchedKind{
-			{Kind: "*", Group: "", Reason: "collector_scope_limited"},
-			{Kind: "Widget", Group: "example.io", Reason: "kind_sync_failed"},
-		}},
-		{"unwatched namespace", "robusta", []string{"a", "c"}, []UnsearchedKind{{Kind: "*", Group: "", Reason: "collector_scope_limited"}}},
+		{"all namespaces", "robusta", nil, []UnsearchedKind{{Kind: "Widget", Group: "example.io", Reason: "kind_sync_failed"}}},
+		{"unwatched namespace", "robusta", []string{"a", "c"}, []UnsearchedKind{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &fakeProvider{

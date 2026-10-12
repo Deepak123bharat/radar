@@ -21,46 +21,153 @@ var NamespacedSearchKinds = []struct{ Kind, Group, Resource string }{
 	{"RoleBinding", "rbac.authorization.k8s.io", "rolebindings"},
 }
 
-func (r *Result) addGap(kind, group string, reason readreason.Code, namespaces []string) {
-	r.Partial = true
-	for i := range r.Unsearched {
-		existing := &r.Unsearched[i]
-		if existing.Kind == kind && existing.Group == group && existing.Reason == reason {
-			existing.Namespaces = mergeNamespaces(existing.Namespaces, namespaces)
-			return
-		}
+// reasonClass groups coverage reasons by how a search reports them.
+type reasonClass int
+
+const (
+	// classScope covers the caller's access, Radar's setup and query feedback.
+	// They describe what a search covers rather than what went wrong, so they
+	// are reported only for a kind or namespace the query names.
+	classScope reasonClass = iota
+	// classTransient is data still loading; a retry can change the answer.
+	classTransient
+	// classFailure is a read or check that failed for a kind the caller may read.
+	classFailure
+)
+
+func classify(reason readreason.Code) reasonClass {
+	switch reason {
+	case readreason.KindSyncPending:
+		return classTransient
+	case readreason.KindSyncFailed, readreason.ReadError, readreason.PermissionCheckFailed, readreason.CollectorUnauthorized:
+		return classFailure
 	}
-	r.Unsearched = append(r.Unsearched, UnsearchedKind{kind, group, reason, mergeNamespaces(nil, namespaces)})
+	return classScope
 }
 
-// maxNamedGapsPerReason bounds the per-kind entries a broad query reports for
-// one reason: a cluster with hundreds of denied or syncing CRDs would otherwise
-// return tens of KB of coverage that drowns the hits.
-const maxNamedGapsPerReason = 20
+// maxNamedFailures bounds the kinds one failure reason names on a query with
+// no kind: terms; the rest fold into that reason's "*" entry.
+const maxNamedFailures = 5
 
-// capNamedGaps keeps the first limit named entries of each reason, by kind
-// then group, and folds the rest into that reason's "*" entry, so "*" beside
-// named entries means "these kinds and others".
-func (r *Result) capNamedGaps(limit int) {
-	sortGaps(r.Unsearched)
-	named := map[readreason.Code]int{}
-	var folded []UnsearchedKind
-	kept := r.Unsearched[:0]
-	for _, gap := range r.Unsearched {
-		if gap.Kind != "*" {
-			named[gap.Reason]++
-			if named[gap.Reason] > limit {
-				folded = append(folded, gap)
-				continue
+// coverage collects one search's unsearched entries and applies the reporting
+// rules: scope reasons only for what the query names, every transient and
+// failure reason, folded so the response never grows with the number of kinds
+// on the cluster.
+type coverage struct {
+	namedKinds      bool
+	namedNamespaces []string
+	gaps            []UnsearchedKind
+	// unbounded marks "*" entries standing for an unknown number of kinds (the
+	// catalog itself could not be read); they carry no count.
+	unbounded map[readreason.Code]bool
+}
+
+func newCoverage(q Query) *coverage {
+	return &coverage{namedKinds: len(q.KindFilter) > 0, namedNamespaces: q.NSFilter, unbounded: map[readreason.Code]bool{}}
+}
+
+// quiet reports whether a kind-level reason goes unreported for this query,
+// so callers can skip work that could only produce it.
+func (c *coverage) quiet(reason readreason.Code) bool {
+	if reason == readreason.KindNotWatched {
+		return true
+	}
+	return classify(reason) == classScope && !c.namedKinds
+}
+
+// kind records a kind-level reason for one scanned kind.
+func (c *coverage) kind(kind, group string, reason readreason.Code) {
+	if c.quiet(reason) {
+		return
+	}
+	if !slices.ContainsFunc(c.gaps, func(g UnsearchedKind) bool { return g.Kind == kind && g.Group == group && g.Reason == reason }) {
+		c.gaps = append(c.gaps, UnsearchedKind{Kind: kind, Group: group, Reason: reason})
+	}
+}
+
+// catalog records a reason that applies to an unknown set of kinds, such as
+// discovery not being ready.
+func (c *coverage) catalog(reason readreason.Code) {
+	if c.quiet(reason) {
+		return
+	}
+	c.unbounded[reason] = true
+	c.star(reason)
+}
+
+// namespaces records a namespace-level reason. Only namespaces the query names
+// are reported, merged into one entry per reason.
+func (c *coverage) namespaces(reason readreason.Code, namespaces ...string) {
+	var named []string
+	for _, ns := range namespaces {
+		if slices.Contains(c.namedNamespaces, ns) {
+			named = append(named, ns)
+		}
+	}
+	if len(named) == 0 {
+		return
+	}
+	entry := c.star(reason)
+	for _, ns := range named {
+		if !slices.Contains(entry.Namespaces, ns) {
+			entry.Namespaces = append(entry.Namespaces, ns)
+		}
+	}
+	slices.Sort(entry.Namespaces)
+}
+
+func (c *coverage) star(reason readreason.Code) *UnsearchedKind {
+	for i := range c.gaps {
+		if c.gaps[i].Kind == "*" && c.gaps[i].Reason == reason {
+			return &c.gaps[i]
+		}
+	}
+	c.gaps = append(c.gaps, UnsearchedKind{Kind: "*", Reason: reason})
+	return &c.gaps[len(c.gaps)-1]
+}
+
+// result folds the recorded entries. On a query that names kinds, every
+// kind-level entry is one of them and stays exact. Otherwise pending kinds
+// become one counted "*" entry, and each failure reason names its first
+// maxNamedFailures kinds by kind then group and counts the rest in its "*"
+// entry.
+func (c *coverage) result() []UnsearchedKind {
+	out := []UnsearchedKind{}
+	pending := map[[2]string]bool{}
+	failures := map[readreason.Code][]UnsearchedKind{}
+	for _, gap := range c.gaps {
+		switch class := classify(gap.Reason); {
+		case gap.Kind == "*" || c.namedKinds || class == classScope:
+			out = append(out, gap)
+		case class == classTransient:
+			pending[[2]string{gap.Kind, gap.Group}] = true
+		default:
+			failures[gap.Reason] = append(failures[gap.Reason], gap)
+		}
+	}
+	fold := func(reason readreason.Code, n int) {
+		for i := range out {
+			if out[i].Kind == "*" && out[i].Reason == reason {
+				if !c.unbounded[reason] {
+					out[i].Count += n
+				}
+				return
 			}
 		}
-		kept = append(kept, gap)
+		out = append(out, UnsearchedKind{Kind: "*", Reason: reason, Count: n})
 	}
-	r.Unsearched = kept
-	for _, gap := range folded {
-		r.addGap("*", "", gap.Reason, gap.Namespaces)
+	if len(pending) > 0 {
+		fold(readreason.KindSyncPending, len(pending))
 	}
-	sortGaps(r.Unsearched)
+	for reason, gaps := range failures {
+		sortGaps(gaps)
+		out = append(out, gaps[:min(len(gaps), maxNamedFailures)]...)
+		if len(gaps) > maxNamedFailures {
+			fold(reason, len(gaps)-maxNamedFailures)
+		}
+	}
+	sortGaps(out)
+	return out
 }
 
 func sortGaps(gaps []UnsearchedKind) {
@@ -69,55 +176,39 @@ func sortGaps(gaps []UnsearchedKind) {
 	})
 }
 
-func mergeNamespaces(into, add []string) []string {
-	for _, ns := range add {
-		if !slices.Contains(into, ns) {
-			into = append(into, ns)
-		}
-	}
-	slices.Sort(into)
-	return into
-}
-
 // ScopeNamespaces sets the namespace fields of o for q. visible is what the
-// caller may search after any namespace selection (a saved pick or
-// --namespace-scope): nil means every namespace, empty means none. ceiling is
-// the caller's visibility without that selection. A selection narrower than
-// the ceiling is reported only for queries without ns: terms; with terms, its
-// effect shows up as the requested namespaces it excluded.
+// caller may search after any namespace selection (a saved pick or the
+// --namespace-scope pin): nil means every namespace, empty means none. ceiling
+// is the caller's RBAC visibility without that selection. A namespace an ns:
+// term names but visible leaves out is the caller's RBAC when ceiling excludes
+// it too, and the selection otherwise.
 func (o *Options) ScopeNamespaces(q Query, visible, ceiling []string) {
 	o.Namespaces = visible
 	o.ExcludedNamespaces = nil
-	o.ScopedNamespaces = nil
+	o.SelectionExcludedNamespaces = nil
 	if len(q.NSFilter) > 0 {
 		o.Namespaces = make([]string, 0, len(q.NSFilter))
 		for _, ns := range q.NSFilter {
+			into := &o.ExcludedNamespaces
 			switch {
 			case visible == nil || slices.Contains(visible, ns):
-				if !slices.Contains(o.Namespaces, ns) {
-					o.Namespaces = append(o.Namespaces, ns)
-				}
-			case !slices.Contains(o.ExcludedNamespaces, ns):
-				o.ExcludedNamespaces = append(o.ExcludedNamespaces, ns)
+				into = &o.Namespaces
+			case ceiling == nil || slices.Contains(ceiling, ns):
+				into = &o.SelectionExcludedNamespaces
+			}
+			if !slices.Contains(*into, ns) {
+				*into = append(*into, ns)
 			}
 		}
 	}
 	o.NamespaceExcluded = o.Namespaces != nil && len(o.Namespaces) == 0
-	if !o.NamespaceExcluded && len(q.NSFilter) == 0 && !sameNamespaces(visible, ceiling) {
-		o.ScopedNamespaces = slices.Sorted(slices.Values(visible))
-	}
-}
-
-func sameNamespaces(a, b []string) bool {
-	if (a == nil) != (b == nil) {
-		return false
-	}
-	return slices.Equal(slices.Sorted(slices.Values(a)), slices.Sorted(slices.Values(b)))
 }
 
 // listErrorReason classifies a failed collector list or warm-up. The typed
 // cache reports a probe-disabled kind as a "forbidden:" error, and
-// ErrUnknownKind marks a kind Radar reads directly instead of watching.
+// ErrUnknownKind marks a kind Radar reads directly instead of watching. A 401
+// stays collector_access_denied: the probes and retained observations behind
+// most collector denials do not keep 401 apart from 403.
 func listErrorReason(err error) readreason.Code {
 	if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) || strings.HasPrefix(err.Error(), "forbidden:") {
 		return readreason.CollectorAccessDenied

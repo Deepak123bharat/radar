@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/skyhook-io/radar/internal/filter"
+	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/k8score"
 	"github.com/skyhook-io/radar/pkg/readreason"
 )
@@ -45,8 +46,8 @@ func TestSearchCoverageColdWarmAndUnknown(t *testing.T) {
 	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
 	p := &fakeProvider{kinds: map[schema.GroupVersionResource]string{gvr: "Widget"}, observations: map[schema.GroupVersionResource]k8score.DynamicResourceObservation{gvr: {State: k8score.DynamicObservationUnwatched}}}
 	res, _ := Search(context.Background(), p, Parse(""), Options{})
-	if !res.Partial || len(res.Unsearched) != 1 || res.Unsearched[0].Reason != "kind_not_watched" || len(p.warmed) != 0 {
-		t.Fatalf("cold: %+v warmed=%v", res, p.warmed)
+	if res.Partial || len(res.Unsearched) != 0 || len(p.warmed) != 0 {
+		t.Fatalf("a broad search treats a cold kind as scope: %+v warmed=%v", res, p.warmed)
 	}
 	res, _ = Search(context.Background(), p, Parse("kind:Widget"), Options{})
 	if res.Partial || len(p.warmed) != 1 {
@@ -78,17 +79,27 @@ func TestSearchFilterFailuresAreBoundedAndSecretSafe(t *testing.T) {
 }
 
 func TestSearchCoverageReadFailuresAndPartialNamespaces(t *testing.T) {
-	for _, reason := range []string{"kind_sync_pending", "kind_sync_failed", "kind_not_watched", "collector_scope_limited"} {
+	for _, reason := range []string{"kind_sync_pending", "kind_sync_failed"} {
 		t.Run(reason, func(t *testing.T) {
 			p := &fakeProvider{typedReasons: map[string]string{"Pod": reason}, typed: map[string][]runtime.Object{"pods": {newPod("a", "visible", "x", nil)}}}
 			res, _ := Search(context.Background(), p, Parse("kind:Pod"), Options{})
-			if !res.Partial || len(res.Unsearched) != 1 || string(res.Unsearched[0].Reason) != reason {
+			if !res.Partial || len(res.Unsearched) != 1 || string(res.Unsearched[0].Reason) != reason || len(res.Hits) != 0 {
 				t.Fatalf("read coverage: %+v", res)
 			}
-			if reason != "collector_scope_limited" && len(res.Hits) != 0 {
-				t.Fatalf("incomplete cache served rows: %+v", res)
-			}
 		})
+	}
+	// Radar's collection scope is reported only for a namespace the query
+	// names; the cached namespaces still answer.
+	p := &fakeProvider{typedReasons: map[string]string{"Pod": "collector_scope_limited"}, typed: map[string][]runtime.Object{"pods": {newPod("a", "visible", "x", nil)}}}
+	if res, _ := Search(context.Background(), p, Parse("kind:Pod"), Options{}); res.Partial || len(res.Unsearched) != 0 || len(res.Hits) != 1 {
+		t.Fatalf("kind: alone reported collector scope: %+v", res)
+	}
+	q := Parse("kind:Pod ns:a")
+	opts := Options{}
+	opts.ScopeNamespaces(q, nil, nil)
+	want := []UnsearchedKind{{Kind: "*", Reason: "collector_scope_limited", Namespaces: []string{"a"}}}
+	if res, _ := Search(context.Background(), p, q, opts); !res.Partial || !reflect.DeepEqual(res.Unsearched, want) || len(res.Hits) != 1 {
+		t.Fatalf("named namespace outside collection: %+v, want %+v", res.Unsearched, want)
 	}
 	for _, tc := range []struct {
 		err    error
@@ -123,17 +134,24 @@ func TestSearchDynamicCoverageDoesNotWarmDeniedAndRetainsGoodNamespaces(t *testi
 		t.Fatalf("denied kind warmed or listed: %+v %+v", res, p)
 	}
 	for _, tc := range []struct {
-		state  k8score.DynamicObservationState
-		reason string
-	}{{k8score.DynamicObservationDenied, "collector_access_denied"}, {k8score.DynamicObservationSyncing, "kind_sync_pending"}, {k8score.DynamicObservationUnsupported, "collection_not_supported"}, {k8score.DynamicObservationDeferred, "kind_not_watched"}} {
+		state       k8score.DynamicObservationState
+		query       string
+		kind        string
+		reason      string
+		count       int
+		wantPartial bool
+	}{
+		{k8score.DynamicObservationDenied, "kind:Widget", "Widget", "collector_access_denied", 0, true},
+		{k8score.DynamicObservationDenied, "", "", "", 0, false},
+		{k8score.DynamicObservationSyncing, "", "*", "kind_sync_pending", 1, true},
+		{k8score.DynamicObservationUnsupported, "kind:Widget", "Widget", "collection_not_supported", 0, true},
+		{k8score.DynamicObservationUnsupported, "", "", "", 0, false},
+		{k8score.DynamicObservationDeferred, "", "", "", 0, false},
+	} {
 		p.observations[gvr] = k8score.DynamicResourceObservation{State: tc.state}
-		query := ""
-		if tc.state == k8score.DynamicObservationUnsupported {
-			query = "kind:Widget"
-		}
-		res, _ = Search(context.Background(), p, Parse(query), Options{})
-		if !res.Partial || string(res.Unsearched[0].Reason) != tc.reason {
-			t.Fatalf("dynamic state %s: %+v", tc.state, res)
+		res, _ = Search(context.Background(), p, Parse(tc.query), Options{})
+		if res.Partial != tc.wantPartial || (tc.wantPartial && (len(res.Unsearched) != 1 || res.Unsearched[0].Kind != tc.kind || string(res.Unsearched[0].Reason) != tc.reason || res.Unsearched[0].Count != tc.count)) {
+			t.Fatalf("dynamic state %s, query %q: %+v", tc.state, tc.query, res)
 		}
 	}
 	p.observations[gvr] = k8score.DynamicResourceObservation{State: k8score.DynamicObservationSynced}
@@ -168,14 +186,15 @@ func TestSearchObjectClusterNamespaceAndGuardedArgo(t *testing.T) {
 }
 
 // capFixture serves count cluster-scoped kinds named prefix00, prefix01, …
-// Each kind's group sorts in the reverse of its name, so discovery hands
-// them to Search last-kind-first and the cap cannot lean on discovery order.
-func capFixture(p *fakeProvider, prefix string, count int, state k8score.DynamicObservationState) {
+// observed as observation. Each kind's group sorts in the reverse of its name,
+// so discovery hands them to Search last-kind-first and folding cannot lean on
+// discovery order.
+func capFixture(p *fakeProvider, prefix string, count int, observation k8score.DynamicResourceObservation) {
 	for i := range count {
 		gvr := schema.GroupVersionResource{Group: fmt.Sprintf("g%02d.%s.example.io", count-1-i, strings.ToLower(prefix)), Version: "v1", Resource: fmt.Sprintf("%s%02ds", strings.ToLower(prefix), i)}
 		p.kinds[gvr] = fmt.Sprintf("%s%02d", prefix, i)
 		p.namespaced[gvr] = false
-		p.observations[gvr] = k8score.DynamicResourceObservation{State: state}
+		p.observations[gvr] = observation
 	}
 }
 
@@ -196,25 +215,25 @@ func denyDenied(kind, _, _ string) (bool, bool) {
 	return !strings.HasPrefix(kind, "Denied"), true
 }
 
-func TestSearchBroadCoverageCapsNamedKindsPerReason(t *testing.T) {
+var (
+	synced  = k8score.DynamicResourceObservation{State: k8score.DynamicObservationSynced}
+	syncing = k8score.DynamicResourceObservation{State: k8score.DynamicObservationSyncing}
+	stalled = k8score.DynamicResourceObservation{State: k8score.DynamicObservationSyncing, ReasonCode: "sync_stalled"}
+)
+
+// The caller's access and Radar's setup are a search's scope: a broad search
+// names none of it, however many kinds it covers, while a kind: term gets an
+// exact entry for every kind it names.
+func TestBroadSearchNamesNoScopeReasons(t *testing.T) {
 	p := newCapProvider()
-	capFixture(p, "Denied", 25, k8score.DynamicObservationSynced)
+	capFixture(p, "Denied", 25, synced)
+	capFixture(p, "Blocked", 3, k8score.DynamicResourceObservation{State: k8score.DynamicObservationDenied})
+	capFixture(p, "Cold", 2, k8score.DynamicResourceObservation{State: k8score.DynamicObservationUnwatched})
+	capFixture(p, "Listonly", 2, k8score.DynamicResourceObservation{State: k8score.DynamicObservationUnsupported})
 
 	res, err := Search(context.Background(), p, Parse("robusta"), Options{CanReadClusterScoped: denyDenied})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := append([]UnsearchedKind{{Kind: "*", Group: "", Reason: readreason.RBACDenied}}, capNamed("Denied", 25, 0, 19, readreason.RBACDenied)...)
-	if !res.Partial || len(res.Unsearched) != 21 || !reflect.DeepEqual(res.Unsearched, want) {
-		t.Fatalf("broad coverage (%d entries): %+v\nwant %+v", len(res.Unsearched), res.Unsearched, want)
-	}
-	if first, last := res.Unsearched[1], res.Unsearched[20]; first.Kind != "Denied00" || first.Group != "g24.denied.example.io" || last.Kind != "Denied19" || last.Group != "g05.denied.example.io" {
-		t.Fatalf("kept entries are not the first 20 by kind: first %+v last %+v", first, last)
-	}
-
-	again, _ := Search(context.Background(), p, Parse("robusta"), Options{CanReadClusterScoped: denyDenied})
-	if !reflect.DeepEqual(again.Unsearched, res.Unsearched) {
-		t.Fatalf("repeat search changed coverage: %+v", again.Unsearched)
+	if err != nil || res.Partial || !reflect.DeepEqual(res.Unsearched, []UnsearchedKind{}) || len(p.warmed) != 0 {
+		t.Fatalf("broad search reported scope: %+v %v warmed=%v", res, err, p.warmed)
 	}
 
 	var terms []string
@@ -222,59 +241,90 @@ func TestSearchBroadCoverageCapsNamedKindsPerReason(t *testing.T) {
 		terms = append(terms, fmt.Sprintf("kind:Denied%02d", i))
 	}
 	res, _ = Search(context.Background(), p, Parse(strings.Join(terms, " ")+" robusta"), Options{CanReadClusterScoped: denyDenied})
-	if want := capNamed("Denied", 25, 0, 24, readreason.RBACDenied); len(res.Unsearched) != 25 || !reflect.DeepEqual(res.Unsearched, want) {
-		t.Fatalf("kind: query must list every named kind, got %d: %+v", len(res.Unsearched), res.Unsearched)
+	if want := capNamed("Denied", 25, 0, 24, readreason.RBACDenied); !res.Partial || !reflect.DeepEqual(res.Unsearched, want) {
+		t.Fatalf("kind: query must name every named kind, got %d: %+v", len(res.Unsearched), res.Unsearched)
+	}
+	res, _ = Search(context.Background(), p, Parse("kind:Blocked01 kind:Listonly00"), Options{CanReadClusterScoped: denyDenied})
+	want := append(capNamed("Blocked", 3, 1, 1, readreason.CollectorAccessDenied), capNamed("Listonly", 2, 0, 0, readreason.CollectionNotSupported)...)
+	if !reflect.DeepEqual(res.Unsearched, want) {
+		t.Fatalf("named setup reasons = %+v, want %+v", res.Unsearched, want)
 	}
 }
 
-func TestSearchCoverageCapIsPerReasonAndKeepsCollapsedReasons(t *testing.T) {
+// Loading and failed kinds are always reported, folded: pending kinds become
+// one counted entry, and each failure reason names five kinds and counts the
+// rest.
+func TestBroadSearchFoldsTransientAndFailureReasons(t *testing.T) {
 	p := newCapProvider()
-	capFixture(p, "Denied", 25, k8score.DynamicObservationSynced)
-	capFixture(p, "Pending", 22, k8score.DynamicObservationSyncing)
-	capFixture(p, "Blocked", 3, k8score.DynamicObservationDenied)
-	capFixture(p, "Cold", 2, k8score.DynamicObservationUnwatched)
+	capFixture(p, "Pending", 22, syncing)
+	capFixture(p, "Failed", 8, stalled)
+	capFixture(p, "Broken", 2, stalled)
 
-	res, _ := Search(context.Background(), p, Parse("robusta"), Options{CanReadClusterScoped: denyDenied, Namespaces: []string{"team-a"}, ScopedNamespaces: []string{"team-a"}})
+	res, _ := Search(context.Background(), p, Parse("robusta"), Options{})
 	want := []UnsearchedKind{
-		{Kind: "*", Reason: readreason.KindNotWatched},
-		{Kind: "*", Reason: readreason.KindSyncPending},
-		{Kind: "*", Reason: readreason.NamespaceScopeLimited, Namespaces: []string{"team-a"}},
-		{Kind: "*", Reason: readreason.RBACDenied},
+		{Kind: "*", Reason: readreason.KindSyncFailed, Count: 5},
+		{Kind: "*", Reason: readreason.KindSyncPending, Count: 22},
 	}
-	want = append(want, capNamed("Blocked", 3, 0, 2, readreason.CollectorAccessDenied)...)
-	want = append(want, capNamed("Denied", 25, 0, 19, readreason.RBACDenied)...)
-	want = append(want, capNamed("Pending", 22, 0, 19, readreason.KindSyncPending)...)
-	if len(res.Unsearched) != 47 || !reflect.DeepEqual(res.Unsearched, want) {
-		t.Fatalf("per-reason cap (%d entries): %+v\nwant %+v", len(res.Unsearched), res.Unsearched, want)
+	want = append(want, capNamed("Broken", 2, 0, 1, readreason.KindSyncFailed)...)
+	want = append(want, capNamed("Failed", 8, 0, 2, readreason.KindSyncFailed)...)
+	if !res.Partial || !reflect.DeepEqual(res.Unsearched, want) {
+		t.Fatalf("folded coverage (%d entries): %+v\nwant %+v", len(res.Unsearched), res.Unsearched, want)
+	}
+	again, _ := Search(context.Background(), p, Parse("robusta"), Options{})
+	if !reflect.DeepEqual(again.Unsearched, res.Unsearched) {
+		t.Fatalf("repeat search changed coverage: %+v", again.Unsearched)
+	}
+
+	res, _ = Search(context.Background(), p, Parse("kind:Pending03 kind:Failed07"), Options{})
+	want = append(capNamed("Failed", 8, 7, 7, readreason.KindSyncFailed), capNamed("Pending", 22, 3, 3, readreason.KindSyncPending)...)
+	if !reflect.DeepEqual(res.Unsearched, want) {
+		t.Fatalf("named kinds stay exact: %+v, want %+v", res.Unsearched, want)
 	}
 }
 
-func TestCapNamedGapsOrdersByKindThenGroup(t *testing.T) {
-	gaps := func(order []int) []UnsearchedKind {
-		all := []UnsearchedKind{
-			{Kind: "Alpha", Group: "a.example.io", Reason: readreason.RBACDenied},
-			{Kind: "Alpha", Group: "b.example.io", Reason: readreason.RBACDenied},
-			{Kind: "Beta", Group: "", Reason: readreason.RBACDenied},
-			{Kind: "Beta", Group: "a.example.io", Reason: readreason.RBACDenied},
-			{Kind: "Gamma", Group: "a.example.io", Reason: readreason.RBACDenied},
-		}
-		out := make([]UnsearchedKind, 0, len(order))
+func TestFailureFoldOrdersByKindThenGroup(t *testing.T) {
+	all := []UnsearchedKind{
+		{Kind: "Alpha", Group: "a.example.io", Reason: readreason.ReadError},
+		{Kind: "Alpha", Group: "b.example.io", Reason: readreason.ReadError},
+		{Kind: "Beta", Group: "", Reason: readreason.ReadError},
+		{Kind: "Beta", Group: "a.example.io", Reason: readreason.ReadError},
+		{Kind: "Delta", Group: "a.example.io", Reason: readreason.ReadError},
+		{Kind: "Gamma", Group: "a.example.io", Reason: readreason.ReadError},
+		{Kind: "Gamma", Group: "b.example.io", Reason: readreason.ReadError},
+	}
+	want := append([]UnsearchedKind{{Kind: "*", Reason: readreason.ReadError, Count: 2}}, all[:5]...)
+	for _, order := range [][]int{{0, 1, 2, 3, 4, 5, 6}, {6, 5, 4, 3, 2, 1, 0}, {3, 1, 6, 4, 0, 2, 5}} {
+		cov := newCoverage(Parse("robusta"))
 		for _, i := range order {
-			out = append(out, all[i])
+			cov.kind(all[i].Kind, all[i].Group, all[i].Reason)
 		}
-		return out
-	}
-	want := []UnsearchedKind{
-		{Kind: "*", Reason: readreason.RBACDenied},
-		{Kind: "Alpha", Group: "a.example.io", Reason: readreason.RBACDenied},
-		{Kind: "Alpha", Group: "b.example.io", Reason: readreason.RBACDenied},
-		{Kind: "Beta", Group: "", Reason: readreason.RBACDenied},
-	}
-	for _, order := range [][]int{{0, 1, 2, 3, 4}, {4, 3, 2, 1, 0}, {3, 1, 4, 0, 2}} {
-		res := Result{Unsearched: gaps(order)}
-		res.capNamedGaps(3)
-		if !reflect.DeepEqual(res.Unsearched, want) || !res.Partial {
-			t.Fatalf("input order %v: %+v", order, res.Unsearched)
+		if got := cov.result(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("input order %v: %+v", order, got)
 		}
 	}
 }
+
+// A kind seen pending in several namespaces is one kind still loading.
+func TestPendingCountCountsDistinctKinds(t *testing.T) {
+	cov := newCoverage(Parse("robusta"))
+	for _, gap := range []UnsearchedKind{{Kind: "Widget", Group: "a.example.io"}, {Kind: "Widget", Group: "a.example.io"}, {Kind: "Widget", Group: "b.example.io"}, {Kind: "Pod"}} {
+		cov.kind(gap.Kind, gap.Group, readreason.KindSyncPending)
+	}
+	if got, want := cov.result(), []UnsearchedKind{{Kind: "*", Reason: readreason.KindSyncPending, Count: 3}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("pending fold = %+v, want %+v", got, want)
+	}
+}
+
+// Until discovery is ready a kind: term that matched nothing may simply not be
+// discovered yet, so the answer is "still loading", never "no such kind", and
+// the pending entry carries no count because the catalog is unknown.
+func TestLoadingCatalogIsPendingNotUnknown(t *testing.T) {
+	p := &fakeProvider{catalogErr: fmt.Errorf("%w: discovery", k8s.ErrDynamicNotReady), typedReasons: map[string]string{"ConfigMap": "kind_sync_pending"}}
+	want := []UnsearchedKind{{Kind: "*", Reason: readreason.KindSyncPending}}
+	for _, query := range []string{"kind:Certificate", "robusta"} {
+		if res, _ := Search(context.Background(), p, Parse(query), Options{}); !res.Partial || !reflect.DeepEqual(res.Unsearched, want) {
+			t.Fatalf("%s while discovery loads = %+v, want %+v", query, res.Unsearched, want)
+		}
+	}
+}
+

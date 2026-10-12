@@ -99,7 +99,7 @@ func TestBroadSearchIncludesThirdPartyEvent(t *testing.T) {
 	}
 	p.observations = map[schema.GroupVersionResource]k8score.DynamicResourceObservation{gvr: {State: k8score.DynamicObservationSyncing}}
 	res, _ = Search(context.Background(), p, Parse(""), Options{})
-	if !res.Partial || len(res.Unsearched) != 1 || res.Unsearched[0].Kind != "Event" || res.Unsearched[0].Group != "example.io" {
+	if !res.Partial || !reflect.DeepEqual(res.Unsearched, []UnsearchedKind{{Kind: "*", Reason: "kind_sync_pending", Count: 1}}) {
 		t.Fatalf("Event coverage: %+v", res)
 	}
 }

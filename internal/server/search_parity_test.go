@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 
@@ -37,8 +36,8 @@ func TestSearchCoverageMatchesAcrossRESTAndMCP(t *testing.T) {
 		{Group: widgets.Group, Version: widgets.Version, Name: widgets.Resource, Kind: "Widget", Namespaced: true, Verbs: []string{"get", "list", "watch"}},
 		{Group: reports.Group, Version: reports.Version, Name: reports.Resource, Kind: "Report", Namespaced: true, Verbs: []string{"get", "list"}},
 	}
-	// 25 cluster-scoped kinds Radar's own identity may not list: enough
-	// per-kind entries for one reason to reach the broad-query cap.
+	// 25 cluster-scoped kinds Radar's own identity may not list: more than a
+	// broad search would ever name.
 	var gadgets []schema.GroupVersionResource
 	var gadgetTerms []string
 	for i := range 25 {
@@ -77,27 +76,37 @@ func TestSearchCoverageMatchesAcrossRESTAndMCP(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = session.Close() })
 
+	var deniedGadgets []search.UnsearchedKind
+	for i := range 25 {
+		deniedGadgets = append(deniedGadgets, search.UnsearchedKind{Kind: fmt.Sprintf("Gadget%02d", i), Group: "gadgets.example.io", Reason: "collector_access_denied"})
+	}
 	for _, tc := range []struct {
 		query string
-		want  search.UnsearchedKind
-		// named counts the entries for want.Reason that name a kind.
-		named int
+		want  []search.UnsearchedKind
 	}{
-		{"robusta", search.UnsearchedKind{Kind: "*", Group: "", Reason: "kind_not_watched"}, 0},
-		{"kind:NoSuchKindXyz robusta", search.UnsearchedKind{Kind: "NoSuchKindXyz", Group: "", Reason: "unknown_kind"}, 1},
-		{"kind:Report robusta", search.UnsearchedKind{Kind: "Report", Group: "example.io", Reason: "collection_not_supported"}, 1},
-		{"robusta", search.UnsearchedKind{Kind: "*", Group: "", Reason: "collector_access_denied"}, 20},
-		{strings.Join(gadgetTerms, " ") + " robusta", search.UnsearchedKind{Kind: "Gadget24", Group: "gadgets.example.io", Reason: "collector_access_denied"}, 25},
+		// Unwatched kinds, list-only APIs and kinds Radar's own identity may
+		// not list are the search's scope: a broad query names none of them.
+		{"robusta", []search.UnsearchedKind{}},
+		{"kind:NoSuchKindXyz robusta", []search.UnsearchedKind{{Kind: "NoSuchKindXyz", Reason: "unknown_kind"}}},
+		{"kind:Report robusta", []search.UnsearchedKind{{Kind: "Report", Group: "example.io", Reason: "collection_not_supported"}}},
+		{strings.Join(gadgetTerms, " ") + " robusta", deniedGadgets},
 	} {
 		resp, err := http.Get(ts.URL + "/api/search?context=none&include=none&q=" + url.QueryEscape(tc.query))
 		if err != nil {
 			t.Fatal(err)
 		}
-		var rest search.Result
+		var rest map[string]json.RawMessage
 		err = json.NewDecoder(resp.Body).Decode(&rest)
 		_ = resp.Body.Close()
 		if err != nil || resp.StatusCode != http.StatusOK {
 			t.Fatalf("%s: REST search: status %d: %v", tc.query, resp.StatusCode, err)
+		}
+		if _, ok := rest["coverageHint"]; ok {
+			t.Fatalf("%s: coverageHint leaked into REST", tc.query)
+		}
+		var restResult search.Result
+		if err := json.Unmarshal(mustJSON(t, rest), &restResult); err != nil {
+			t.Fatal(err)
 		}
 
 		result, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "search", Arguments: map[string]any{"query": tc.query, "include": "none", "context": "none"}})
@@ -108,25 +117,31 @@ func TestSearchCoverageMatchesAcrossRESTAndMCP(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s: MCP search returned %T", tc.query, result.Content[0])
 		}
-		var viaMCP search.Result
+		var viaMCP struct {
+			search.Result
+			CoverageHint string `json:"coverageHint"`
+		}
 		if err := json.Unmarshal([]byte(text.Text), &viaMCP); err != nil {
 			t.Fatal(err)
 		}
 
-		if !reflect.DeepEqual(rest.Unsearched, viaMCP.Unsearched) || rest.Partial != viaMCP.Partial {
-			t.Fatalf("%s: REST coverage %+v differs from MCP %+v", tc.query, rest.Unsearched, viaMCP.Unsearched)
+		if !reflect.DeepEqual(restResult.Unsearched, tc.want) || restResult.Partial != (len(tc.want) > 0) {
+			t.Fatalf("%s: REST coverage %+v (partial=%v), want %+v", tc.query, restResult.Unsearched, restResult.Partial, tc.want)
 		}
-		if !rest.Partial || !slices.ContainsFunc(rest.Unsearched, func(gap search.UnsearchedKind) bool { return reflect.DeepEqual(gap, tc.want) }) {
-			t.Fatalf("%s: coverage %+v lacks %+v", tc.query, rest.Unsearched, tc.want)
+		if !reflect.DeepEqual(restResult.Unsearched, viaMCP.Unsearched) || restResult.Partial != viaMCP.Partial {
+			t.Fatalf("%s: REST coverage %+v differs from MCP %+v", tc.query, restResult.Unsearched, viaMCP.Unsearched)
 		}
-		named := 0
-		for _, gap := range rest.Unsearched {
-			if gap.Reason == tc.want.Reason && gap.Kind != "*" {
-				named++
-			}
-		}
-		if named != tc.named {
-			t.Fatalf("%s: %d named %s entries, want %d: %+v", tc.query, named, tc.want.Reason, tc.named, rest.Unsearched)
+		if (viaMCP.CoverageHint != "") != viaMCP.Partial {
+			t.Fatalf("%s: MCP partial=%v with coverageHint %q", tc.query, viaMCP.Partial, viaMCP.CoverageHint)
 		}
 	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

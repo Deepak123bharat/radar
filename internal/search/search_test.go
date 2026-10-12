@@ -27,6 +27,7 @@ type fakeProvider struct {
 	listErrors            map[string]error
 	dynamicErrors         map[string]error
 	warmError             error
+	catalogErr            error
 	typed                 map[string][]runtime.Object
 	dynamic               map[schema.GroupVersionResource][]*unstructured.Unstructured
 	kinds                 map[schema.GroupVersionResource]string
@@ -44,6 +45,9 @@ func (f *fakeProvider) ListDynamic(_ context.Context, gvr schema.GroupVersionRes
 }
 
 func (f *fakeProvider) DynamicResources() ([]schema.GroupVersionResource, error) {
+	if f.catalogErr != nil {
+		return nil, f.catalogErr
+	}
 	seen := map[schema.GroupVersionResource]bool{}
 	for gvr := range f.dynamic {
 		seen[gvr] = true
