@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/skyhook-io/radar/pkg/configrefs"
 	"github.com/skyhook-io/radar/pkg/gitops"
@@ -9007,6 +9008,15 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 		}
 	}
 
+	referencedOwnerUIDs := make(map[types.UID]bool)
+	for _, node := range nodes {
+		for _, owner := range node.ownerReferences {
+			if owner.UID != "" {
+				referencedOwnerUIDs[owner.UID] = true
+			}
+		}
+	}
+	resourcesByType := make(map[string][]*unstructured.Unstructured)
 	for _, typeKey := range selectedKeys {
 		selection := selected[typeKey]
 		gvr, kind := selection.gvr, selection.kind
@@ -9021,7 +9031,23 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 			continue
 		}
 
+		resourcesByType[typeKey] = resources
 		for _, resource := range resources {
+			if ns := resource.GetNamespace(); ns != "" && !opts.MatchesNamespaceFilter(ns) {
+				continue
+			}
+			for _, owner := range resource.GetOwnerReferences() {
+				if owner.UID != "" {
+					referencedOwnerUIDs[owner.UID] = true
+				}
+			}
+		}
+	}
+
+	for _, typeKey := range selectedKeys {
+		selection := selected[typeKey]
+		gvr, kind := selection.gvr, selection.kind
+		for _, resource := range resourcesByType[typeKey] {
 			ns := resource.GetNamespace()
 			if ns != "" && !opts.MatchesNamespaceFilter(ns) {
 				continue
@@ -9032,6 +9058,9 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 			name := resource.GetName()
 			resourceKey := resourceid.ResourceKey(gvr.Group, kind, ns, name)
 			nodeID, existing := existingResourceIDs[resourceKey]
+			if !existing && len(ownerRefs) == 0 && !referencedOwnerUIDs[resource.GetUID()] {
+				continue
+			}
 			if !existing {
 				nodeID = fmt.Sprintf("%s/%s/%s/%s", strings.ToLower(kind), ns, name, gvr.Group)
 				if existingIDs[nodeID] {
