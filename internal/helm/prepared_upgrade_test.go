@@ -188,6 +188,7 @@ func TestDeployedCloudDisabledRequiresSafeRollbackState(t *testing.T) {
 func TestPreparedReleaseIdentityRollbackMatchIgnoresOnlyRevision(t *testing.T) {
 	original := preparedReleaseIdentity{
 		revision:     4,
+		namespace:    "radar",
 		status:       release.StatusDeployed,
 		chartName:    "radar",
 		chartVersion: "1.5.4",
@@ -209,6 +210,26 @@ func TestPreparedReleaseIdentityRollbackMatchIgnoresOnlyRevision(t *testing.T) {
 	changed.status = release.StatusFailed
 	if original.sameReleaseContent(changed) {
 		t.Fatal("non-deployed rollback was accepted")
+	}
+	changed = rolledBack
+	changed.namespace = "other"
+	if original.sameReleaseContent(changed) {
+		t.Fatal("rollback recorded in another namespace was accepted")
+	}
+
+	rel := &release.Release{Name: "radar", Namespace: "radar", Version: 4, Info: &release.Info{Status: release.StatusDeployed}, Manifest: "manifest"}
+	moved := *rel
+	moved.Namespace = "other"
+	before, err := releaseIdentity(rel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := releaseIdentity(&moved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == after {
+		t.Fatal("a release record moved to another namespace kept its prepared identity")
 	}
 }
 
@@ -251,6 +272,27 @@ func TestPrepareCloudUpgradeRefusesReleaseRunningOutsideItsStorageNamespace(t *t
 	_, err = (&Client{}).prepareCloudUpgradeWith(context.Background(), cfg, request, "1.5.4")
 	if err == nil || !strings.Contains(err.Error(), `history in namespace "flux-system" but runs in "radar-system"`) {
 		t.Fatalf("split-namespace release was not refused: %v", err)
+	}
+
+	// A record without a namespace says nothing about where the release runs.
+	unrecorded := memoryActionConfig(t)
+	blank := *current
+	blank.Namespace = ""
+	if err := unrecorded.Releases.Create(&blank); err != nil {
+		t.Fatal(err)
+	}
+	targetChart, err := loader.Load("../../deploy/helm/radar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetChart.Metadata.Version = "1.7.0"
+	targetChart.Metadata.AppVersion = "1.7.2"
+	server := preparedChartServer(t, targetChart)
+	defer server.Close()
+	request.Repository = server.URL
+	_, err = (&Client{}).prepareCloudUpgradeWith(context.Background(), unrecorded, request, "1.5.4")
+	if err != nil && strings.Contains(err.Error(), "keeps its Helm history") {
+		t.Fatalf("release without a recorded namespace was refused as split: %v", err)
 	}
 }
 
