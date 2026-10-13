@@ -329,6 +329,9 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 	if resourceKind == "" {
 		resourceKind = normalizeKindWithGroup(kind, objectGroup, dp)
 	}
+	if builtin, ok := resourceid.BuiltinForName(resourceKind); ok {
+		resourceKind = builtin.Kind
+	}
 	resourceGroup := resourceid.ResolveCurrent(resourceid.OptionalGroupReference(objectGroup, resourceKind, namespace, name), nil).Ref.Group
 	if exactNode := lookupIndex.nodesByResourceKey[resourceid.ResourceKey(resourceGroup, resourceKind, namespace, name)]; exactNode != nil {
 		nodeID = exactNode.ID
@@ -513,7 +516,7 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 	// so users see Pods directly under Deployments and vice versa.
 
 	// Deployment → show grandchild Pods (Deployment→ReplicaSet→Pod)
-	if kindLower == "deployments" || kindLower == "deployment" {
+	if resourceGroup == "apps" && (kindLower == "deployments" || kindLower == "deployment") {
 		for _, child := range rel.Children {
 			// The shortcut IDs below are group-less, so only the built-in
 			// ReplicaSet may take it; a same-named CRD would resolve to another
@@ -526,7 +529,7 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 						continue
 					}
 					podRef := refForNodeID(edge.Target)
-					if podRef != nil && strings.EqualFold(podRef.Kind, "Pod") {
+					if podRef != nil && strings.EqualFold(podRef.Kind, "Pod") && podRef.Group == "" {
 						rel.Pods = append(rel.Pods, *podRef)
 					}
 				}
@@ -535,7 +538,7 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 	}
 
 	// Pod → if owner is a ReplicaSet, also show the grandparent Deployment
-	if kindLower == "pods" || kindLower == "pod" {
+	if resourceGroup == "" && (kindLower == "pods" || kindLower == "pod") {
 		if rel.Owner != nil && strings.EqualFold(rel.Owner.Kind, "ReplicaSet") && isAppsGroup(rel.Owner.Group) {
 			ownerID := buildNodeID(rel.Owner.Kind, rel.Owner.Namespace, rel.Owner.Name, dp)
 			ownerIncoming, _ := edgesForNode(topo, lookupIndex, ownerID)
@@ -544,7 +547,7 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 					continue
 				}
 				deployRef := refForNodeID(edge.Source)
-				if deployRef != nil && strings.EqualFold(deployRef.Kind, "Deployment") {
+				if deployRef != nil && strings.EqualFold(deployRef.Kind, "Deployment") && isAppsGroup(deployRef.Group) {
 					rel.Deployment = deployRef
 					break
 				}
@@ -553,7 +556,8 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 	}
 
 	// Storage chain: PVC→PV→StorageClass (direct provider lookups, not topology edges)
-	if provider != nil {
+	builtinGroup, builtinKind := resourceid.BuiltinGroup(resourceKind)
+	if provider != nil && builtinKind && resourceGroup == builtinGroup {
 		switch kindLower {
 		case "persistentvolumeclaim", "persistentvolumeclaims", "pvc", "pvcs":
 			pvcs, _ := provider.PersistentVolumeClaims()
@@ -799,7 +803,12 @@ func resourceRefForNode(node *Node, dp DynamicProvider) *ResourceRef {
 	}
 	ref := parseNodeID(node.ID, dp)
 	if ref == nil {
-		return nil
+		// Cluster-scoped graph nodes can use kind/name IDs. Their observed
+		// metadata still carries the complete Kubernetes identity.
+		if node.Kind == KindPodGroup || node.Name == "" {
+			return nil
+		}
+		ref = &ResourceRef{Name: node.Name, Namespace: nodeNamespaceFromData(node)}
 	}
 	ref.Kind = KubernetesKindForNode(node)
 	ref.Group = nodeGroup(node)
@@ -1053,6 +1062,101 @@ func lookupTypedMetadata(kindLower, namespace, name string, provider ResourcePro
 	return nil
 }
 
+var topologyNodeKindAliases = map[string]string{
+	"pods":                             "pod",
+	"services":                         "service",
+	"deployments":                      "deployment",
+	"rollouts":                         "rollout",
+	"daemonsets":                       "daemonset",
+	"statefulsets":                     "statefulset",
+	"replicasets":                      "replicaset",
+	"ingresses":                        "ingress",
+	"gateways":                         "gateway",
+	"httproutes":                       "httproute",
+	"grpcroutes":                       "grpcroute",
+	"tcproutes":                        "tcproute",
+	"udproutes":                        "udproute",
+	"tlsroutes":                        "tlsroute",
+	"configmaps":                       "configmap",
+	"secrets":                          "secret",
+	"serviceaccounts":                  "serviceaccount",
+	"sealedsecrets":                    "sealedsecret",
+	"horizontalpodautoscalers":         "horizontalpodautoscaler",
+	"jobs":                             "job",
+	"cronjobs":                         "cronjob",
+	"persistentvolumeclaims":           "persistentvolumeclaim",
+	"applications":                     "application",
+	"kustomizations":                   "kustomization",
+	"helmreleases":                     "helmrelease",
+	"gitrepositories":                  "gitrepository",
+	"certificates":                     "certificate",
+	"issuers":                          "issuer",
+	"clusterissuers":                   "clusterissuer",
+	"nodepools":                        "nodepool",
+	"nodeclaims":                       "nodeclaim",
+	"nodeclasses":                      "nodeclass",
+	"ec2nodeclasses":                   "nodeclass",
+	"aksnodeclasses":                   "nodeclass",
+	"gcenodeclasses":                   "nodeclass",
+	"scaledobjects":                    "scaledobject",
+	"scaledjobs":                       "scaledjob",
+	"gatewayclasses":                   "gatewayclass",
+	"virtualservices":                  "virtualservice",
+	"destinationrules":                 "destinationrule",
+	"istiogateways":                    "istiogateway",
+	"serviceentries":                   "serviceentry",
+	"peerauthentications":              "peerauthentication",
+	"authorizationpolicies":            "authorizationpolicy",
+	"knativeservices":                  "knativeservice",
+	"configurations":                   "knativeconfiguration",
+	"revisions":                        "knativerevision",
+	"routes":                           "knativeroute",
+	"brokers":                          "broker",
+	"triggers":                         "trigger",
+	"pingsources":                      "pingsource",
+	"apiserversources":                 "apiserversource",
+	"containersources":                 "containersource",
+	"sinkbindings":                     "sinkbinding",
+	"channels":                         "channel",
+	"ingressroutes":                    "ingressroute", // Traefik
+	"ingressroutetcps":                 "ingressroutetcp",
+	"ingressrouteudps":                 "ingressrouteudp",
+	"middlewares":                      "middleware",
+	"middlewaretcps":                   "middlewaretcp",
+	"traefikservices":                  "traefikservice",
+	"serverstransports":                "serverstransport",
+	"serverstransporttcps":             "serverstransporttcp",
+	"tlsoptions":                       "tlsoption",
+	"tlsstores":                        "tlsstore",
+	"httpproxies":                      "httpproxy", // Contour
+	"persistentvolumes":                "persistentvolume",
+	"pvs":                              "persistentvolume",
+	"storageclasses":                   "storageclass",
+	"poddisruptionbudgets":             "poddisruptionbudget",
+	"pdbs":                             "poddisruptionbudget",
+	"networkpolicies":                  "networkpolicy",
+	"netpol":                           "networkpolicy",
+	"ciliumnetworkpolicies":            "ciliumnetworkpolicy",
+	"ciliumclusterwidenetworkpolicies": "ciliumclusterwidenetworkpolicy",
+	"clusternetworkpolicies":           "clusternetworkpolicy",
+	"verticalpodautoscalers":           "verticalpodautoscaler",
+	"servicemonitors":                  "servicemonitor",
+	"podmonitors":                      "podmonitor",
+	"vpas":                             "verticalpodautoscaler",
+	"nodes":                            "node",
+	"clusterclasses":                   "clusterclass",        // Cluster API
+	"machines":                         "machine",             // Cluster API
+	"machinesets":                      "machineset",          // Cluster API
+	"machinedeployments":               "machinedeployment",   // Cluster API
+	"machinepools":                     "machinepool",         // Cluster API
+	"kubeadmcontrolplanes":             "kubeadmcontrolplane", // Cluster API
+	"machinehealthchecks":              "machinehealthcheck",  // Cluster API
+	"resourceclaims":                   "resourceclaim",       // DRA
+	"resourceclaimtemplates":           "resourceclaimtemplate",
+	"deviceclasses":                    "deviceclass",
+	"resourceslices":                   "resourceslice",
+}
+
 // buildNodeID constructs a node ID from kind, namespace, and name
 // This must match the format used in builder.go
 // Format: kind/namespace/name (using / since it's not allowed in K8s names)
@@ -1081,102 +1185,8 @@ func buildNodeID(kind, namespace, name string, dp DynamicProvider) string {
 	}
 
 	// Handle plural to singular conversion for common types
-	kindMap := map[string]string{
-		"pods":                             "pod",
-		"services":                         "service",
-		"deployments":                      "deployment",
-		"rollouts":                         "rollout",
-		"daemonsets":                       "daemonset",
-		"statefulsets":                     "statefulset",
-		"replicasets":                      "replicaset",
-		"ingresses":                        "ingress",
-		"gateways":                         "gateway",
-		"httproutes":                       "httproute",
-		"grpcroutes":                       "grpcroute",
-		"tcproutes":                        "tcproute",
-		"udproutes":                        "udproute",
-		"tlsroutes":                        "tlsroute",
-		"configmaps":                       "configmap",
-		"secrets":                          "secret",
-		"serviceaccounts":                  "serviceaccount",
-		"sealedsecrets":                    "sealedsecret",
-		"horizontalpodautoscalers":         "horizontalpodautoscaler",
-		"jobs":                             "job",
-		"cronjobs":                         "cronjob",
-		"persistentvolumeclaims":           "persistentvolumeclaim",
-		"applications":                     "application",
-		"kustomizations":                   "kustomization",
-		"helmreleases":                     "helmrelease",
-		"gitrepositories":                  "gitrepository",
-		"certificates":                     "certificate",
-		"issuers":                          "issuer",
-		"clusterissuers":                   "clusterissuer",
-		"nodepools":                        "nodepool",
-		"nodeclaims":                       "nodeclaim",
-		"nodeclasses":                      "nodeclass",
-		"ec2nodeclasses":                   "nodeclass",
-		"aksnodeclasses":                   "nodeclass",
-		"gcenodeclasses":                   "nodeclass",
-		"scaledobjects":                    "scaledobject",
-		"scaledjobs":                       "scaledjob",
-		"gatewayclasses":                   "gatewayclass",
-		"virtualservices":                  "virtualservice",
-		"destinationrules":                 "destinationrule",
-		"istiogateways":                    "istiogateway",
-		"serviceentries":                   "serviceentry",
-		"peerauthentications":              "peerauthentication",
-		"authorizationpolicies":            "authorizationpolicy",
-		"knativeservices":                  "knativeservice",
-		"configurations":                   "knativeconfiguration",
-		"revisions":                        "knativerevision",
-		"routes":                           "knativeroute",
-		"brokers":                          "broker",
-		"triggers":                         "trigger",
-		"pingsources":                      "pingsource",
-		"apiserversources":                 "apiserversource",
-		"containersources":                 "containersource",
-		"sinkbindings":                     "sinkbinding",
-		"channels":                         "channel",
-		"ingressroutes":                    "ingressroute", // Traefik
-		"ingressroutetcps":                 "ingressroutetcp",
-		"ingressrouteudps":                 "ingressrouteudp",
-		"middlewares":                      "middleware",
-		"middlewaretcps":                   "middlewaretcp",
-		"traefikservices":                  "traefikservice",
-		"serverstransports":                "serverstransport",
-		"serverstransporttcps":             "serverstransporttcp",
-		"tlsoptions":                       "tlsoption",
-		"tlsstores":                        "tlsstore",
-		"httpproxies":                      "httpproxy", // Contour
-		"persistentvolumes":                "persistentvolume",
-		"pvs":                              "persistentvolume",
-		"storageclasses":                   "storageclass",
-		"poddisruptionbudgets":             "poddisruptionbudget",
-		"pdbs":                             "poddisruptionbudget",
-		"networkpolicies":                  "networkpolicy",
-		"netpol":                           "networkpolicy",
-		"ciliumnetworkpolicies":            "ciliumnetworkpolicy",
-		"ciliumclusterwidenetworkpolicies": "ciliumclusterwidenetworkpolicy",
-		"clusternetworkpolicies":           "clusternetworkpolicy",
-		"verticalpodautoscalers":           "verticalpodautoscaler",
-		"servicemonitors":                  "servicemonitor",
-		"podmonitors":                      "podmonitor",
-		"vpas":                             "verticalpodautoscaler",
-		"nodes":                            "node",
-		"clusterclasses":                   "clusterclass",        // Cluster API
-		"machines":                         "machine",             // Cluster API
-		"machinesets":                      "machineset",          // Cluster API
-		"machinedeployments":               "machinedeployment",   // Cluster API
-		"machinepools":                     "machinepool",         // Cluster API
-		"kubeadmcontrolplanes":             "kubeadmcontrolplane", // Cluster API
-		"machinehealthchecks":              "machinehealthcheck",  // Cluster API
-		"resourceclaims":                   "resourceclaim",       // DRA
-		"resourceclaimtemplates":           "resourceclaimtemplate",
-		"deviceclasses":                    "deviceclass",
-		"resourceslices":                   "resourceslice",
-	}
 
-	if singular, ok := kindMap[k]; ok {
+	if singular, ok := topologyNodeKindAliases[k]; ok {
 		k = singular
 	} else if dp != nil {
 		// Fall back to resource discovery for CRDs (e.g., "certificaterequests" → "certificaterequest")
@@ -1252,6 +1262,92 @@ func normalizeKindWithGroup(kind, group string, dp DynamicProvider) string {
 	return normalizeKind(kind, dp)
 }
 
+var topologyDisplayKinds = map[string]string{
+	"pod":                            "Pod",
+	"service":                        "Service",
+	"deployment":                     "Deployment",
+	"rollout":                        "Rollout",
+	"daemonset":                      "DaemonSet",
+	"statefulset":                    "StatefulSet",
+	"replicaset":                     "ReplicaSet",
+	"ingress":                        "Ingress",
+	"gateway":                        "Gateway",
+	"httproute":                      "HTTPRoute",
+	"grpcroute":                      "GRPCRoute",
+	"tcproute":                       "TCPRoute",
+	"udproute":                       "UDPRoute",
+	"tlsroute":                       "TLSRoute",
+	"configmap":                      "ConfigMap",
+	"secret":                         "Secret",
+	"serviceaccount":                 "ServiceAccount",
+	"sealedsecret":                   "SealedSecret",
+	"servicemonitor":                 "ServiceMonitor",
+	"podmonitor":                     "PodMonitor",
+	"horizontalpodautoscaler":        "HorizontalPodAutoscaler",
+	"job":                            "Job",
+	"cronjob":                        "CronJob",
+	"persistentvolumeclaim":          "PersistentVolumeClaim",
+	"podgroup":                       "PodGroup",
+	"application":                    "Application",
+	"kustomization":                  "Kustomization",
+	"helmrelease":                    "HelmRelease",
+	"gitrepository":                  "GitRepository",
+	"certificate":                    "Certificate",
+	"issuer":                         "Issuer",
+	"clusterissuer":                  "ClusterIssuer",
+	"node":                           "Node",
+	"nodepool":                       "NodePool",
+	"nodeclaim":                      "NodeClaim",
+	"nodeclass":                      "NodeClass",
+	"scaledobject":                   "ScaledObject",
+	"scaledjob":                      "ScaledJob",
+	"gatewayclass":                   "GatewayClass",
+	"istiogateway":                   "Gateway",
+	"knativeservice":                 "KnativeService",
+	"knativeconfiguration":           "Configuration",
+	"knativerevision":                "Revision",
+	"knativeroute":                   "Route",
+	"broker":                         "Broker",
+	"trigger":                        "Trigger",
+	"pingsource":                     "PingSource",
+	"apiserversource":                "ApiServerSource",
+	"containersource":                "ContainerSource",
+	"sinkbinding":                    "SinkBinding",
+	"channel":                        "Channel",
+	"ingressroute":                   "IngressRoute", // Traefik
+	"ingressroutetcp":                "IngressRouteTCP",
+	"ingressrouteudp":                "IngressRouteUDP",
+	"middleware":                     "Middleware",
+	"middlewaretcp":                  "MiddlewareTCP",
+	"traefikservice":                 "TraefikService",
+	"serverstransport":               "ServersTransport",
+	"serverstransporttcp":            "ServersTransportTCP",
+	"tlsoption":                      "TLSOption",
+	"tlsstore":                       "TLSStore",
+	"httpproxy":                      "HTTPProxy", // Contour
+	"internet":                       "Internet",
+	"persistentvolume":               "PersistentVolume",
+	"storageclass":                   "StorageClass",
+	"poddisruptionbudget":            "PodDisruptionBudget",
+	"networkpolicy":                  "NetworkPolicy",
+	"ciliumnetworkpolicy":            "CiliumNetworkPolicy",
+	"ciliumclusterwidenetworkpolicy": "CiliumClusterwideNetworkPolicy",
+	"clusternetworkpolicy":           "ClusterNetworkPolicy",
+	"verticalpodautoscaler":          "VerticalPodAutoscaler",
+	"capicluster":                    "Cluster",             // Cluster API
+	"clusterclass":                   "ClusterClass",        // Cluster API
+	"machine":                        "Machine",             // Cluster API
+	"machineset":                     "MachineSet",          // Cluster API
+	"machinedeployment":              "MachineDeployment",   // Cluster API
+	"machinepool":                    "MachinePool",         // Cluster API
+	"kubeadmcontrolplane":            "KubeadmControlPlane", // Cluster API
+	"machinehealthcheck":             "MachineHealthCheck",  // Cluster API
+	"resourceclaim":                  "ResourceClaim",       // DRA
+	"resourceclaimtemplate":          "ResourceClaimTemplate",
+	"deviceclass":                    "DeviceClass",
+	"resourceslice":                  "ResourceSlice",
+}
+
 // normalizeKind converts internal kind format to display format
 func normalizeKind(kind string, dp DynamicProvider) string {
 	switch strings.ToLower(kind) {
@@ -1266,93 +1362,8 @@ func normalizeKind(kind string, dp DynamicProvider) string {
 	case "calicostagedkubernetesnetworkpolicy", "stagedkubernetesnetworkpolicy", "stagedkubernetesnetworkpolicies":
 		return string(KindCalicoStagedKubernetesNetworkPolicy)
 	}
-	kindMap := map[string]string{
-		"pod":                            "Pod",
-		"service":                        "Service",
-		"deployment":                     "Deployment",
-		"rollout":                        "Rollout",
-		"daemonset":                      "DaemonSet",
-		"statefulset":                    "StatefulSet",
-		"replicaset":                     "ReplicaSet",
-		"ingress":                        "Ingress",
-		"gateway":                        "Gateway",
-		"httproute":                      "HTTPRoute",
-		"grpcroute":                      "GRPCRoute",
-		"tcproute":                       "TCPRoute",
-		"udproute":                       "UDPRoute",
-		"tlsroute":                       "TLSRoute",
-		"configmap":                      "ConfigMap",
-		"secret":                         "Secret",
-		"serviceaccount":                 "ServiceAccount",
-		"sealedsecret":                   "SealedSecret",
-		"servicemonitor":                 "ServiceMonitor",
-		"podmonitor":                     "PodMonitor",
-		"horizontalpodautoscaler":        "HorizontalPodAutoscaler",
-		"job":                            "Job",
-		"cronjob":                        "CronJob",
-		"persistentvolumeclaim":          "PersistentVolumeClaim",
-		"podgroup":                       "PodGroup",
-		"application":                    "Application",
-		"kustomization":                  "Kustomization",
-		"helmrelease":                    "HelmRelease",
-		"gitrepository":                  "GitRepository",
-		"certificate":                    "Certificate",
-		"issuer":                         "Issuer",
-		"clusterissuer":                  "ClusterIssuer",
-		"node":                           "Node",
-		"nodepool":                       "NodePool",
-		"nodeclaim":                      "NodeClaim",
-		"nodeclass":                      "NodeClass",
-		"scaledobject":                   "ScaledObject",
-		"scaledjob":                      "ScaledJob",
-		"gatewayclass":                   "GatewayClass",
-		"istiogateway":                   "Gateway",
-		"knativeservice":                 "KnativeService",
-		"knativeconfiguration":           "Configuration",
-		"knativerevision":                "Revision",
-		"knativeroute":                   "Route",
-		"broker":                         "Broker",
-		"trigger":                        "Trigger",
-		"pingsource":                     "PingSource",
-		"apiserversource":                "ApiServerSource",
-		"containersource":                "ContainerSource",
-		"sinkbinding":                    "SinkBinding",
-		"channel":                        "Channel",
-		"ingressroute":                   "IngressRoute", // Traefik
-		"ingressroutetcp":                "IngressRouteTCP",
-		"ingressrouteudp":                "IngressRouteUDP",
-		"middleware":                     "Middleware",
-		"middlewaretcp":                  "MiddlewareTCP",
-		"traefikservice":                 "TraefikService",
-		"serverstransport":               "ServersTransport",
-		"serverstransporttcp":            "ServersTransportTCP",
-		"tlsoption":                      "TLSOption",
-		"tlsstore":                       "TLSStore",
-		"httpproxy":                      "HTTPProxy", // Contour
-		"internet":                       "Internet",
-		"persistentvolume":               "PersistentVolume",
-		"storageclass":                   "StorageClass",
-		"poddisruptionbudget":            "PodDisruptionBudget",
-		"networkpolicy":                  "NetworkPolicy",
-		"ciliumnetworkpolicy":            "CiliumNetworkPolicy",
-		"ciliumclusterwidenetworkpolicy": "CiliumClusterwideNetworkPolicy",
-		"clusternetworkpolicy":           "ClusterNetworkPolicy",
-		"verticalpodautoscaler":          "VerticalPodAutoscaler",
-		"capicluster":                    "Cluster",             // Cluster API
-		"clusterclass":                   "ClusterClass",        // Cluster API
-		"machine":                        "Machine",             // Cluster API
-		"machineset":                     "MachineSet",          // Cluster API
-		"machinedeployment":              "MachineDeployment",   // Cluster API
-		"machinepool":                    "MachinePool",         // Cluster API
-		"kubeadmcontrolplane":            "KubeadmControlPlane", // Cluster API
-		"machinehealthcheck":             "MachineHealthCheck",  // Cluster API
-		"resourceclaim":                  "ResourceClaim",       // DRA
-		"resourceclaimtemplate":          "ResourceClaimTemplate",
-		"deviceclass":                    "DeviceClass",
-		"resourceslice":                  "ResourceSlice",
-	}
 
-	if normalized, ok := kindMap[strings.ToLower(kind)]; ok {
+	if normalized, ok := topologyDisplayKinds[strings.ToLower(kind)]; ok {
 		return normalized
 	}
 	// Fall back to resource discovery for CRDs (e.g., "certificaterequest" → "CertificateRequest")
