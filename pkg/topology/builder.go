@@ -3827,8 +3827,22 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 	// 9. Add Secret nodes (if enabled and RBAC permits)
 	visibleSecretIDs := make(map[workloadRefKey]string)
+	observedSecrets := make(map[string]*corev1.Secret)
+	var secrets []*corev1.Secret
+	var secretsErr error
+	secretsLoaded := false
+	loadObservedSecrets := func() {
+		if secretsLoaded {
+			return
+		}
+		secretsLoaded = true
+		secrets, secretsErr = b.provider.Secrets()
+		for _, secret := range secrets {
+			observedSecrets["secret/"+secret.Namespace+"/"+secret.Name] = secret
+		}
+	}
 	if opts.IncludeSecrets {
-		secrets, secretsErr := b.provider.Secrets()
+		loadObservedSecrets()
 		if secretsErr != nil {
 			log.Printf("WARNING [topology] Failed to list Secrets: %v", secretsErr)
 			warnings = append(warnings, fmt.Sprintf("Failed to list Secrets: %v", secretsErr))
@@ -5436,6 +5450,19 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			existingConfigMapNodes[node.ID] = true
 		}
 	}
+	ensureSecretNode := func(namespace, name string) string {
+		id := "secret/" + namespace + "/" + name
+		if !existingSecretNodes[id] {
+			existingSecretNodes[id] = true
+			loadObservedSecrets()
+			if secret := observedSecrets[id]; secret != nil {
+				nodes = append(nodes, secretNode(secret))
+			} else {
+				nodes = append(nodes, Node{ID: id, Kind: KindSecret, Name: name, Status: StatusUnknown, Data: map[string]any{"namespace": namespace, "labels": map[string]string{}}})
+			}
+		}
+		return id
+	}
 	for _, ste := range serversTransportResources {
 		st := ste.resource
 		stNs := st.GetNamespace()
@@ -5476,19 +5503,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			secretNodeID := fmt.Sprintf("secret/%s/%s", stNs, secretName)
 
 			// Create Secret node if it doesn't already exist
-			if !existingSecretNodes[secretNodeID] {
-				existingSecretNodes[secretNodeID] = true
-				nodes = append(nodes, Node{
-					ID:     secretNodeID,
-					Kind:   KindSecret,
-					Name:   secretName,
-					Status: StatusUnknown,
-					Data: map[string]any{
-						"namespace": stNs,
-						"labels":    map[string]string{},
-					},
-				})
-			}
+			ensureSecretNode(stNs, secretName)
 
 			dedupeKey := stID + "|" + secretNodeID
 			if !traefikEdgeSeen[dedupeKey] {
@@ -5514,19 +5529,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		secretNames, _, _ := unstructured.NestedStringSlice(res.Object, "spec", "clientAuth", "secretNames")
 		for _, secretName := range secretNames {
 			secretNodeID := fmt.Sprintf("secret/%s/%s", ns, secretName)
-			if !existingSecretNodes[secretNodeID] {
-				existingSecretNodes[secretNodeID] = true
-				nodes = append(nodes, Node{
-					ID:     secretNodeID,
-					Kind:   KindSecret,
-					Name:   secretName,
-					Status: StatusUnknown,
-					Data: map[string]any{
-						"namespace": ns,
-						"labels":    map[string]string{},
-					},
-				})
-			}
+			ensureSecretNode(ns, secretName)
 			dedupeKey := optID + "|" + secretNodeID
 			if !traefikEdgeSeen[dedupeKey] {
 				traefikEdgeSeen[dedupeKey] = true
@@ -5550,19 +5553,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		}
 		for _, secretName := range configrefs.TraefikTLSStoreSecrets(res.Object) {
 			secretNodeID := fmt.Sprintf("secret/%s/%s", ns, secretName)
-			if !existingSecretNodes[secretNodeID] {
-				existingSecretNodes[secretNodeID] = true
-				nodes = append(nodes, Node{
-					ID:     secretNodeID,
-					Kind:   KindSecret,
-					Name:   secretName,
-					Status: StatusUnknown,
-					Data: map[string]any{
-						"namespace": ns,
-						"labels":    map[string]string{},
-					},
-				})
-			}
+			ensureSecretNode(ns, secretName)
 			dedupeKey := storeID + "|" + secretNodeID
 			if !traefikEdgeSeen[dedupeKey] {
 				traefikEdgeSeen[dedupeKey] = true
@@ -5658,26 +5649,15 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			})
 		}
 
-		// Secret → HTTPProxy edges (via spec.virtualhost.tls.secretName)
-		tlsSecretRef, _, _ := unstructured.NestedString(res.Object, "spec", "virtualhost", "tls", "secretName")
-		secretNs, tlsSecretName := configrefs.ContourSecretRef(resNs, tlsSecretRef)
-		// A delegated certificate lives in another namespace, which a filtered view may exclude.
-		if tlsSecretName != "" && opts.MatchesNamespaceFilter(secretNs) {
-			secretNodeID := fmt.Sprintf("secret/%s/%s", secretNs, tlsSecretName)
-			// Create stub Secret node if it doesn't already exist (same pattern as Traefik)
-			if !existingSecretNodes[secretNodeID] {
-				existingSecretNodes[secretNodeID] = true
-				nodes = append(nodes, Node{
-					ID:     secretNodeID,
-					Kind:   KindSecret,
-					Name:   tlsSecretName,
-					Status: StatusUnknown,
-					Data: map[string]any{
-						"namespace": secretNs,
-						"labels":    map[string]string{},
-					},
-				})
+		// Secret → HTTPProxy configuration edges
+		for _, secretRef := range configrefs.ContourSecretReferences(res) {
+			secretNS, tlsSecretName := secretRef.Namespace, secretRef.Name
+			if !opts.MatchesNamespaceFilter(secretNS) {
+				continue
 			}
+			secretNodeID := fmt.Sprintf("secret/%s/%s", secretNS, tlsSecretName)
+			// Create stub Secret node if it doesn't already exist (same pattern as Traefik)
+			ensureSecretNode(secretNS, tlsSecretName)
 			dedupeKey := resID + "|" + secretNodeID
 			if !contourEdgeSeen[dedupeKey] {
 				contourEdgeSeen[dedupeKey] = true
@@ -5689,7 +5669,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				})
 			}
 			// Also check for cert-manager Certificate edge
-			certID := certBySecret[secretNs+"/"+tlsSecretName]
+			certID := certBySecret[secretNS+"/"+tlsSecretName]
 			if certID != "" {
 				dedupeKey2 := resID + "|" + certID
 				if !contourEdgeSeen[dedupeKey2] {

@@ -420,6 +420,8 @@ The legacy `traefik.containo.us` API group (pre-v2.11) is warm-listed alongside 
 
 **Topology:** Full Contour routing path — HTTPProxy (root) → HTTPProxy (child, via delegation) → Service, with TLS secret configuration edges. Root proxies with `spec.virtualhost` appear as entry points; child proxies referenced via `spec.includes` are connected via delegation edges. Both **Resources** and **Traffic** view modes are supported.
 
+TLS references resolve local Secret names and delegated `namespace/name` names consistently, including client CA/CRL and upstream validation bundles. Configuration graphs reuse cached Secret metadata even when general Secret display is disabled; unavailable metadata remains unknown. Declared references do not establish that Contour has accepted or authorized TLS delegation, and topology does not serialize Secret values.
+
 <p align="center">
   <img src="screenshots/integrations/contour-topology.png" alt="Contour Topology" width="800">
   <br><em>Contour in Topology View — HTTPProxy → Service routing with delegation</em>
