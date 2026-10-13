@@ -1189,7 +1189,7 @@ export function WorkloadView({
               onSwitchToTimeline={() => handleTabChange('timeline')}
               onNavigateToResource={rest.onNavigateToResource}
             />
-          ) : (k === 'Pipeline' || k === 'PipelineRun') && res ? (
+          ) : (k === 'Pipeline' || k === 'PipelineRun') && effectiveGroup === 'tekton.dev' && res ? (
             <TektonPipelineFullscreen
               kind={apiKind}
               namespace={ns}
@@ -1491,7 +1491,7 @@ function LogsTabContent({
   // sequentially. A pod-picker (MultiPodLogsTab) or single-container-at-a-
   // time selector (PodLogsTab's LogsViewer) both misrepresent that shape;
   // this combines every step's container logs into one sequential view.
-  if (kind === 'TaskRun') {
+  if (kind === 'TaskRun' && group === 'tekton.dev') {
     return <TaskRunLogsTab namespace={namespace} resource={resource} />
   }
 

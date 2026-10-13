@@ -304,6 +304,9 @@ const GROUP_QUALIFIED_KIND_ICONS: Record<string, Record<string, LucideIcon>> = {
   backup: { 'postgresql.cnpg.io': DatabaseBackup },
   scheduledbackup: { 'postgresql.cnpg.io': DatabaseBackup },
   pooler: { 'postgresql.cnpg.io': Waypoints },
+  pipeline: { 'tekton.dev': Workflow },
+  pipelinerun: { 'tekton.dev': Workflow },
+  taskrun: { 'tekton.dev': Play },
   networkpolicy: {
     'networking.k8s.io': ShieldCheck,
     'crd.projectcalico.org': ShieldCheck,

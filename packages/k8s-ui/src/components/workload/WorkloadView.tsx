@@ -728,13 +728,7 @@ export function WorkloadView({
   // relying on browser/drawer "Go back", which (for every kind, not just
   // this one) points back at the new resource's own list, not the resource
   // you navigated from.
-  const tektonParentPipelineRun = useMemo(() => {
-    // `kind` (URL-derived, not resource.kind — list items often arrive with
-    // TypeMeta stripped) is the reliable signal here.
-    if (kind !== 'TaskRun') return null
-    const owner = (resource?.metadata?.ownerReferences ?? []).find((o: any) => o?.kind === 'PipelineRun')
-    return owner?.name ? { name: owner.name as string, namespace: resource?.metadata?.namespace ?? '' } : null
-  }, [kind, resource])
+  const tektonParentPipelineRun = useMemo(() => findTektonParentPipelineRun(kind, resource), [kind, resource])
 
   // Copy to clipboard
   const copyToClipboard = useCallback((text: string, key: string) => {
@@ -2156,6 +2150,17 @@ const RUNTIME_WORKLOAD_OVERVIEW_KINDS = new Set(['deployments', 'statefulsets', 
 const ROLLOUT_STATUS_KINDS = new Set(['deployments', 'statefulsets', 'daemonsets', 'rollouts'])
 type RuntimeOverviewShape = 'replicated' | 'job' | 'cronjob'
 
+// `kind` is URL-derived, not resource.kind: list items often arrive with
+// TypeMeta stripped. The owner's apiVersion is required on every
+// ownerReference, so it decides whether the parent is a Tekton PipelineRun.
+export function findTektonParentPipelineRun(kind: string, resource: any): { name: string; namespace: string } | null {
+  if (kind !== 'TaskRun') return null
+  const owner = (resource?.metadata?.ownerReferences ?? []).find(
+    (o: any) => o?.kind === 'PipelineRun' && apiVersionToGroup(o?.apiVersion) === 'tekton.dev',
+  )
+  return owner?.name ? { name: owner.name as string, namespace: resource?.metadata?.namespace ?? '' } : null
+}
+
 export function supportsLogsWithoutPods(
   normalizedKind: string,
   kind: string,
@@ -2163,6 +2168,9 @@ export function supportsLogsWithoutPods(
   apiVersion?: string,
 ): boolean {
   if (!LOGS_TAB_WITHOUT_PODS_KINDS.has(normalizedKind)) return false
+  if (normalizedKind === 'taskruns' || normalizedKind === 'pipelineruns') {
+    return apiVersionToGroup(apiVersion) === 'tekton.dev'
+  }
   if (normalizedKind === 'jobs') return isCoreBatchJob(kind, group)
   if (normalizedKind === 'jobsets') {
     return group === 'jobset.x-k8s.io' && apiVersion === 'jobset.x-k8s.io/v1alpha2'

@@ -764,8 +764,8 @@ entries:
     scope: Namespaced
     collection: "tekton"
     decision: withhold
-    reason: "Pending review: PipelineRun and TaskRun specs carry parameter values and inline workspace or pod-template data that have not been assessed for credentials."
-    source: "internal/k8s/dynamic_cache.go (supportedCRDFallbacks)"
+    reason: "spec.params hold literal values, and inline pipelineSpec/taskSpec steps and pod templates (PipelineRun taskRunTemplate.podTemplate, TaskRun podTemplate) can carry literal env values and scripts."
+    source: "https://github.com/tektoncd/pipeline/blob/v1.0.0/pkg/apis/pipeline/v1/pipelinerun_types.go#L261"
   - group: "traefik.containo.us"
     resources: ["ingressroutes","ingressroutetcps","ingressrouteudps","middlewaretcps","serverstransports","tlsoptions","tlsstores","traefikservices"]
     scope: Namespaced
