@@ -28,7 +28,7 @@ it('keeps the ordinary workspace destinations and CRD facts without new measurem
   expect(state.metricsEnabled).toEqual([false, false])
   expect(state.result.fleet.rows[0].disk).toBeUndefined()
   expect(state.result.fleet.incompleteKinds).toContain('databaseRoles')
-  expect(state.result.fleet.rows[0].declarations.summary.text).toContain('DatabaseRoles (needs a newer Radar) not read')
+  expect(state.result.fleet.rows[0].declarations.summary.text).toContain('DatabaseRoles not read by this Radar')
   expect(state.result.sidebar.CloudNativePG.destinations[0]).toMatchObject({ count: null, countLowerBound: true })
 })
 it('enables new measurements only once the server advertises their contracts', () => {

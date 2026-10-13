@@ -74,6 +74,7 @@ function namedCauses(cov: CNPGKindCoverage | undefined, uncachedNoun: string): {
 
 /** How much of a kind was read, in a few words ("not cached by Radar in pg"). */
 export function coverageLabel(cov: CNPGKindCoverage | undefined): string {
+  if (!cov) return 'not read by this Radar'
   const { denied, uncached } = namedCauses(cov, 'not cached by Radar')
   const named = [denied && `no access in ${denied}`, uncached].filter(Boolean)
   if (named.length > 0) return named.join('; ')

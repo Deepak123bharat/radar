@@ -49,3 +49,11 @@ it('scopes unread kinds to the screen and its namespace, with details folded', (
   expect(html).not.toContain('Job (')
   expect(renderToStaticMarkup(<CoverageNotice data={data} fleet={fleet} kinds={['backups']} namespace="prod" />)).toBe('')
 })
+
+it('identifies coverage the server did not report without claiming the kind is absent', () => {
+  const data: CNPGWorkspaceResponse = { installed: true, context: 'test', namespaces: null, objects: {}, coverage: Object.fromEntries(CNPG_WORKSPACE_KEYS.filter(k => k !== 'databaseRoles').map(k => [k, { state: 'full' as const }])), issues: [], audit: [], backupsOmitted: 0 }
+  const fleet = buildCNPGFleet(data)
+  const html = renderToStaticMarkup(<CoverageNotice data={data} fleet={fleet} kinds={['databaseRoles']} />)
+  expect(html).toContain('DatabaseRole (not read by this Radar)')
+  expect(html).toContain('Counts over incomplete data are lower bounds')
+})

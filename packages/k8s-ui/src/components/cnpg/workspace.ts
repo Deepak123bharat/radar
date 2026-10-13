@@ -972,7 +972,7 @@ function declarationsFor(cluster: any, resp: CNPGWorkspaceResponse): CNPGFleetRo
   const labels = { databases: 'Databases', publications: 'Publications', subscriptions: 'Subscriptions', databaseRoles: 'DatabaseRoles' }
   for (const [k, list] of lists) {
     if (!coverageReadable(coverageOf(resp, k), ns)) {
-      if (coverageOf(resp, k).state !== 'notInstalled') unread.push(`${labels[k as keyof typeof labels]}${resp.coverage[k] ? '' : ' (needs a newer Radar)'}`)
+      if (coverageOf(resp, k).state !== 'notInstalled') unread.push(`${labels[k as keyof typeof labels]} ${resp.coverage[k] ? 'not read' : 'not read by this Radar'}`)
       continue
     }
     for (const o of list) {
@@ -1006,7 +1006,7 @@ function declarationsFor(cluster: any, resp: CNPGWorkspaceResponse): CNPGFleetRo
   }
   if (unreadable) {
     const count = total === 0 ? 'Reconciliation unknown' : failed > 0 ? `≥${failed} not reconciled` : pending > 0 ? `≥${pending} pending` : `≥${total} reconciled`
-    summary = { text: `${count}; ${unread.join(', ')} not read`, tone: failed > 0 ? 'degraded' : 'unknown' }
+    summary = { text: `${count}; ${unread.join('; ')}`, tone: failed > 0 ? 'degraded' : 'unknown' }
   }
   return { summary, total, failed, pending }
 }

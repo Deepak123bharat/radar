@@ -74,11 +74,11 @@ export function CNPGClusterLogs({ namespace, name }: { namespace: string; name: 
     [namespace, name, allContainersSupported],
   )
 
-  if (interval && support === 'unknown') return capabilities.isPending
+  if (interval && support === 'unknown') return capabilities.isPending && capabilities.fetchStatus !== 'paused'
     ? <PaneLoader label="Checking interval support…" className="flex-1" />
     : <div className="space-y-2 p-3">
-        <CNPGIntervalBanner since={interval.since} until={interval.until} note="Radar’s capabilities could not be read. Clear this interval to read ordinary logs." onClear={interval.clear} />
-        <button type="button" className="btn-secondary" onClick={() => void capabilities.refetch()}>Retry capabilities</button>
+        <CNPGIntervalBanner since={interval.since} until={interval.until} note="Interval log support could not be checked. Clear this interval to read ordinary logs." onClear={interval.clear} />
+        <button type="button" className="btn-secondary" disabled={capabilities.isFetching || capabilities.fetchStatus === 'paused'} onClick={() => void capabilities.refetch()}>{capabilities.fetchStatus === 'paused' ? 'Waiting for connection' : capabilities.isFetching ? 'Checking…' : 'Retry'}</button>
       </div>
 
   return (
