@@ -297,3 +297,22 @@ func TestWorkloadReferenceRecoveryRetainsIndependentSubtrees(t *testing.T) {
 		t.Fatal("recovery mutated reference-bearing subtrees")
 	}
 }
+
+func TestPodConsumerIndexStoresEachPodOncePerTarget(t *testing.T) {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team"}, Spec: corev1.PodSpec{
+		Containers:       []corev1.Container{{EnvFrom: []corev1.EnvFromSource{{SecretRef: &corev1.SecretEnvSource{LocalObjectReference: corev1.LocalObjectReference{Name: "credential"}}}}, Env: []corev1.EnvVar{{Name: "TOKEN", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "credential"}, Key: "token"}}}}}},
+		ImagePullSecrets: []corev1.LocalObjectReference{{Name: "credential"}, {Name: "credential"}},
+	}}
+	provider := &mockProvider{pods: []*corev1.Pod{pod}, secrets: []*corev1.Secret{{ObjectMeta: metav1.ObjectMeta{Name: "credential", Namespace: "team"}}}}
+	opts := DefaultBuildOptions()
+	opts.IncludeSecrets = true
+	opts.ForRelationshipCache = true
+	topo, err := NewBuilder(provider).Build(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumers := topo.podConsumers[resourceid.ResourceKey("", "Secret", "team", "credential")]
+	if len(consumers) != 1 || consumers[0].Name != pod.Name {
+		t.Fatalf("index stored repeated declarations as repeated consumers: %+v", consumers)
+	}
+}

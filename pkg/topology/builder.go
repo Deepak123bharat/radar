@@ -3190,7 +3190,12 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			if !opts.MatchesNamespaceFilter(pod.Namespace) {
 				continue
 			}
-			for _, ref := range configrefs.PodSpecReferences(pod.Namespace, pod.Spec) {
+			seen := make(map[configrefs.Ref]bool)
+			configrefs.VisitPodSpecReferences(pod.Namespace, pod.Spec, func(ref configrefs.PodSpecReference) {
+				if seen[ref.Ref] {
+					return
+				}
+				seen[ref.Ref] = true
 				key := workloadRefKey{namespace: ref.Namespace, name: ref.Name}
 				if ref.Kind == "ConfigMap" || ref.Kind == "Secret" || ref.Kind == "PersistentVolumeClaim" || ref.Kind == "ServiceAccount" {
 					identity := resourceid.ResourceKey("", ref.Kind, ref.Namespace, ref.Name)
@@ -3206,7 +3211,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				case "ServiceAccount":
 					podServiceAccountTargets[key] = true
 				}
-			}
+			})
 		}
 	}
 	// podSummaries accumulates per-workload pod health in summary mode; stamped
@@ -8178,14 +8183,14 @@ type workloadRefs struct {
 
 func extractWorkloadReferences(spec corev1.PodSpec, forRelationships bool) workloadRefs {
 	refs := workloadRefs{configMaps: map[string]bool{}, secrets: map[string]bool{}, pvcs: map[string]bool{}, serviceAccount: spec.ServiceAccountName}
-	for _, reference := range configrefs.PodSpecReferences("", spec) {
+	configrefs.VisitPodSpecReferences("", spec, func(reference configrefs.PodSpecReference) {
 		// Expanded declaration paths belong in resource reads, without redefining application grouping.
 		if !forRelationships {
 			switch reference.Path {
 			case "volumes[].configMap.name", "volumes[].secret.secretName", "volumes[].persistentVolumeClaim.claimName", "serviceAccountName":
 			default:
 				if !strings.HasPrefix(reference.Path, "containers[].env") && !strings.HasPrefix(reference.Path, "initContainers[].env") {
-					continue
+					return
 				}
 			}
 		}
@@ -8197,7 +8202,7 @@ func extractWorkloadReferences(spec corev1.PodSpec, forRelationships bool) workl
 		case "PersistentVolumeClaim":
 			refs.pvcs[reference.Name] = true
 		}
-	}
+	})
 	return refs
 }
 
