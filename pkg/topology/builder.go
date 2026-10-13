@@ -2177,7 +2177,6 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		{"SinkBinding", KindSinkBinding, "sinkbinding"},
 	}
 	var knativeSourceResources []*unstructured.Unstructured // Store all sources for second pass edge creation
-	knativeSourceKinds := make(map[*unstructured.Unstructured]knativeSourceDef)
 	for _, srcDef := range knativeSourceDefs {
 		var srcGVR schema.GroupVersionResource
 		hasSrc := false
@@ -2215,44 +2214,32 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			})
 
 			knativeSourceResources = append(knativeSourceResources, src)
-			knativeSourceKinds[src] = srcDef
 		}
 	}
 
-	// KNative Channel (needs group-qualified lookup — "Channel" could collide with other CRDs)
-	var knativeChannelGVR schema.GroupVersionResource
-	hasKnativeChannels := false
-	if resourceDiscovery != nil {
-		knativeChannelGVR, hasKnativeChannels = resourceDiscovery.GetGVRWithGroup("Channel", "messaging.knative.dev")
-	}
-	knativeChannelIDs := make(map[string]string) // ns/name -> channelID
-	if hasKnativeChannels && dynamicCache != nil {
-		knativeChannels, chanErr := dynamicCache.ListNamespaces(knativeChannelGVR, opts.Namespaces)
-		if chanErr != nil {
-			log.Printf("WARNING [topology] Failed to list KNative Channels: %v", chanErr)
-			warnings = append(warnings, fmt.Sprintf("Failed to list KNative Channels: %v", chanErr))
+	// Knative Channels and their actual in-memory backing channels are distinct
+	// resources, even when the controller gives them the same name.
+	var knativeChannelResources []*unstructured.Unstructured
+	for _, kind := range []string{"Channel", "InMemoryChannel"} {
+		if resourceDiscovery == nil || dynamicCache == nil {
+			continue
 		}
-		for _, ch := range knativeChannels {
-			ns := ch.GetNamespace()
-			if !opts.MatchesNamespaceFilter(ns) {
+		gvr, ok := resourceDiscovery.GetGVRWithGroup(kind, "messaging.knative.dev")
+		if !ok {
+			continue
+		}
+		items, err := dynamicCache.ListNamespaces(gvr, opts.Namespaces)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("Failed to list Knative %s: %v", kind, err))
+		}
+		for _, ch := range items {
+			if !opts.MatchesNamespaceFilter(ch.GetNamespace()) {
 				continue
 			}
-			name := ch.GetName()
-
-			chID := fmt.Sprintf("channel/%s/%s", ns, name)
-			knativeChannelIDs[ns+"/"+name] = chID
-
-			nodes = append(nodes, Node{
-				ID:     chID,
-				Kind:   KindChannel,
-				Name:   name,
-				Status: extractGenericStatus(ch),
-				Data: map[string]any{
-					"namespace":  ns,
-					"labels":     ch.GetLabels(),
-					"apiVersion": ch.GetAPIVersion(),
-				},
-			})
+			nodes = append(nodes, Node{ID: strings.ToLower(kind) + "/" + ch.GetNamespace() + "/" + ch.GetName(), Kind: NodeKind(kind), Name: ch.GetName(), Status: extractGenericStatus(ch), Data: map[string]any{
+				"namespace": ch.GetNamespace(), "labels": ch.GetLabels(), "apiVersion": ch.GetAPIVersion(),
+			}})
+			knativeChannelResources = append(knativeChannelResources, ch)
 		}
 	}
 
@@ -4818,7 +4805,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			continue
 		}
 		for _, ref := range kcfg.GetOwnerReferences() {
-			if ref.Kind == "Service" && strings.Contains(ref.APIVersion, "serving.knative.dev") {
+			if ref.Kind == "Service" && resourceid.GroupFromAPIVersion(ref.APIVersion) == "serving.knative.dev" {
 				if ownerID, ok := knativeServiceIDs[ns+"/"+ref.Name]; ok {
 					edges = append(edges, Edge{
 						ID:     fmt.Sprintf("%s-to-%s", ownerID, kcfgID),
@@ -4839,7 +4826,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			continue
 		}
 		for _, ref := range kroute.GetOwnerReferences() {
-			if ref.Kind == "Service" && strings.Contains(ref.APIVersion, "serving.knative.dev") {
+			if ref.Kind == "Service" && resourceid.GroupFromAPIVersion(ref.APIVersion) == "serving.knative.dev" {
 				if ownerID, ok := knativeServiceIDs[ns+"/"+ref.Name]; ok {
 					edges = append(edges, Edge{
 						ID:     fmt.Sprintf("%s-to-%s", ownerID, krouteID),
@@ -4860,7 +4847,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			continue
 		}
 		for _, ref := range krev.GetOwnerReferences() {
-			if ref.Kind == "Configuration" {
+			if ref.Kind == "Configuration" && resourceid.GroupFromAPIVersion(ref.APIVersion) == "serving.knative.dev" {
 				if ownerID, ok := knativeConfigIDs[ns+"/"+ref.Name]; ok {
 					edges = append(edges, Edge{
 						ID:     fmt.Sprintf("%s-to-%s", ownerID, krevID),
@@ -4878,7 +4865,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			continue
 		}
 		for _, ref := range deploy.OwnerReferences {
-			if ref.Kind == "Revision" && strings.Contains(ref.APIVersion, "serving.knative.dev") {
+			if ref.Kind == "Revision" && resourceid.GroupFromAPIVersion(ref.APIVersion) == "serving.knative.dev" {
 				deployID := deploymentIDs[deploy.Namespace+"/"+deploy.Name]
 				if krevID, ok := knativeRevisionIDs[deploy.Namespace+"/"+ref.Name]; ok && deployID != "" {
 					edges = append(edges, Edge{
@@ -4996,7 +4983,8 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 		// Broker → Trigger (data flow: Broker dispatches events to matching Triggers)
 		brokerName, _, _ := unstructured.NestedString(trigger.Object, "spec", "broker")
-		if brokerName != "" {
+		_, hasBrokerRef, _ := unstructured.NestedFieldNoCopy(trigger.Object, "spec", "brokerRef")
+		if brokerName != "" && !hasBrokerRef {
 			if brokerID, ok := knativeBrokerIDs[triggerNs+"/"+brokerName]; ok {
 				edges = append(edges, Edge{
 					ID:     fmt.Sprintf("%s-to-%s", brokerID, triggerID),
@@ -5007,50 +4995,6 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			}
 		}
 
-		// Trigger → subscriber target
-		subRefKind, _, _ := unstructured.NestedString(trigger.Object, "spec", "subscriber", "ref", "kind")
-		subRefName, _, _ := unstructured.NestedString(trigger.Object, "spec", "subscriber", "ref", "name")
-		subRefNs, _, _ := unstructured.NestedString(trigger.Object, "spec", "subscriber", "ref", "namespace")
-		if subRefNs == "" {
-			subRefNs = triggerNs
-		}
-		if subRefKind != "" && subRefName != "" {
-			targetID := resolveKnativeRef(subRefKind, subRefNs, subRefName, serviceIDs, knativeServiceIDs, knativeBrokerIDs, knativeChannelIDs)
-			if targetID != "" {
-				edges = append(edges, Edge{
-					ID:     fmt.Sprintf("%s-sub-to-%s", triggerID, targetID),
-					Source: triggerID,
-					Target: targetID,
-					Type:   EdgeExposes,
-				})
-			}
-		}
-	}
-
-	// Sources → sink target (EdgeExposes, via spec.sink.ref)
-	for _, src := range knativeSourceResources {
-		srcDef := knativeSourceKinds[src]
-		srcNs := src.GetNamespace()
-		srcName := src.GetName()
-		srcID := fmt.Sprintf("%s/%s/%s", srcDef.prefix, srcNs, srcName)
-
-		sinkRefKind, _, _ := unstructured.NestedString(src.Object, "spec", "sink", "ref", "kind")
-		sinkRefName, _, _ := unstructured.NestedString(src.Object, "spec", "sink", "ref", "name")
-		sinkRefNs, _, _ := unstructured.NestedString(src.Object, "spec", "sink", "ref", "namespace")
-		if sinkRefNs == "" {
-			sinkRefNs = srcNs
-		}
-		if sinkRefKind != "" && sinkRefName != "" {
-			targetID := resolveKnativeRef(sinkRefKind, sinkRefNs, sinkRefName, serviceIDs, knativeServiceIDs, knativeBrokerIDs, knativeChannelIDs)
-			if targetID != "" {
-				edges = append(edges, Edge{
-					ID:     fmt.Sprintf("%s-sink-to-%s", srcID, targetID),
-					Source: srcID,
-					Target: targetID,
-					Type:   EdgeExposes,
-				})
-			}
-		}
 	}
 
 	// 15. Create Gateway API edges (Gateway → Route, Route → Service).
@@ -5789,6 +5733,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	if opts.IncludeGenericCRDs {
 		nodes, edges = b.addGenericCRDNodes(nodes, edges, opts)
 	}
+	edges = addKnativeReferenceEdges(nodes, edges, knativeTriggerResources, knativeSourceResources, knativeChannelResources)
 	edges = addGitOpsManagedResourceEdges(
 		nodes,
 		edges,
@@ -8122,31 +8067,6 @@ func parseIstioHost(host, defaultNs string) (string, string) {
 	}
 	// "reviews.default" or "reviews.default.svc.cluster.local"
 	return parts[0], parts[1]
-}
-
-// resolveKnativeRef resolves a KNative object reference (kind/ns/name) to a topology node ID.
-// It checks K8s Services, KNative Services, Brokers, and Channels — the most common sink/subscriber targets.
-func resolveKnativeRef(kind, ns, name string, serviceIDs, knativeServiceIDs, brokerIDs, channelIDs map[string]string) string {
-	key := ns + "/" + name
-	switch kind {
-	case "Service":
-		// Could be a K8s Service or a KNative Service — check KNative first (more specific)
-		if id, ok := knativeServiceIDs[key]; ok {
-			return id
-		}
-		if id, ok := serviceIDs[key]; ok {
-			return id
-		}
-	case "Broker":
-		if id, ok := brokerIDs[key]; ok {
-			return id
-		}
-	case "Channel", "InMemoryChannel":
-		if id, ok := channelIDs[key]; ok {
-			return id
-		}
-	}
-	return ""
 }
 
 type workloadRefs struct {

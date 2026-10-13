@@ -1157,6 +1157,8 @@ PolicyReport findings are policy posture, not live operational failure, so they 
 
 **Topology:** Full Knative Serving chain — Route → KnativeService → Configuration → Revision → Deployment → Pod. Eventing flow — PingSource → Broker → Trigger → subscriber target. See how traffic is split across revisions, which configurations are active, and how events flow from sources through brokers to triggers.
 
+Event destinations retain the reference’s API group, kind, namespace and name. Missing or conflicting identity remains unresolved rather than borrowing a same-named core Service. `Trigger.spec.brokerRef` uses its explicit Broker namespace and name; the older `spec.broker` field remains local to the Trigger. Channel objects and their observed backing channels are separate resources, and cached owner references establish their management links.
+
 <p align="center">
   <img src="screenshots/integrations/knative-topology.png" alt="Knative Topology" width="800">
   <br><em>Knative in Topology View — Serving chain and Eventing flow</em>
