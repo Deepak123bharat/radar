@@ -48,6 +48,18 @@ func TestKEDAScaleTargetAppliesOmittedAPIVersionDefault(t *testing.T) {
 			t.Errorf("missing edge %s in %v", want, edges)
 		}
 	}
+	stateful := GetRelationshipsWithObject("ScaledObject", "team", "statefulset", dynamic.resources[scaledObjectGVR][3], topo, provider, dynamic, nil)
+	if stateful == nil || stateful.ScaleTarget == nil || stateful.ScaleTarget.Name != "db" || stateful.ScaleTarget.Group != "apps" {
+		t.Fatalf("StatefulSet scale-target projection: %+v", stateful)
+	}
+	workload := GetRelationshipsWithObject("StatefulSet", "team", "db", provider.statefulSets[0], topo, provider, dynamic, nil)
+	if workload == nil || len(workload.Scalers) != 1 || workload.Scalers[0].Name != "statefulset" || workload.Scalers[0].Group != "keda.sh" {
+		t.Fatalf("StatefulSet autoscaler projection: %+v", workload)
+	}
+	bare := GetRelationshipsWithObject("ScaledObject", "team", "bare-rollout", dynamic.resources[scaledObjectGVR][1], topo, provider, dynamic, nil)
+	if bare != nil && bare.ScaleTarget != nil {
+		t.Errorf("bare apps/v1 Rollout acquired a scale target: %+v", bare.ScaleTarget)
+	}
 	if edges["scaledobject/team/bare-rollout -> rollout/team/worker"] {
 		t.Error("a Rollout target with omitted apiVersion (apps/v1) was joined to the Argo Rollout")
 	}
