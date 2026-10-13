@@ -2558,6 +2558,12 @@ func (d *DynamicResourceCache) notifyCRDDiscoveryComplete() {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
+func (d *DynamicResourceCache) IsStopped() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.stopped
+}
+
 // Stop initiates a non-blocking shutdown of the dynamic cache.
 func (d *DynamicResourceCache) Stop() {
 	if d == nil {

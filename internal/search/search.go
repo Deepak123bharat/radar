@@ -52,6 +52,7 @@ type Provider interface {
 	// means the list may be incomplete; any kinds returned are still searched.
 	DynamicResources() ([]schema.GroupVersionResource, error)
 	TypedCoverage(kind string, namespaces []string) readreason.Code
+	DynamicCacheStopped() bool
 	// PrepareDynamicObservations indexes informer scopes for this search.
 	PrepareDynamicObservations(gvrs []schema.GroupVersionResource)
 	// DynamicObservation reports the kind's observation, with readiness taken
@@ -475,6 +476,9 @@ func Search(ctx context.Context, p Provider, q Query, opts Options) (Result, err
 		for _, ns := range namespaces {
 			if err := ctx.Err(); err != nil {
 				return Result{}, err
+			}
+			if clusterWideSynced && p.DynamicCacheStopped() {
+				break
 			}
 			nsObservation := observation
 			if !clusterWideSynced {

@@ -4,13 +4,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
+	"time"
 
+	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/pkg/k8score"
 	"github.com/skyhook-io/radar/pkg/readreason"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 type cancelSearchProvider struct {
@@ -136,6 +141,69 @@ func TestSearchReusesSyncedClusterWideObservation(t *testing.T) {
 	}
 	if p.observations != 500 || p.reads != 500*5000 {
 		t.Fatalf("observations=%d reads=%d", p.observations, p.reads)
+	}
+}
+
+type stopSearchProvider struct {
+	*probeRetryProvider
+	reads []string
+}
+
+func (p *stopSearchProvider) ListDynamic(ctx context.Context, gvr schema.GroupVersionResource, ns string) ([]*unstructured.Unstructured, error) {
+	p.reads = append(p.reads, ns)
+	items, err := p.CacheProvider.ListDynamic(ctx, gvr, ns)
+	if ns == "a" {
+		p.dynamic.Stop()
+	}
+	return items, err
+}
+
+func TestSearchClusterWideCacheStopsBetweenNamespaces(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "example.io", Version: "v1", Resource: "widgets"}
+	objects := []runtime.Object{}
+	for _, ns := range []string{"a", "b"} {
+		objects = append(objects, &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "example.io/v1", "kind": "Widget",
+			"metadata": map[string]any{"name": "robusta-" + ns, "namespace": ns},
+		}})
+	}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "WidgetList"}, objects...)
+	discovery, err := k8score.NewResourceDiscovery(fake.NewClientset().Discovery())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dc, err := k8score.NewDynamicResourceCache(k8score.DynamicCacheConfig{DynamicClient: dyn, Discovery: discovery})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(dc.Stop)
+	completeCRDDiscovery(t, dc)
+	discovery.AddAPIResource(k8score.APIResource{Group: gvr.Group, Version: gvr.Version, Name: gvr.Resource, Kind: "Widget", Namespaced: true, Verbs: []string{"get", "list", "watch"}})
+	if err := dc.EnsureWatching(gvr); err != nil {
+		t.Fatal(err)
+	}
+	if !dc.WaitForSync(gvr, time.Second) {
+		t.Fatal("cluster-wide informer did not sync")
+	}
+	if o := dc.Observation(gvr); o.Scope != k8score.DynamicObservationScopeCluster || o.State != k8score.DynamicObservationSynced {
+		t.Fatalf("observation = %+v", o)
+	}
+	p := &stopSearchProvider{probeRetryProvider: &probeRetryProvider{&CacheProvider{
+		dynamic:   &k8s.DynamicResourceCache{DynamicResourceCache: dc},
+		discovery: &k8s.ResourceDiscovery{ResourceDiscovery: discovery},
+	}}}
+	got, err := Search(t.Context(), p, Parse("kind:Widget robusta"), Options{Namespaces: []string{"a", "b"}, Include: IncludeNone})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(p.reads, []string{"a"}) {
+		t.Fatalf("namespace reads = %v, want [a]", p.reads)
+	}
+	if got.Searched != 1 || !slices.Equal(hitNames(got), []string{"Widget/a/robusta-a"}) {
+		t.Fatalf("search included objects after shutdown: %+v", got)
+	}
+	if got.Partial || len(got.Unsearched) != 0 {
+		t.Fatalf("shutdown changed unwatched-kind coverage: %+v", got)
 	}
 }
 

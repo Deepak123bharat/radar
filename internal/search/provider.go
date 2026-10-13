@@ -136,6 +136,10 @@ func (p *CacheProvider) TypedCoverage(kind string, namespaces []string) readreas
 	return ""
 }
 
+func (p *CacheProvider) DynamicCacheStopped() bool {
+	return p.dynamic != nil && p.dynamic.IsStopped()
+}
+
 func (p *CacheProvider) PrepareDynamicObservations(gvrs []schema.GroupVersionResource) {
 	p.observations = nil
 	if p.dynamic != nil {
