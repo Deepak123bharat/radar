@@ -105,16 +105,15 @@ func setupAuthFakeProm(t *testing.T) *authFakeProm {
 // handler refuses rather than guessing pods from the name.
 func seedScopeCache(t *testing.T) {
 	t.Helper()
-	isController := true
 	owner := func(kind, name string) metav1.OwnerReference {
-		return metav1.OwnerReference{APIVersion: "apps/v1", Kind: kind, Name: name, Controller: &isController}
+		return scopeOwner(kind, name)
 	}
 	objects := []runtime.Object{
-		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: "alpha", Name: "web"}},
-		&appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Namespace: "alpha", Name: "web-7f6", OwnerReferences: []metav1.OwnerReference{owner("Deployment", "web")}}},
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: "alpha", Name: "web", UID: "web-uid"}},
+		&appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Namespace: "alpha", Name: "web-7f6", UID: "web-7f6-uid", OwnerReferences: []metav1.OwnerReference{owner("Deployment", "web")}}},
 		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "alpha", Name: "web-7f6-a", OwnerReferences: []metav1.OwnerReference{owner("ReplicaSet", "web-7f6")}}},
-		&batchv1.CronJob{ObjectMeta: metav1.ObjectMeta{Namespace: "alpha", Name: "nightly"}},
-		&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: "alpha", Name: "nightly-1", OwnerReferences: []metav1.OwnerReference{owner("CronJob", "nightly")}}},
+		&batchv1.CronJob{ObjectMeta: metav1.ObjectMeta{Namespace: "alpha", Name: "nightly", UID: "nightly-uid"}},
+		&batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: "alpha", Name: "nightly-1", UID: "nightly-1-uid", OwnerReferences: []metav1.OwnerReference{owner("CronJob", "nightly")}}},
 		&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "alpha", Name: "nightly-1-k", OwnerReferences: []metav1.OwnerReference{owner("Job", "nightly-1")}}},
 	}
 	if err := k8s.InitTestResourceCache(fake.NewClientset(objects...)); err != nil {

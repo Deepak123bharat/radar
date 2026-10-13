@@ -1,41 +1,99 @@
 package k8s
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+
+	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
 // WorkloadPods returns the pods a workload controls right now, by controller
 // ownership rather than label selector: a Deployment's selector can also
 // match bare pods, a sibling controller's pods during a Rollout workloadRef
 // migration, or anything that shares its labels, and none of those are the
-// workload's pods. Ownership is the same relation kube-state-metrics
-// records in kube_pod_owner, so history and the present agree on membership.
+// workload's pods. The current root and every intermediate owner must match
+// by API group, kind, name and UID.
 //
 // Supported kinds (singular or plural, any case): Deployment and Rollout
 // through their ReplicaSets, CronJob through its Jobs, and StatefulSet,
 // DaemonSet, ReplicaSet, Job and Workflow directly. An unavailable lister
 // returns ErrWorkloadAccessDenied and one still filling its initial sync
 // returns ErrWorkloadCacheWarming, so an empty answer is never mistaken for
-// "no pods". Pods are sorted by name. This name-based API does not identify
-// a workload incarnation; callers holding a current root object should use
-// WorkloadPodsForUID.
+// "no pods". Pods are sorted by name. Callers already holding the root use
+// WorkloadPodsForUID to keep membership tied to that observation.
 func WorkloadPods(cache *ResourceCache, kind, namespace, name string) ([]*corev1.Pod, error) {
-	return workloadPods(cache, kind, namespace, name, nil)
+	canonical := CanonicalWorkloadKind(kind)
+	if canonical == "" {
+		return nil, fmt.Errorf("unsupported workload kind: %s", kind)
+	}
+	kind = canonical
+	if cache == nil || cache.ResourceCache == nil {
+		return nil, fmt.Errorf("%w: read workload", ErrWorkloadAccessDenied)
+	}
+	var obj runtime.Object
+	var err error
+	gvr, typed := lookupTypedBuiltinGVR(kind)
+	if typed {
+		if _, known := cache.InformerSynced(gvr.Resource); !known {
+			return nil, fmt.Errorf("%w: list %s", ErrWorkloadAccessDenied, gvr.Resource)
+		}
+		if err := requireCovers(cache, gvr.Resource, namespace); err != nil {
+			return nil, err
+		}
+		obj, err = FetchResource(cache, kind, namespace, name)
+	} else {
+		discovery, dynamicCache := GetResourceDiscovery(), GetDynamicResourceCache()
+		if discovery == nil || dynamicCache == nil {
+			return nil, fmt.Errorf("%w: read %s", ErrWorkloadCacheWarming, kind)
+		}
+		var found bool
+		gvr, found = discovery.GetGVRWithGroup(kind, "argoproj.io")
+		if !found {
+			return nil, fmt.Errorf("%w: read %s", ErrUnknownDynamicKind, kind)
+		}
+		obj, err = dynamicCache.Get(gvr, namespace, name)
+		if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
+			return nil, fmt.Errorf("%w: read %s in %s: %v", ErrWorkloadAccessDenied, kind, namespace, err)
+		}
+		if err != nil && !errors.Is(err, k8score.ErrResourceNotFound) {
+			return nil, err
+		}
+		if !dynamicCache.IsNamespaceSynced(gvr, namespace) {
+			return nil, fmt.Errorf("%w: %s", ErrWorkloadCacheWarming, kind)
+		}
+		if errors.Is(err, k8score.ErrResourceNotFound) {
+			return nil, nil
+		}
+	}
+	if apierrors.IsNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	objectMeta, err := meta.Accessor(obj)
+	if err != nil {
+		return nil, err
+	}
+	return WorkloadPodsForUID(cache, kind, namespace, name, gvr.Group, objectMeta.GetUID())
 }
 
 // WorkloadPodsForUID follows the current root and every intermediate controller
 // by API group, kind, name and UID. It reads only already-watched cache listers.
 // A missing root UID cannot establish current membership and returns no Pods.
 func WorkloadPodsForUID(cache *ResourceCache, kind, namespace, name, group string, uid types.UID) ([]*corev1.Pod, error) {
-	return workloadPods(cache, kind, namespace, name, &workloadOwnerIdentity{group: group, uid: uid})
+	return workloadPods(cache, kind, namespace, name, workloadOwnerIdentity{group: group, uid: uid})
 }
 
 type workloadOwnerIdentity struct {
@@ -43,7 +101,7 @@ type workloadOwnerIdentity struct {
 	uid   types.UID
 }
 
-func workloadPods(cache *ResourceCache, kind, namespace, name string, identity *workloadOwnerIdentity) ([]*corev1.Pod, error) {
+func workloadPods(cache *ResourceCache, kind, namespace, name string, identity workloadOwnerIdentity) ([]*corev1.Pod, error) {
 	canonical := CanonicalWorkloadKind(kind)
 	if canonical == "" {
 		return nil, fmt.Errorf("unsupported workload kind: %s", kind)
@@ -115,14 +173,11 @@ func CanonicalWorkloadKind(kind string) string {
 }
 
 // workloadOwnershipTest returns the predicate "this pod's controller chain
-// ends at kind/name". Intermediate owners are looked up in the cache; when
-// that lister is unavailable the answer is ErrWorkloadAccessDenied rather
+// ends at the observed root incarnation". Intermediate owners are looked up
+// in the cache; when that lister is unavailable the answer is ErrWorkloadAccessDenied rather
 // than a silently empty set.
-func workloadOwnershipTest(cache *ResourceCache, kind, namespace, name string, identity *workloadOwnerIdentity) (func(*corev1.Pod) bool, error) {
+func workloadOwnershipTest(cache *ResourceCache, kind, namespace, name string, identity workloadOwnerIdentity) (func(*corev1.Pod) bool, error) {
 	matchesRoot := func(owner *metav1.OwnerReference) bool {
-		if identity == nil {
-			return owner != nil && owner.Kind == kind && owner.Name == name
-		}
 		return controllerMatchesIdentity(owner, kind, name, identity.group, identity.uid)
 	}
 	direct := func(pod *corev1.Pod) bool { return matchesRoot(metav1.GetControllerOf(pod)) }
@@ -144,7 +199,7 @@ func workloadOwnershipTest(cache *ResourceCache, kind, namespace, name string, i
 			if err != nil {
 				return false
 			}
-			if identity != nil && !controllerMatchesIdentity(owner, "ReplicaSet", rs.Name, "apps", rs.UID) {
+			if !controllerMatchesIdentity(owner, "ReplicaSet", rs.Name, "apps", rs.UID) {
 				return false
 			}
 			return matchesRoot(metav1.GetControllerOf(rs))
@@ -166,7 +221,7 @@ func workloadOwnershipTest(cache *ResourceCache, kind, namespace, name string, i
 			if err != nil {
 				return false
 			}
-			if identity != nil && !controllerMatchesIdentity(owner, "Job", job.Name, "batch", job.UID) {
+			if !controllerMatchesIdentity(owner, "Job", job.Name, "batch", job.UID) {
 				return false
 			}
 			return matchesRoot(metav1.GetControllerOf(job))

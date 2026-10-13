@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +16,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/rest"
 
 	"github.com/skyhook-io/radar/internal/k8s"
 	aicontext "github.com/skyhook-io/radar/pkg/ai/context"
@@ -462,6 +466,33 @@ func TestDiagnoseExcludesPodsFromPreviousWorkloadAndIntermediateOwners(t *testin
 		if !strings.Contains(series.Query, `pod=~'^(current)$'`) || strings.Contains(series.Query, "previous-root") || strings.Contains(series.Query, "previous-rs") {
 			t.Fatalf("metrics query includes a previous controller's Pod: %s", series.Query)
 		}
+	}
+	logServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/namespaces/shop/pods/current/log" {
+			t.Errorf("logs requested for stale Pod: %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte("current log\n"))
+	}))
+	defer logServer.Close()
+	client, err := kubernetes.NewForConfig(&rest.Config{Host: logServer.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousClient := k8s.SetTestClient(client)
+	defer k8s.SetTestClient(previousClient)
+	result, _, err := handleGetWorkloadLogs(t.Context(), nil, getWorkloadLogsInput{Kind: "deployment", Namespace: "shop", Name: "fleet"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logResponse struct {
+		Pods int           `json:"pods"`
+		Logs []podLogEntry `json:"logs"`
+	}
+	if err := json.Unmarshal([]byte(extractText(t, result)), &logResponse); err != nil {
+		t.Fatal(err)
+	}
+	if logResponse.Pods != 1 || len(logResponse.Logs) != 1 || logResponse.Logs[0].Pod != "current" {
+		t.Fatalf("follow-up logs disagree with Diagnose: %+v", logResponse)
 	}
 }
 
