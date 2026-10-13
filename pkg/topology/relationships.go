@@ -25,6 +25,7 @@ type RelationshipsIndex struct {
 	nodesByID          map[string]*Node
 	nodesByResourceKey map[string]*Node
 	podConsumers       map[string][]ResourceRef
+	visiblePods        map[string]bool
 }
 
 type nodeEdgeSlots struct {
@@ -46,7 +47,8 @@ func IndexByResource(topo *Topology) *RelationshipsIndex {
 		byNodeID:           make(map[string]*nodeEdgeSlots, len(topo.Nodes)),
 		nodesByID:          make(map[string]*Node, len(topo.Nodes)),
 		nodesByResourceKey: make(map[string]*Node, len(topo.Nodes)),
-		podConsumers:       make(map[string][]ResourceRef),
+		podConsumers:       topo.podConsumers,
+		visiblePods:        make(map[string]bool),
 	}
 	for i := range topo.Nodes {
 		node := &topo.Nodes[i]
@@ -56,7 +58,7 @@ func IndexByResource(topo *Topology) *RelationshipsIndex {
 		}
 	}
 	// A shared snapshot may have been stripped for this user before indexing.
-	visiblePods := map[string]bool{}
+	visiblePods := idx.visiblePods
 	for _, node := range topo.Nodes {
 		if node.Kind == KindPod {
 			visiblePods[resourceid.ResourceKey("", "Pod", nodeNamespaceFromData(&node), node.Name)] = true
@@ -70,26 +72,6 @@ func IndexByResource(topo *Topology) *RelationshipsIndex {
 				}
 			}
 		}
-	}
-	for key, refs := range topo.podConsumers {
-		if idx.nodesByResourceKey[key] == nil {
-			continue
-		}
-		for _, ref := range refs {
-			if visiblePods[resourceid.ResourceKey("", "Pod", ref.Namespace, ref.Name)] {
-				idx.podConsumers[key] = append(idx.podConsumers[key], ref)
-			}
-		}
-	}
-	for key, refs := range idx.podConsumers {
-		idx.podConsumers[key] = uniqueResourceRefs(refs)
-		sort.Slice(idx.podConsumers[key], func(i, j int) bool {
-			a, b := idx.podConsumers[key][i], idx.podConsumers[key][j]
-			if a.Namespace != b.Namespace {
-				return a.Namespace < b.Namespace
-			}
-			return a.Name < b.Name
-		})
 	}
 	for _, e := range topo.Edges {
 		if e.Source != "" {
@@ -110,6 +92,27 @@ func IndexByResource(topo *Topology) *RelationshipsIndex {
 		}
 	}
 	return idx
+}
+
+func (r *RelationshipsIndex) podConsumersFor(key string) []ResourceRef {
+	if r == nil || r.nodesByResourceKey[key] == nil {
+		return nil
+	}
+	var visible []ResourceRef
+	for _, ref := range r.podConsumers[key] {
+		if r.visiblePods[resourceid.ResourceKey("", "Pod", ref.Namespace, ref.Name)] {
+			visible = append(visible, ref)
+		}
+	}
+	visible = uniqueResourceRefs(visible)
+	sort.Slice(visible, func(i, j int) bool {
+		a, b := visible[i], visible[j]
+		if a.Namespace != b.Namespace {
+			return a.Namespace < b.Namespace
+		}
+		return a.Name < b.Name
+	})
+	return visible
 }
 
 // EdgesFor returns the incoming and outgoing edges touching nodeID. Both
@@ -697,7 +700,7 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 	}
 
 	if resourceGroup == "" && (resourceKind == "ConfigMap" || resourceKind == "Secret" || resourceKind == "PersistentVolumeClaim" || resourceKind == "ServiceAccount") {
-		rel.Consumers = append(rel.Consumers, lookupIndex.podConsumers[resourceid.ResourceKey("", resourceKind, namespace, name)]...)
+		rel.Consumers = append(rel.Consumers, lookupIndex.podConsumersFor(resourceid.ResourceKey("", resourceKind, namespace, name))...)
 	}
 	if endpoint, ok := queriedObj.(*unstructured.Unstructured); ok &&
 		(kindLower == "hostendpoint" || kindLower == "hostendpoints") &&

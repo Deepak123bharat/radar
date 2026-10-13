@@ -2,12 +2,17 @@ package topology
 
 import (
 	"fmt"
+	"reflect"
+	"slices"
+	"testing"
+
+	"github.com/skyhook-io/radar/pkg/resourceid"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"reflect"
-	"testing"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 func TestWorkloadReferenceExtractionMatchesTypedAndUnstructuredPodSpecs(t *testing.T) {
@@ -194,5 +199,101 @@ func TestAdmittedPodFactsDoNotJoinNormalGraphComponents(t *testing.T) {
 		if ref.Kind == "Secret" {
 			t.Fatalf("direct projection bypassed Secret filtering: %+v", ref)
 		}
+	}
+}
+
+func TestMalformedRolloutRetainsReadableConfiguration(t *testing.T) {
+	rollout := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "argoproj.io/v1alpha1", "kind": "Rollout",
+		"metadata": map[string]any{"name": "app", "namespace": "team"},
+		"spec": map[string]any{"template": map[string]any{"spec": map[string]any{
+			"containers": []any{map[string]any{"name": "app", "resources": map[string]any{"requests": map[string]any{"cpu": "invalid-quantity"}}, "envFrom": []any{map[string]any{"configMapRef": map[string]any{"name": "settings"}}}}},
+		}}},
+	}}
+	before := rollout.DeepCopy()
+	for _, full := range []bool{false, true} {
+		t.Run(fmt.Sprint(full), func(t *testing.T) {
+			provider := &mockProvider{configMaps: []*corev1.ConfigMap{{ObjectMeta: metav1.ObjectMeta{Name: "settings", Namespace: "team"}}}}
+			dp := &rolloutDynamicProvider{gvr: schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: "rollouts"}, rollouts: []*unstructured.Unstructured{rollout}}
+			opts := DefaultBuildOptions()
+			opts.ForRelationshipCache = full
+			topo, err := NewBuilder(provider).WithDynamic(dp).Build(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, edge := range topo.Edges {
+				if edge.Source == "configmap/team/settings" && edge.Target == "rollout/team/app" && edge.Type == EdgeConfigures {
+					found = true
+				}
+			}
+			if !found || len(topo.Warnings) == 0 {
+				t.Fatalf("readable reference or decode warning lost: %+v", topo)
+			}
+			if !reflect.DeepEqual(rollout, before) {
+				t.Fatal("recovery mutated the Rollout")
+			}
+		})
+	}
+}
+
+func TestPodConsumerLookupPreservesFilteredResults(t *testing.T) {
+	key := resourceid.ResourceKey("", "ConfigMap", "team", "settings")
+	hiddenKey := resourceid.ResourceKey("", "Secret", "team", "hidden")
+	refs := []ResourceRef{{Kind: "Pod", Namespace: "team", Name: "z"}, {Kind: "Pod", Namespace: "team", Name: "denied"}, {Kind: "Pod", Namespace: "team", Name: "a"}, {Kind: "Pod", Namespace: "team", Name: "a"}, {Kind: "Pod", Namespace: "other", Name: "a"}}
+	topo := &Topology{Nodes: []Node{
+		{ID: "configmap/team/settings", Kind: KindConfigMap, Name: "settings", Data: map[string]any{"namespace": "team"}},
+		{ID: "pod/team/z", Kind: KindPod, Name: "z", Data: map[string]any{"namespace": "team"}},
+		{ID: "podgroup/team/group", Kind: KindPodGroup, Name: "group", Data: map[string]any{"namespace": "team", "pods": []map[string]any{{"namespace": "team", "name": "a"}}}},
+	}, podConsumers: map[string][]ResourceRef{key: refs, hiddenKey: refs}}
+	beforeRefs := slices.Clone(refs)
+	idx := IndexByResource(topo)
+	want := []ResourceRef{{Kind: "Pod", Namespace: "team", Name: "a"}, {Kind: "Pod", Namespace: "team", Name: "z"}}
+	for _, index := range []*RelationshipsIndex{nil, idx} {
+		rel := GetRelationshipsWithObject("ConfigMap", "team", "settings", nil, topo, nil, nil, index)
+		if !reflect.DeepEqual(rel.Consumers, want) {
+			t.Fatalf("consumer results differ: %+v", rel.Consumers)
+		}
+		hidden := GetRelationshipsWithObject("Secret", "team", "hidden", nil, topo, nil, nil, index)
+		if hidden != nil && len(hidden.Consumers) != 0 {
+			t.Fatalf("hidden target leaked consumers: %+v", hidden)
+		}
+	}
+	if !slices.Equal(topo.podConsumers[key], beforeRefs) {
+		t.Fatal("lookup mutated the shared consumer list")
+	}
+	rel := GetRelationshipsWithObject("ConfigMap", "team", "settings", nil, topo, nil, nil, idx)
+	rel.Consumers[0].Name = "changed"
+	again := GetRelationshipsWithObject("ConfigMap", "team", "settings", nil, topo, nil, nil, idx)
+	if !reflect.DeepEqual(again.Consumers, want) {
+		t.Fatalf("request mutated subsequent results: %+v", again)
+	}
+}
+
+func TestWorkloadReferenceRecoveryRetainsIndependentSubtrees(t *testing.T) {
+	spec := map[string]any{
+		"containers":          []any{"invalid", map[string]any{"resources": map[string]any{"requests": map[string]any{"cpu": "invalid"}}, "envFrom": []any{"invalid", map[string]any{"configMapRef": map[string]any{"name": "regular"}}}, "env": []any{map[string]any{"value": int64(5), "valueFrom": map[string]any{"secretKeyRef": map[string]any{"name": "env-secret", "key": "token"}}}}}},
+		"initContainers":      []any{map[string]any{"envFrom": []any{map[string]any{"configMapRef": map[string]any{"name": "init"}}}}},
+		"ephemeralContainers": []any{map[string]any{"envFrom": []any{map[string]any{"configMapRef": map[string]any{"name": "debug"}}}}},
+		"volumes":             []any{"invalid", map[string]any{"name": int64(1), "configMap": map[string]any{"name": "volume"}}, map[string]any{"projected": map[string]any{"defaultMode": "invalid", "sources": []any{"invalid", map[string]any{"configMap": map[string]any{"name": "projected"}}}}}, map[string]any{"persistentVolumeClaim": map[string]any{"claimName": "claim"}}},
+		"imagePullSecrets":    []any{"invalid", map[string]any{"name": "pull"}}, "serviceAccountName": "runner",
+	}
+	before := runtime.DeepCopyJSON(spec)
+	for _, full := range []bool{false, true} {
+		got, err := extractWorkloadReferencesFromMap(spec, full)
+		configs := map[string]bool{"regular": true, "init": true, "volume": true}
+		secrets := map[string]bool{"env-secret": true}
+		if full {
+			configs["debug"] = true
+			configs["projected"] = true
+			secrets["pull"] = true
+		}
+		want := workloadRefs{configMaps: configs, secrets: secrets, pvcs: map[string]bool{"claim": true}, serviceAccount: "runner"}
+		if err == nil || !reflect.DeepEqual(got, want) {
+			t.Fatalf("full=%v got=%+v want=%+v err=%v", full, got, want, err)
+		}
+	}
+	if !reflect.DeepEqual(spec, before) {
+		t.Fatal("recovery mutated reference-bearing subtrees")
 	}
 }
