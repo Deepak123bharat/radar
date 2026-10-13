@@ -77,8 +77,10 @@ func IssueReadUnchecked(ctx context.Context, err error) bool {
 	return err != nil && !IssueReadDenied(err) && !errors.Is(ctx.Err(), context.Canceled)
 }
 
+// Only a 403 skips a namespace here. A 401 in one namespace fails the whole
+// read, so IssueReadUnchecked sees it even when another namespace succeeded.
 func listIssueReleasesWithClients(ctx context.Context, client kubernetes.Interface, labelsClient metadata.Interface, contextName string, namespaces []string) ([]HelmRelease, error) {
-	return listReleaseRows(ctx, contextName, namespaces, false, func(ctx context.Context, namespace string) (*helmReleaseStorageSnapshot, error) {
+	return listReleaseRows(ctx, contextName, namespaces, false, isReleaseReadForbidden, func(ctx context.Context, namespace string) (*helmReleaseStorageSnapshot, error) {
 		snapshot, skipped, err := helmIssueStorageSnapshot(ctx, client, labelsClient, namespace)
 		if err != nil {
 			return nil, err

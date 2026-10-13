@@ -374,14 +374,16 @@ func (c *Client) ListReleasesAcrossNamespaces(ctx context.Context, namespaces []
 // contextName is the cluster context the read started on; a release history
 // analysed after a switch away from it records no uninstall start.
 func listReleasesAcrossNamespacesWithClient(ctx context.Context, client kubernetes.Interface, contextName string, namespaces []string, includeResourceHealth bool) ([]HelmRelease, error) {
-	return listReleaseRows(ctx, contextName, namespaces, includeResourceHealth, func(ctx context.Context, namespace string) (*helmReleaseStorageSnapshot, error) {
+	return listReleaseRows(ctx, contextName, namespaces, includeResourceHealth, IsForbiddenError, func(ctx context.Context, namespace string) (*helmReleaseStorageSnapshot, error) {
 		return helmReleaseStorageSnapshotWithClient(ctx, client, namespace)
 	})
 }
 
 // listReleaseRows reads one storage snapshot per namespace scope (nil means
-// one cluster-wide read) and builds a row for each release in it.
-func listReleaseRows(ctx context.Context, contextName string, namespaces []string, includeResourceHealth bool, read func(context.Context, string) (*helmReleaseStorageSnapshot, error)) ([]HelmRelease, error) {
+// one cluster-wide read) and builds a row for each release in it. A namespace
+// whose read fails with an error that denied matches is skipped; any other
+// failure fails the whole read.
+func listReleaseRows(ctx context.Context, contextName string, namespaces []string, includeResourceHealth bool, denied func(error) bool, read func(context.Context, string) (*helmReleaseStorageSnapshot, error)) ([]HelmRelease, error) {
 	scopes := namespaces
 	if scopes == nil {
 		scopes = []string{""}
@@ -396,7 +398,7 @@ func listReleaseRows(ctx context.Context, contextName string, namespaces []strin
 		}
 		snapshot, err := read(ctx, ns)
 		if err != nil {
-			if IsForbiddenError(err) {
+			if denied(err) {
 				lastForbidden = err
 				continue
 			}
