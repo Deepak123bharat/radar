@@ -211,13 +211,13 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 		Annotations: readOnly,
 	}, logToolCall("get_pod_logs", handleGetPodLogs))
 
-	diagnoseDescription := "Collect a bounded, point-in-time evidence bundle for one narrowed workload, " +
-		"GitOps reconciler, or network entry. It combines signals in one round-trip to support diagnosis; " +
+	diagnoseDescription := "Get a bounded, point-in-time evidence bundle for one narrowed workload, " +
+		"GitOps reconciler or network entry. Combines signals in one round-trip; " +
 		"it does not run an agent and is not an authoritative root-cause verdict or an exhaustive account. " +
-		"After narrowing, use for CrashLoopBackOff, OOMKilled, image-pull, readiness, scheduling, GitOps sync/health, " +
-		"or traffic not reaching a service, route, or ingress. For Pod, Deployment, StatefulSet, DaemonSet, or Argo Rollout it " +
-		"bundles resource context, selected/capped current and previous logs, Warning events, startup blockers, " +
-		"related issues, and recent workload/ConfigMap changes. " +
+		"Use for CrashLoopBackOff, OOMKilled, image-pull, readiness, scheduling, GitOps sync/health, " +
+		"or traffic not reaching a service, route or ingress. Pod, Deployment, StatefulSet, DaemonSet and Argo Rollout " +
+		"bundle resource context, selected/capped current and previous logs, Warning events, startup blockers, " +
+		"related issues and recent workload/ConfigMap changes. " +
 		"Warning events are a capped sample for the observed resource and Pods; UID-less evidence cannot prove an incarnation. Use get_events for a broader, dedicated event read, including history. " +
 		"`crashCause` is evidence, not a root-cause verdict. `logLineSelection` ranks " +
 		"`" + crashLineFatalPattern + "`, `" + crashLineHeaderOnly + "`, `" +
@@ -225,12 +225,12 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 		"selections; `traceback_header_only` means the informative line was not captured. " +
 		"`auditSummary.highestSeverity` uses static-posture critical|high|medium|low (built-ins high|medium), " +
 		"unlike live `issueSummary` critical|warning. `application_configuration_change: true` classifies an edit; " +
-		"it is not a causal or universal relevance verdict. Application, Kustomization, and Flux HelmRelease return reconciler " +
-		"status and parsed issues without logs. Network entry kinds return per-route reachability evidence: trust " +
+		"it is not a causal or universal relevance verdict. Application, Kustomization and Flux HelmRelease return " +
+		"status and parsed issues; no logs. Network entries give per-route reachability evidence: trust " +
 		"`routes[].outcome` + `confidence` and `headline`/`diagnosis` over coarse `verdict`; `indirect` means only the " +
-		"API-server proxy reached it, not the live path. Point-in-time means the bundle is frozen from this call, " +
+		"API-server proxy reached it, not the live path. Point-in-time means frozen from this call, " +
 		"not that every source was read atomically; preserve collection limits, errors, timestamps, and confidence. " +
-		"Prefer a targeted resource/log/event tool for one facet; use get_resource for other kinds."
+		"For one facet, prefer resource/log/event tools; use get_resource for other kinds."
 	if includeWrites {
 		tool := &mcp.Tool{
 			Name: "diagnose",
