@@ -254,7 +254,7 @@ it("pairs each diagnosis metric card with its declared Object source once", asyn
   try {
     await act(async () => root.render(<HPARenderer
       data={{ metadata: { namespace: "team" }, spec: { metrics: objects.map(object => ({ type: "Object", object })) } }}
-      hpaDiagnosis={{ state: "stable", summary: "Stable", target: {}, bounds: { min: 1, max: 3, current: 2, desired: 2 }, metrics: [
+      hpaDiagnosis={{ state: "stabilized", summary: "Stabilized", target: {}, bounds: { min: 1, max: 3, current: 2, desired: 2 }, metrics: [
         { type: "Object", name: "Endpoints/input/requests", current: "10", status: "ok" },
         { type: "Object", name: "Endpoints (custom.example.io)/input/requests", current: "20", status: "ok" },
         { type: "Object", name: "Namespace/team/queue_depth", current: "7", status: "ok" },
