@@ -320,11 +320,14 @@ func BuildNeighborhoodWithIndex(t *Topology, root ResourceRef, opts Neighborhood
 	for _, id := range order {
 		if n, ok := nodeByID[id]; ok {
 			node := *n
-			if opts.Allow != nil && node.Data["policyCoverageWorkloads"] != nil {
-				// Internal coverage IDs are not neighborhood edges and have not
-				// passed the BFS authorization gate. Do not serialize them.
+			_, hasPolicyStatus := node.Data["policyStatus"]
+			if opts.Allow != nil && (node.Data["policyCoverageWorkloads"] != nil || hasPolicyStatus) {
+				// These annotations were computed against the full graph. BFS
+				// authorization does not validate policy evidence outside its
+				// bounded neighborhood, so do not serialize them here.
 				node.Data = maps.Clone(node.Data)
 				delete(node.Data, "policyCoverageWorkloads")
+				delete(node.Data, "policyStatus")
 			}
 			sub.Nodes = append(sub.Nodes, node)
 		}
