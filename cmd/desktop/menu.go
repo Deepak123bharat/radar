@@ -139,12 +139,11 @@ func createMenu(desktopApp *DesktopApp, version, goos string) *menu.Menu {
 	editMenu.AddText("Paste", pasteAccelerator(goos), func(_ *menu.CallbackData) {
 		clipboardSource := "navigator.clipboard.readText()"
 		if mac {
-			text, err := runtime.ClipboardGetText(desktopApp.ctx)
-			if err != nil {
-				log.Printf("[desktop] Failed to read clipboard: %v", err)
-				return
+			if text, err := runtime.ClipboardGetText(desktopApp.ctx); err != nil {
+				log.Printf("[desktop] Native clipboard read failed, falling back to webview: %v", err)
+			} else {
+				clipboardSource = nativePasteSource(text)
 			}
-			clipboardSource = nativePasteSource(text)
 		}
 		runtime.WindowExecJS(desktopApp.ctx, clipboardSource+`
 			.then(function(text) {
