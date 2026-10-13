@@ -33,6 +33,9 @@ func NewTopologyResourceProvider(cache *ResourceCache) topology.ResourceProvider
 }
 
 func (a *topologyResourceProvider) ForNamespace(namespace string) topology.ResourceProvider {
+	if namespace == "" {
+		namespace = a.namespace
+	}
 	return &topologyResourceProvider{cache: a.cache, namespace: namespace}
 }
 

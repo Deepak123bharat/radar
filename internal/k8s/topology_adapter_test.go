@@ -213,6 +213,10 @@ func TestTopologyAdapter_ForNamespaceUsesCachedIndex(t *testing.T) {
 	if err != nil || len(pods) != 2 {
 		t.Fatalf("empty scope: %v %v", pods, err)
 	}
+	pods, err = scoped.(topology.NamespacedResourceProvider).ForNamespace("").Pods()
+	if err != nil || len(pods) != 1 || pods[0].Namespace != "a" {
+		t.Fatalf("empty scope widened a scoped view: %v %v", pods, err)
+	}
 	pods, err = adapter.(topology.NamespacedResourceProvider).ForNamespace("unobserved").Pods()
 	if err != nil || len(pods) != 0 {
 		t.Fatalf("unobserved scope: %v %v", pods, err)
