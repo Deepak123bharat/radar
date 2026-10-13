@@ -180,6 +180,15 @@ func TimelineUnavailableReason() string {
 	return reason
 }
 
+// StoreMissingError says why no timeline store is installed, for a caller
+// that has to tell "nothing changed" from "history could not be checked".
+func StoreMissingError() error {
+	if reason := TimelineUnavailableReason(); reason != "" {
+		return fmt.Errorf("timeline history is unavailable because Radar can't connect to its PostgreSQL database: %s", reason)
+	}
+	return errors.New("timeline store not initialized")
+}
+
 // Unavailable reports why the timeline cannot record or serve history right
 // now, or nil when it can. A PostgreSQL store is pinged: a database that goes
 // away after a good start leaves the store in place, and only a round trip
@@ -257,13 +266,10 @@ func forgetDeletedWhileUnavailable(store *PostgresStore) {
 		log.Printf("[timeline] more than %d resources were deleted while PostgreSQL was unreachable; "+
 			"one of the others recreated under the same name may not have its creation recorded", maxDeletedWhileUnavailable)
 	}
-	if len(keys) == 0 {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), postgresOperationTimeout)
-	defer cancel()
-	if err := store.forgetSeen(ctx, keys); err != nil {
-		log.Printf("[timeline] failed to clear seen marks for %d resource(s) deleted while PostgreSQL was unreachable: %v", len(keys), err)
+	// Runs with no new keys too: it also queues the clears an earlier attempt
+	// failed to apply. A clear that fails in the writer is kept and retried.
+	if err := store.forgetSeen(keys); err != nil {
+		log.Printf("[timeline] seen marks of resources deleted while PostgreSQL was unreachable are not cleared yet: %v", err)
 	}
 }
 
@@ -317,6 +323,7 @@ func watchPostgresOutage(pg *PostgresStore, cause error, interval time.Duration,
 	}
 	if ping() == nil {
 		endPostgresOutage(quit, "")
+		applyUnclearedSeen(pg)
 		return
 	}
 	since := time.Now()
@@ -338,8 +345,22 @@ func watchPostgresOutage(pg *PostgresStore, cause error, interval time.Duration,
 		if ping() == nil {
 			endPostgresOutage(quit, fmt.Sprintf("[timeline] PostgreSQL (%s) is answering again after %s; the timeline is recording changes again. Changes made in between were not recorded",
 				pg.target, time.Since(since).Round(time.Second)))
+			applyUnclearedSeen(pg)
 			return
 		}
+	}
+}
+
+// applyUnclearedSeen retries the store's own failed seen-mark clears. It does
+// not drain deletedWhileUnavailable: that list fills only while no store is
+// installed and belongs to whichever context is current, which after a context
+// switch is no longer this store's.
+func applyUnclearedSeen(pg *PostgresStore) {
+	if GetStore() != EventStore(pg) {
+		return
+	}
+	if err := pg.applyUnclearedSeen(); err != nil {
+		log.Printf("[timeline] seen marks of deleted resources are not cleared yet: %v", err)
 	}
 }
 

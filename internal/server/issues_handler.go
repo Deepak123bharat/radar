@@ -123,12 +123,15 @@ func (s *Server) handleIssues(w http.ResponseWriter, r *http.Request) {
 	})
 	if len(namespaces) == 1 && stats.TotalMatched == len(out) && meaningfulchanges.IssueChangesQueryEligible(q.Get("kind"), q.Get("filter"), q.Get("severity")) {
 		if recentChangesReason := meaningfulchanges.IssueChangesReason(out); recentChangesReason != "" {
-			if recentResult, err := meaningfulchanges.Recent(r.Context(), meaningfulchanges.Query{
+			recentResult, err := meaningfulchanges.Recent(r.Context(), meaningfulchanges.Query{
 				Namespaces: []string{namespaces[0]},
 				Since:      meaningfulchanges.DefaultSince,
 				Limit:      meaningfulchanges.IssueChangesFetchLimit(recentChangesReason),
 				FieldLimit: meaningfulchanges.DefaultFieldLimit,
-			}); err == nil && len(recentResult.Changes) > 0 {
+			})
+			if err != nil {
+				resp.RecentChangesError = err.Error()
+			} else if len(recentResult.Changes) > 0 {
 				// Per-kind RBAC: recent_changes is namespace-filtered but not
 				// per-kind — drop changes for kinds the caller can't read before
 				// ranking, so priority/recap logic operates on the visible set.

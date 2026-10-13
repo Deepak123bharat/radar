@@ -5117,7 +5117,6 @@ func (s *Server) writeTimelineStoreUnavailable(w http.ResponseWriter) {
 // writeTimelineQueryError answers a timeline query that failed.
 func (s *Server) writeTimelineQueryError(w http.ResponseWriter, err error) {
 	if timeline.DatabaseUnreachable(err) {
-		timeline.NoteDatabaseError(timeline.GetStore(), err)
 		s.writeTimelineDatabaseUnreachable(w, err.Error())
 		return
 	}

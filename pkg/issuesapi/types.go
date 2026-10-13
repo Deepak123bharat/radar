@@ -548,6 +548,10 @@ type Response struct {
 	// the lookback window itself: changes older than the window are out of
 	// scope either way, not implied absent.
 	RecentChangesTruncated bool `json:"recent_changes_truncated,omitempty"`
+	// RecentChangesError is set when the recent-changes feed was due but could
+	// not be read, such as while the timeline database is unreachable. Without
+	// it, a missing recent_changes would read the same as no changes.
+	RecentChangesError string `json:"recent_changes_error,omitempty"`
 	// CorrelationTruncated is set when per-issue change correlation skipped
 	// some critical or warning issues (shared cap reached; criticals are
 	// checked first). Under truncation, an issue without correlation markers

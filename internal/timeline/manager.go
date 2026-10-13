@@ -334,23 +334,25 @@ func ResetStore() {
 	defer globalStoreInitMu.Unlock()
 
 	stopPostgresReconnect()
-	// Again once the store is cleared: a write failing against the old store
-	// between the two can start a watch on it. Deferred so it runs after the
-	// unlock below, keeping the watch's lock ahead of the store's.
-	defer stopPostgresOutageWatch()
 
 	globalStoreMu.Lock()
-	defer globalStoreMu.Unlock()
-
-	if globalStore != nil {
-		if err := globalStore.Close(); err != nil {
-			log.Printf("Warning: error closing event store: %v", err)
-		}
-		globalStore = nil
-	}
+	store := globalStore
+	globalStore = nil
 	observationStartNanos.Store(0)
 	globalStoreOnce = sync.Once{}
 	globalStoreErr = nil
+	globalStoreMu.Unlock()
+
+	// Closed outside the lock: Close waits for the store's background writer,
+	// and a write failing there calls back into GetStore.
+	if store != nil {
+		if err := store.Close(); err != nil {
+			log.Printf("Warning: error closing event store: %v", err)
+		}
+	}
+	// Again once the store is cleared: a write failing against the old store
+	// between the two can start a watch on it.
+	stopPostgresOutageWatch()
 }
 
 // ReinitStore reinitializes the event store after a context switch.
@@ -365,9 +367,7 @@ func RecordEvent(ctx context.Context, event TimelineEvent) error {
 	if store == nil {
 		return fmt.Errorf("event store not initialized")
 	}
-	err := store.Append(ctx, event)
-	NoteDatabaseError(store, err)
-	return err
+	return store.Append(ctx, event)
 }
 
 // RecordEvents is a convenience function to record multiple events to the global store
@@ -376,9 +376,7 @@ func RecordEvents(ctx context.Context, events []TimelineEvent) error {
 	if store == nil {
 		return fmt.Errorf("event store not initialized")
 	}
-	err := store.AppendBatch(ctx, events)
-	NoteDatabaseError(store, err)
-	return err
+	return store.AppendBatch(ctx, events)
 }
 
 // QueryEvents is a convenience function to query events from the global store

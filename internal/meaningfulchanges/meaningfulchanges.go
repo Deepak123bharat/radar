@@ -211,10 +211,7 @@ func Recent(ctx context.Context, q Query) (RecentResult, error) {
 func recent(ctx context.Context, q Query) ([]issuesapi.RecentChange, bool, bool, error) {
 	store := timeline.GetStore()
 	if store == nil {
-		if reason := timeline.TimelineUnavailableReason(); reason != "" {
-			return nil, false, false, fmt.Errorf("timeline history is unavailable because Radar can't connect to its PostgreSQL database: %s", reason)
-		}
-		return nil, false, false, fmt.Errorf("timeline store not initialized")
+		return nil, false, false, timeline.StoreMissingError()
 	}
 	q = normalizeQuery(q)
 

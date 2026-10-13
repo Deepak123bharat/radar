@@ -68,6 +68,18 @@ const (
 	seenWriteQueueDepth = 4096
 	seenWriteBatchSize  = 500
 	seenWriteInterval   = time.Second
+
+	// maxUnclearedSeen bounds the clears kept for a retry, as
+	// maxDeletedWhileUnavailable bounds the deletes kept while no store is
+	// installed.
+	maxUnclearedSeen = 100_000
+)
+
+// How often failed seen-mark clears are retried, backing off while they keep
+// failing. Variables so tests need not wait.
+var (
+	seenClearRetryInitialInterval = 5 * time.Second
+	seenClearRetryMaxInterval     = 5 * time.Minute
 )
 
 // seenResourceWrite is one ordered mutation of the seen set. Marks and clears
@@ -103,7 +115,14 @@ type PostgresStore struct {
 	target string
 
 	seenResources map[string]bool
-	seenMu        sync.RWMutex
+	// Clears that did not reach the database. Their rows would make a resource
+	// recreated under the same name look already seen after the next restart,
+	// so they are applied again once the database answers. Guarded by seenMu,
+	// which a later mark of the same key also takes to remove it.
+	unclearedSeen map[string]struct{}
+	// Set once the backlog hit maxUnclearedSeen, so the loss is logged once.
+	unclearedOverflow bool
+	seenMu            sync.RWMutex
 
 	filterCache map[string]*CompiledFilter
 	cacheMu     sync.RWMutex
@@ -173,6 +192,7 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 		db:            db,
 		target:        postgresTarget(dsn),
 		seenResources: make(map[string]bool),
+		unclearedSeen: make(map[string]struct{}),
 		filterCache:   make(map[string]*CompiledFilter),
 		seenWrites:    make(chan seenResourceWrite, seenWriteQueueDepth),
 		quit:          make(chan struct{}),
@@ -187,10 +207,14 @@ func NewPostgresStore(dsn string) (*PostgresStore, error) {
 		return closeOnError("hydrate PostgreSQL timeline seen resources", err)
 	}
 
-	store.wg.Add(2)
+	store.wg.Add(3)
 	go func() {
 		defer store.wg.Done()
 		store.runSeenWriter()
+	}()
+	go func() {
+		defer store.wg.Done()
+		store.runSeenClearRetry(seenClearRetryInitialInterval, seenClearRetryMaxInterval)
 	}()
 	go func() {
 		defer store.wg.Done()
@@ -290,13 +314,52 @@ func validatePostgresSchema(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+// noteError hands a failed read or write to the outage check, so whichever
+// caller first meets a lost database (a page, an AI tool, the informers) starts
+// the outage log.
+func (s *PostgresStore) noteError(err error) error {
+	NoteDatabaseError(s, err)
+	return err
+}
+
 func (s *PostgresStore) Close() error {
 	s.closeOnce.Do(func() {
+		// Under seenMu, so a retry queueing clears either finishes before the
+		// writer is told to drain, or sees the store closing and leaves them
+		// for the last attempt below.
+		s.seenMu.Lock()
 		close(s.quit)
+		s.seenMu.Unlock()
 		s.wg.Wait()
+		s.applyUnclearedSeenBeforeClose()
 		s.closeErr = s.db.Close()
 	})
 	return s.closeErr
+}
+
+// applyUnclearedSeenBeforeClose makes one last attempt at the clears still
+// waiting for a retry, so a restart soon after an outage does not load their
+// stale marks. The writer has drained and stopped, so nothing queued can land
+// after this statement.
+func (s *PostgresStore) applyUnclearedSeenBeforeClose() {
+	s.seenMu.Lock()
+	keys := make([][]byte, 0, len(s.unclearedSeen))
+	for k := range s.unclearedSeen {
+		keys = append(keys, []byte(k))
+	}
+	s.unclearedSeen = make(map[string]struct{})
+	s.seenMu.Unlock()
+	if len(keys) == 0 {
+		return
+	}
+	// Short: a database that is still gone should not hold up shutdown or a
+	// context switch.
+	ctx, cancel := context.WithTimeout(context.Background(), postgresPingTimeout)
+	defer cancel()
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM radar_timeline_seen_resources WHERE resource_key = ANY($1)", keys); err != nil {
+		log.Printf("[timeline] %d seen-resource clear(s) could not be applied before closing: %v; "+
+			"after a restart, a resource among them recreated under the same name may not have its creation recorded", len(keys), err)
+	}
 }
 
 // Append adds a single event to the store.
@@ -312,6 +375,10 @@ func (s *PostgresStore) Append(ctx context.Context, event TimelineEvent) error {
 // (count, message, timestamp, seq) when the incoming revision is not older,
 // mirroring the SQLite and memory stores.
 func (s *PostgresStore) AppendBatch(ctx context.Context, events []TimelineEvent) error {
+	return s.noteError(s.appendBatch(ctx, events))
+}
+
+func (s *PostgresStore) appendBatch(ctx context.Context, events []TimelineEvent) error {
 	if len(events) == 0 {
 		return nil
 	}
@@ -440,6 +507,11 @@ func (s *PostgresStore) AppendBatch(ctx context.Context, events []TimelineEvent)
 
 // Query retrieves events matching the given options.
 func (s *PostgresStore) Query(ctx context.Context, opts QueryOptions) ([]TimelineEvent, error) {
+	events, err := s.query(ctx, opts)
+	return events, s.noteError(err)
+}
+
+func (s *PostgresStore) query(ctx context.Context, opts QueryOptions) ([]TimelineEvent, error) {
 	ctx, cancel := withPostgresOperationTimeout(ctx)
 	defer cancel()
 	q, args, err := s.buildQuery(opts)
@@ -489,6 +561,11 @@ func (s *PostgresStore) Query(ctx context.Context, opts QueryOptions) ([]Timelin
 
 // GetEvent retrieves a single event by ID.
 func (s *PostgresStore) GetEvent(ctx context.Context, id string) (*TimelineEvent, error) {
+	event, err := s.getEvent(ctx, id)
+	return event, s.noteError(err)
+}
+
+func (s *PostgresStore) getEvent(ctx context.Context, id string) (*TimelineEvent, error) {
 	ctx, cancel := withPostgresOperationTimeout(ctx)
 	defer cancel()
 	query := `SELECT id, timestamp, source, kind, api_version, namespace, name, uid, event_type,
@@ -513,6 +590,7 @@ func (s *PostgresStore) MarkResourceSeen(clusterContext, group, kind, namespace,
 
 	s.seenMu.Lock()
 	s.seenResources[key] = true
+	delete(s.unclearedSeen, key)
 	s.seenMu.Unlock()
 
 	s.enqueueSeenWrite(seenResourceWrite{key: key})
@@ -543,8 +621,9 @@ func (s *PostgresStore) ClearResourceSeen(clusterContext, group, kind, namespace
 	done := make(chan struct{})
 	if !s.enqueueSeenClear(ctx, seenResourceWrite{key: key, delete: true, done: done}) {
 		log.Printf("[timeline] seen-resource clear did not reach the write queue in %s; "+
-			"the resource stays marked as seen in the database until it is deleted again",
-			postgresOperationTimeout)
+			"Radar retries it until it reaches the database", postgresOperationTimeout)
+		s.noteUncleared([]string{key})
+		s.noteError(context.DeadlineExceeded)
 		return
 	}
 	select {
@@ -554,22 +633,97 @@ func (s *PostgresStore) ClearResourceSeen(clusterContext, group, kind, namespace
 	}
 }
 
-// forgetSeen clears many seen marks in one statement, in memory and in the
-// database. The in-memory set is cleared even if the statement fails, so this
-// process records the next creation either way.
-func (s *PostgresStore) forgetSeen(ctx context.Context, keys []string) error {
+// forgetSeen clears seen marks in memory and in the database, together with
+// any earlier clear that did not reach it. The in-memory set is cleared at
+// once, so this process records the next creation either way.
+func (s *PostgresStore) forgetSeen(keys []string) error {
 	s.seenMu.Lock()
 	for _, k := range keys {
 		delete(s.seenResources, k)
 	}
 	s.seenMu.Unlock()
+	s.noteUncleared(keys)
+	return s.applyUnclearedSeen()
+}
 
-	byteKeys := make([][]byte, len(keys))
-	for i, k := range keys {
-		byteKeys[i] = []byte(k)
+// noteUncleared keeps clears that did not reach the database for the next
+// attempt. A key marked again in the meantime is skipped: the resource exists
+// again, and its row is wanted.
+func (s *PostgresStore) noteUncleared(keys []string) {
+	s.seenMu.Lock()
+	overflowed := false
+	for _, k := range keys {
+		if s.seenResources[k] {
+			continue
+		}
+		if _, kept := s.unclearedSeen[k]; !kept && len(s.unclearedSeen) >= maxUnclearedSeen {
+			overflowed = overflowed || !s.unclearedOverflow
+			s.unclearedOverflow = true
+			continue
+		}
+		s.unclearedSeen[k] = struct{}{}
 	}
-	_, err := s.db.ExecContext(ctx, "DELETE FROM radar_timeline_seen_resources WHERE resource_key = ANY($1)", byteKeys)
-	return err
+	s.seenMu.Unlock()
+	if overflowed {
+		log.Printf("[timeline] more than %d seen-resource clears are waiting for PostgreSQL; "+
+			"after a restart, a resource among the others recreated under the same name may not have its creation recorded", maxUnclearedSeen)
+	}
+}
+
+// runSeenClearRetry retries failed seen-mark clears on its own. The outage
+// watch retries them as soon as the database answers again, but a clear the
+// database rejected while still answering (a lock timeout, a deadlock) starts
+// no watch, and would otherwise wait for the next outage or restart.
+func (s *PostgresStore) runSeenClearRetry(initial, max time.Duration) {
+	interval := initial
+	for {
+		select {
+		case <-s.quit:
+			return
+		case <-time.After(interval):
+		}
+		s.seenMu.RLock()
+		waiting := len(s.unclearedSeen)
+		s.seenMu.RUnlock()
+		if waiting == 0 {
+			interval = initial
+			continue
+		}
+		_ = s.applyUnclearedSeen() // what fails again stays in the set
+		interval = min(interval*2, max)
+	}
+}
+
+// applyUnclearedSeen queues the clears that earlier failed. They go through
+// the writer, behind every mutation already queued, so a mark queued before
+// the outage cannot flush after them and bring a deleted resource's row back.
+// Each is queued under seenMu, which MarkResourceSeen takes before queueing its
+// mark: a mark made before is seen here and its clear dropped, and a mark made
+// after queues behind the clear. The send does not wait, since the informers
+// need seenMu; what a full queue leaves stays for the next retry, as does a
+// clear the writer fails to apply.
+func (s *PostgresStore) applyUnclearedSeen() error {
+	s.seenMu.Lock()
+	defer s.seenMu.Unlock()
+	select {
+	case <-s.quit:
+		return errors.New("the store is closing; its last attempt applies the clears")
+	default:
+	}
+	for k := range s.unclearedSeen {
+		if s.seenResources[k] {
+			delete(s.unclearedSeen, k)
+			continue
+		}
+		select {
+		case s.seenWrites <- seenResourceWrite{key: k, delete: true}:
+			delete(s.unclearedSeen, k)
+		default:
+			return fmt.Errorf("seen-resource write queue is full; %d clear(s) wait for the next retry", len(s.unclearedSeen))
+		}
+	}
+	s.unclearedOverflow = false
+	return nil
 }
 
 // enqueueSeenWrite hands one mutation to the background writer without
@@ -684,6 +838,16 @@ func (s *PostgresStore) flushSeenWrites(pending []seenResourceWrite) {
 		}
 		if err != nil {
 			log.Printf("[timeline] failed to persist %d seen-resource changes: %v", end-start, err)
+			if pending[start].delete {
+				// Kept before the waiting clears are released, so a mark that
+				// follows one of them is the one that wins.
+				failed := make([]string, 0, end-start)
+				for _, w := range pending[start:end] {
+					failed = append(failed, w.key)
+				}
+				s.noteUncleared(failed)
+			}
+			s.noteError(err)
 		}
 		for _, w := range pending[start:end] {
 			if w.done != nil {
@@ -852,6 +1016,11 @@ func (s *PostgresStore) storageBytes(ctx context.Context) int64 {
 // OwnedUIDs returns the distinct UIDs of resources whose rows name one of
 // ownerUIDs as their owner.
 func (s *PostgresStore) OwnedUIDs(ctx context.Context, clusterContext string, ownerUIDs []string, limit int) ([]string, error) {
+	uids, err := s.ownedUIDs(ctx, clusterContext, ownerUIDs, limit)
+	return uids, s.noteError(err)
+}
+
+func (s *PostgresStore) ownedUIDs(ctx context.Context, clusterContext string, ownerUIDs []string, limit int) ([]string, error) {
 	ownerUIDs = nonEmpty(ownerUIDs)
 	if len(ownerUIDs) == 0 || limit <= 0 {
 		return nil, nil
@@ -887,6 +1056,11 @@ const postgresAPIGroupExpr = "CASE WHEN strpos(api_version, '/') > 0 THEN split_
 
 // Identities returns the distinct resources the rows matching q were about.
 func (s *PostgresStore) Identities(ctx context.Context, q IdentityQuery, limit int) ([]Identity, error) {
+	identities, err := s.identities(ctx, q, limit)
+	return identities, s.noteError(err)
+}
+
+func (s *PostgresStore) identities(ctx context.Context, q IdentityQuery, limit int) ([]Identity, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
