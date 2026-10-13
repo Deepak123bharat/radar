@@ -65,6 +65,24 @@ func issuesWire(t *testing.T, recorder *httptest.ResponseRecorder) map[string]an
 	return wire
 }
 
+// helmUncheckedWire is the unchecked_sources entry for a failed Helm read.
+const helmUncheckedWire = `[{"reason":"read_failed","source":"helm"}]`
+
+// uncheckedSourcesWire renders the response's unchecked_sources, or "" when
+// the field is absent.
+func uncheckedSourcesWire(t *testing.T, wire map[string]any) string {
+	t.Helper()
+	got, ok := wire["unchecked_sources"]
+	if !ok {
+		return ""
+	}
+	out, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
 // When the Helm release read fails, the response must say Helm wasn't
 // checked. Otherwise a cluster whose only problem is a failed Helm release
 // reads as having no issues.
@@ -75,8 +93,8 @@ func TestIssuesSayWhenHelmReleasesCouldNotBeChecked(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	testServerSrv.handleIssues(recorder, httptest.NewRequest(http.MethodGet, "/api/issues?namespace=shop", nil))
 
-	if got := issuesWire(t, recorder)["helm_issues_unchecked"]; got != true {
-		t.Errorf("helm_issues_unchecked = %v, want true", got)
+	if got := uncheckedSourcesWire(t, issuesWire(t, recorder)); got != helmUncheckedWire {
+		t.Errorf("unchecked_sources = %s, want %s", got, helmUncheckedWire)
 	}
 }
 
@@ -92,8 +110,8 @@ func TestIssuesSayHelmUncheckedWhenRadarDeadlineEndsTheRead(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	testServerSrv.handleIssues(recorder, httptest.NewRequest(http.MethodGet, "/api/issues?namespace=shop", nil).WithContext(ctx))
 
-	if got := issuesWire(t, recorder)["helm_issues_unchecked"]; got != true {
-		t.Errorf("helm_issues_unchecked = %v, want true", got)
+	if got := uncheckedSourcesWire(t, issuesWire(t, recorder)); got != helmUncheckedWire {
+		t.Errorf("unchecked_sources = %s, want %s", got, helmUncheckedWire)
 	}
 }
 
@@ -130,8 +148,8 @@ func TestIssuesDoNotSayHelmUncheckedWhenItWasNot(t *testing.T) {
 			useHelmStorageAnswering(t, tc.status, tc.body)
 			recorder := httptest.NewRecorder()
 			testServerSrv.handleIssues(recorder, httptest.NewRequest(http.MethodGet, "/api/issues?"+tc.query, nil))
-			if got, ok := issuesWire(t, recorder)["helm_issues_unchecked"]; ok {
-				t.Errorf("helm_issues_unchecked = %v, want it absent", got)
+			if got := uncheckedSourcesWire(t, issuesWire(t, recorder)); got != "" {
+				t.Errorf("unchecked_sources = %s, want it absent", got)
 			}
 		})
 	}
@@ -153,8 +171,8 @@ func TestIssuesDoNotSayHelmUncheckedWhenCallerLeft(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	testServerSrv.handleIssues(recorder, httptest.NewRequest(http.MethodGet, "/api/issues?namespace=shop", nil).WithContext(ctx))
 
-	if got, ok := issuesWire(t, recorder)["helm_issues_unchecked"]; ok {
-		t.Errorf("helm_issues_unchecked = %v, want it absent", got)
+	if got := uncheckedSourcesWire(t, issuesWire(t, recorder)); got != "" {
+		t.Errorf("unchecked_sources = %s, want it absent", got)
 	}
 }
 
@@ -166,7 +184,7 @@ func TestIssuesSayHelmUncheckedWhenRadarCredentialsAreRejected(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	testServerSrv.handleIssues(recorder, httptest.NewRequest(http.MethodGet, "/api/issues?namespace=shop", nil))
 
-	if got := issuesWire(t, recorder)["helm_issues_unchecked"]; got != true {
-		t.Errorf("helm_issues_unchecked = %v, want true", got)
+	if got := uncheckedSourcesWire(t, issuesWire(t, recorder)); got != helmUncheckedWire {
+		t.Errorf("unchecked_sources = %s, want %s", got, helmUncheckedWire)
 	}
 }

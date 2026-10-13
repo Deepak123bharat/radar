@@ -56,7 +56,7 @@ The issue suggests checking pre-delete hook Jobs and surviving resources with fi
 
 To find them, Radar first lists only the labels of the Helm release Secrets the caller can read. Helm labels each one with the release name, revision and status. Radar then reads in full only the releases whose newest revision is failed or pending, plus any release with the same name in the same read. If any release Secret lacks those labels, Radar reads them all in full, as before. Releases stored with Helm's ConfigMap or SQL drivers are not read for issues. `/api/issues` waits for this read, and the read stops as soon as the caller disconnects.
 
-When that read fails, for example because the API server returns an error or Radar's 60-second request limit runs out, `/api/issues` still answers, with `helm_issues_unchecked: true`: failed or stuck Helm releases may be missing from the response. The MCP `issues` tool returns the same field. A caller that may not list release Secrets gets no Helm issues and no flag, the same as for any other kind it can't list.
+When that read fails, for example because the API server returns an error or Radar's 60-second request limit runs out, `/api/issues` still answers, with `"unchecked_sources": [{"source": "helm", "reason": "read_failed"}]`: failed or stuck Helm releases may be missing from the response. The MCP `issues` tool returns the same field. A caller that may not list release Secrets gets no Helm issues and no `helm` entry, the same as for any other kind it can't list.
 
 ## Failed Upgrades And Rollback Inference
 

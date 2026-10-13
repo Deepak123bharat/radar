@@ -741,9 +741,10 @@ export interface IssuesResponse {
   // state 'degraded' means core workload reads are denied, so an empty list may
   // mean "can't see" rather than "nothing broken" — the UI must say so.
   visibility?: { state?: string; impact?: string };
-  // Radar couldn't read Helm releases, so failed or stuck ones may be missing:
-  // an empty list is not an all-clear. Absent from older Radars.
-  helm_issues_unchecked?: boolean;
+  // Issue sources Radar couldn't check, so their issues may be missing: an
+  // empty list is not an all-clear. Today only "helm"; a newer Radar may send
+  // others. Absent when every source was checked, and from older Radars.
+  unchecked_sources?: { source: string; reason: string }[];
 }
 
 export function useIssues(namespaces: string[] = [], enabled = true) {

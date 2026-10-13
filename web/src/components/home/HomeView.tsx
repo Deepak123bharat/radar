@@ -30,7 +30,7 @@ import {
 import { formatCompactAge } from '@skyhook-io/k8s-ui/utils/format'
 import { ClusterHealthCard } from './ClusterHealthCard'
 import { AlertTriangle, CheckCircle, Loader2, Shield } from 'lucide-react'
-import { HELM_UNCHECKED_LINE } from '../issues/helmUnchecked'
+import { uncheckedSourceLines } from '../issues/uncheckedSources'
 import { clsx } from 'clsx'
 import { getVersionUpdateStatus } from '../../utils/version'
 import { RadarVersionLine } from './RadarVersionLine'
@@ -272,7 +272,7 @@ export function HomeView({ namespaces, topology, fallbackClusterLoadState, onNav
             issues={issues}
             issueCount={issueCount}
             visibility={issuesData?.visibility}
-            helmUnchecked={!!issuesData?.helm_issues_unchecked}
+            uncheckedLines={uncheckedSourceLines(issuesData?.unchecked_sources)}
             hasData={!!issuesData}
             isLoading={issuesLoading && !issuesData}
             isRefreshing={issuesFetching && !!issuesData}
@@ -302,8 +302,9 @@ interface ProblemsPanelProps {
   issues: Issue[]
   issueCount: number
   visibility?: IssuesResponse['visibility']
-  /** Radar couldn't read Helm releases, so an empty list isn't an all-clear. */
-  helmUnchecked?: boolean
+  /** One line per issue source Radar couldn't check. Any line means an
+   *  empty list isn't an all-clear. */
+  uncheckedLines?: string[]
   hasData: boolean
   isLoading: boolean
   isRefreshing: boolean
@@ -317,7 +318,7 @@ export function ProblemsPanel({
   issues,
   issueCount,
   visibility,
-  helmUnchecked = false,
+  uncheckedLines = [],
   hasData,
   isLoading,
   isRefreshing,
@@ -326,6 +327,7 @@ export function ProblemsPanel({
   onNavigateToIssues,
   onResourceClick,
 }: ProblemsPanelProps) {
+  const unchecked = uncheckedLines.length > 0
   const hasCriticalIssues = issues.some((issue) => issue.severity === 'critical')
   const hasIssues = issueCount > 0
   const hasHardError = !!error && !hasData
@@ -333,14 +335,14 @@ export function ProblemsPanel({
   const isTruncated = issueCount > totalReturned
   const titleClass = hasCriticalIssues
     ? 'text-red-500'
-    : hasIssues || hasHardError || hasLimitedVisibility || helmUnchecked
+    : hasIssues || hasHardError || hasLimitedVisibility || unchecked
       ? 'text-amber-500'
       : 'text-theme-text-secondary'
   const countClass = hasHardError
     ? 'status-unknown'
     : hasCriticalIssues
       ? 'status-unhealthy'
-      : hasIssues || hasLimitedVisibility || helmUnchecked
+      : hasIssues || hasLimitedVisibility || unchecked
         ? 'status-degraded'
         : 'status-healthy'
   const countLabel = isLoading ? '...' : hasHardError ? 'error' : String(issueCount)
@@ -391,9 +393,9 @@ export function ProblemsPanel({
                 Limited visibility - {visibility.impact} Results may be incomplete.
               </ProblemsPanelNotice>
             )}
-            {helmUnchecked && (issues.length > 0 || hasLimitedVisibility) && (
-              <ProblemsPanelNotice tone="warning">{HELM_UNCHECKED_LINE}</ProblemsPanelNotice>
-            )}
+            {(issues.length > 0 || hasLimitedVisibility) && uncheckedLines.map((line) => (
+              <ProblemsPanelNotice key={line} tone="warning">{line}</ProblemsPanelNotice>
+            ))}
             {isTruncated && (
               <ProblemsPanelNotice tone="neutral">
                 Showing {totalReturned} of {issueCount} issues. Narrow by namespace to see the rest.
@@ -403,16 +405,16 @@ export function ProblemsPanel({
             {issues.length === 0 ? (
               <ProblemsPanelState
                 icon={
-                  hasLimitedVisibility || helmUnchecked
+                  hasLimitedVisibility || unchecked
                     ? <AlertTriangle className="h-5 w-5 text-amber-500" />
                     : <CheckCircle className="h-5 w-5 text-green-500" />
                 }
-                title={hasLimitedVisibility ? 'No visible active issues' : helmUnchecked ? 'No issues found' : 'No active issues'}
+                title={hasLimitedVisibility ? 'No visible active issues' : unchecked ? 'No issues found' : 'No active issues'}
                 body={
                   hasLimitedVisibility
                     ? 'Radar could not read every workload source in this scope.'
-                    : helmUnchecked
-                      ? HELM_UNCHECKED_LINE
+                    : unchecked
+                      ? uncheckedLines.join(' ')
                       : 'No critical or warning issues across the selected scope.'
                 }
               />

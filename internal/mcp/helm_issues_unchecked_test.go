@@ -84,12 +84,13 @@ func TestIssuesToolSaysWhenHelmReleasesCouldNotBeChecked(t *testing.T) {
 			if err := json.Unmarshal([]byte(extractText(t, result)), &wire); err != nil {
 				t.Fatalf("decode: %v", err)
 			}
-			got, present := wire["helm_issues_unchecked"]
-			if tc.wantUnchecked && got != true {
-				t.Errorf("helm_issues_unchecked = %v, want true", got)
+			got, present := wire["unchecked_sources"]
+			gotJSON, _ := json.Marshal(got)
+			if tc.wantUnchecked && string(gotJSON) != `[{"reason":"read_failed","source":"helm"}]` {
+				t.Errorf("unchecked_sources = %s, want the helm read_failed entry", gotJSON)
 			}
 			if !tc.wantUnchecked && present {
-				t.Errorf("helm_issues_unchecked = %v, want it absent", got)
+				t.Errorf("unchecked_sources = %s, want it absent", gotJSON)
 			}
 		})
 	}

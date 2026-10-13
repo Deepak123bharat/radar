@@ -25,7 +25,7 @@ import {
 import { builtinGroupForKind } from "@skyhook-io/k8s-ui/utils/api-resources";
 import { AlertTriangle } from "lucide-react";
 import { IssueDiagnoseButton } from "../diagnose/LocalDiagnoseAction";
-import { HELM_UNCHECKED_LINE } from "./helmUnchecked";
+import { uncheckedSourceLines } from "./uncheckedSources";
 
 // A capacity-relevant issue links to its Karpenter diagnosis. Karpenter is
 // always single-cluster (unlike Argo hub-and-spoke), so the issue and the
@@ -204,7 +204,7 @@ export function IssuesPane({
     ? subjectHidden ? undefined : related.data?.visibility
     : data?.visibility;
   const pageIssues = useMemo(() => data?.issues ?? [], [data]);
-  const helmUnchecked = !subject && !!data?.helm_issues_unchecked;
+  const uncheckedLines = subject ? [] : uncheckedSourceLines(data?.unchecked_sources);
   // With a subject set, the tiles and the list both describe the subject.
   const scopeIssues = subjectState
     ? subjectState.state === "found" ? subjectState.issues : []
@@ -308,14 +308,15 @@ export function IssuesPane({
         </div>
       )}
 
-      {/* Helm honesty: the rows can't include failed Helm releases Radar
-          couldn't read. With no rows the empty state below says it instead. */}
-      {helmUnchecked && scopeIssues.length > 0 && (
-        <div className="flex items-start gap-2 rounded-lg border border-theme-border bg-theme-elevated px-3 py-2 text-xs text-theme-text-secondary">
+      {/* Unchecked-source honesty: the rows can't include issues from a
+          source Radar couldn't check. With no rows the empty state below says
+          it instead. */}
+      {scopeIssues.length > 0 && uncheckedLines.map((line) => (
+        <div key={line} className="flex items-start gap-2 rounded-lg border border-theme-border bg-theme-elevated px-3 py-2 text-xs text-theme-text-secondary">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
-          <span>{HELM_UNCHECKED_LINE}</span>
+          <span>{line}</span>
         </div>
-      )}
+      ))}
 
       {/* Truncation honesty: when more issues matched than were returned, say
           so — don't present a capped list as the complete picture. */}
@@ -383,8 +384,8 @@ export function IssuesPane({
             Clear filter
           </button>
         </div>
-      ) : helmUnchecked && scopeIssues.length === 0 ? (
-        <EmptyState tone="neutral" variant="card" headline="No issues found" body={HELM_UNCHECKED_LINE} />
+      ) : uncheckedLines.length > 0 && scopeIssues.length === 0 ? (
+        <EmptyState tone="neutral" variant="card" headline="No issues found" body={uncheckedLines.join(" ")} />
       ) : (
         /* anyData = the query resolved, i.e. the cluster is reachable; an empty
            list then means "nothing broken" rather than "not connected". */

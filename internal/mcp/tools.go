@@ -389,8 +389,8 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"grouped critical/warning failures across workloads, Jobs/CronJobs, HPAs, " +
 			"PVCs, Nodes, references, pod startup, native Helm, and False controller conditions. " +
 			"Use CEL `filter` for source/taxonomy slices; no source parameter. " +
-			"`helm_issues_unchecked: true` means Helm releases couldn't be read, so failed " +
-			"or stuck Helm releases may be missing; don't call Helm healthy. " +
+			"`unchecked_sources` lists sources Radar couldn't check, so their issues may be " +
+			"missing; don't call them healthy. `helm` means failed or stuck Helm releases. " +
 			"`diagnostic_context.role` marks roots, rollups, symptoms, or context; " +
 			"`related_issues[].count` is the root's affected subset, not the linked issue total. " +
 			"Confidence: `high` declared edge, `medium` lead to verify, `low` heuristic. " +
@@ -3087,7 +3087,9 @@ func handleIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, input issuesI
 	// Shared base response shape (issues.ListResponse), then MCP-specific
 	// enrichments below.
 	resp := issues.NewListResponse(out, stats)
-	resp.HelmIssuesUnchecked = helmUnchecked
+	if helmUnchecked {
+		resp.UncheckedSources = []issuesapi.UncheckedSource{{Source: issuesapi.UncheckedSourceHelm, Reason: issuesapi.UncheckedReasonReadFailed}}
+	}
 	resp.ClusterContext = provider.ClusterContextForIssues(allowedNamespaces, func(group, resource string) bool {
 		return canReadInNamespace(ctx, group, resource, "kube-system", "list")
 	})
