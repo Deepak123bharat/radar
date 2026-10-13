@@ -489,6 +489,9 @@ func releaseIdentity(rel *release.Release) (preparedReleaseIdentity, error) {
 }
 
 func runServerUpgradeDryRun(ctx context.Context, actionConfig *action.Configuration, req *InstallRequest, loaded *chart.Chart) (*release.Release, error) {
+	if err := useReleaseTargetNamespace(actionConfig, req.ReleaseName); err != nil {
+		return nil, err
+	}
 	upgrade := preparedUpgradeAction(actionConfig, req.Namespace)
 	upgrade.DryRun = true
 	upgrade.DryRunOption = "server"
