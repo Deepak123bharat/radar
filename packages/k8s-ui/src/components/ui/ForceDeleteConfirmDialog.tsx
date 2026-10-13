@@ -22,6 +22,7 @@ interface ForceDeleteConfirmDialogProps {
   cascadeDependents?: CascadeDependent[]
   cascadeLoading?: boolean
   cascadeRootResolved?: boolean
+  cascadePreviewFailed?: boolean
 }
 
 export function ForceDeleteConfirmDialog({
@@ -35,6 +36,7 @@ export function ForceDeleteConfirmDialog({
   cascadeDependents,
   cascadeLoading,
   cascadeRootResolved,
+  cascadePreviewFailed,
 }: ForceDeleteConfirmDialogProps) {
   const [forceDelete, setForceDelete] = useState(false)
 
@@ -67,11 +69,17 @@ export function ForceDeleteConfirmDialog({
           </div>
         )}
 
-        {!cascadeLoading && cascadeDependents && cascadeDependents.length > 0 && (
+        {!cascadeLoading && !cascadePreviewFailed && cascadeDependents && cascadeDependents.length > 0 && (
           <CascadeDependentsList dependents={cascadeDependents} />
         )}
 
-        {!cascadeLoading && cascadeRootResolved === false && (
+        {!cascadeLoading && cascadePreviewFailed && (
+          <p className="text-xs text-warning-text">
+            Radar couldn&apos;t load the related-resource preview. Other resources may be affected.
+          </p>
+        )}
+
+        {!cascadeLoading && !cascadePreviewFailed && cascadeRootResolved === false && (
           <div className="flex items-start gap-2 rounded border border-theme-border bg-theme-elevated px-3 py-2 text-xs text-warning-text">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>
@@ -80,9 +88,9 @@ export function ForceDeleteConfirmDialog({
           </div>
         )}
 
-        {!cascadeLoading && cascadeRootResolved === true && (
+        {!cascadeLoading && !cascadePreviewFailed && cascadeRootResolved === true && (
           <p className="text-xs text-theme-text-secondary">
-            This preview shows visible topology relationships. Other resources may be affected.
+            This preview shows visible topology relationships, not guaranteed deletion. Other resources may be affected.
           </p>
         )}
 
@@ -132,7 +140,6 @@ function CascadeDependentsList({ dependents }: { dependents: CascadeDependent[] 
 
       <Collapse open={expanded} id={panelId}>
         <div className="px-3 pb-2.5 space-y-1.5">
-          <p className="text-xs text-theme-text-secondary">Topology relationships do not guarantee deletion. Owner references and controller deletion settings determine what happens.</p>
           {grouped.map(([kind, names]) => (
             <div key={kind} className="text-xs">
               <span className="font-medium text-theme-text-primary">{kind}</span>

@@ -79,3 +79,25 @@ func TestPolicyFilteringDoesNotWriteUnqualifiedSharedData(t *testing.T) {
 		})
 	}
 }
+
+func TestAuthorizedNeighborhoodWithholdsUnqualifiedCoverageBadge(t *testing.T) {
+	original := &Topology{Nodes: []Node{
+		{ID: "deployment/app/web", Kind: KindDeployment, Name: "web", Data: map[string]any{"namespace": "app", "group": "apps", "policyStatus": "protected"}},
+		{ID: "ciliumclusterwidenetworkpolicy//hidden", Kind: KindCiliumClusterwideNetworkPolicy, Name: "hidden", Data: map[string]any{"group": "cilium.io", "matchesAllPods": true}},
+	}}
+	ref := ResourceRef{Kind: "Deployment", Group: "apps", Namespace: "app", Name: "web"}
+	sub := BuildNeighborhood(original, ref, NeighborhoodOptions{Hops: 0, Allow: func(n *Node) bool { return n.Kind != KindCiliumClusterwideNetworkPolicy }})
+	if len(sub.Nodes) != 1 {
+		t.Fatalf("nodes=%+v", sub.Nodes)
+	}
+	if _, ok := sub.Nodes[0].Data["policyStatus"]; ok {
+		t.Fatal("badge computed with unverified policy evidence escaped")
+	}
+	if original.Nodes[0].Data["policyStatus"] != "protected" {
+		t.Fatal("mutated shared annotation")
+	}
+	unfiltered := BuildNeighborhood(original, ref, NeighborhoodOptions{Hops: 0})
+	if len(unfiltered.Nodes) != 1 || unfiltered.Nodes[0].Data["policyStatus"] != "protected" {
+		t.Fatal("changed unfiltered neighborhood")
+	}
+}
