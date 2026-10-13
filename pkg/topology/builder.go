@@ -443,7 +443,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		})
 
 		// Track ConfigMap/Secret/PVC references
-		refs := extractWorkloadReferences(deploy.Spec.Template.Spec)
+		refs := extractWorkloadReferences(deploy.Spec.Template.Spec, opts.ForRelationshipCache)
 		trackWorkloadRefs(deployID, deploy.Namespace, refs)
 	}
 
@@ -619,7 +619,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			// Extract pod template spec for config references
 			template, _, _ := unstructured.NestedMap(spec, "template", "spec")
 			if template != nil {
-				refs, err := extractWorkloadReferencesFromMap(template)
+				refs, err := extractWorkloadReferencesFromMap(template, opts.ForRelationshipCache)
 				if err != nil {
 					warnings = append(warnings, fmt.Sprintf("Rollout %s/%s PodSpec references could not be decoded", ns, name))
 				} else {
@@ -2627,7 +2627,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			},
 		})
 
-		refs := extractWorkloadReferences(ds.Spec.Template.Spec)
+		refs := extractWorkloadReferences(ds.Spec.Template.Spec, opts.ForRelationshipCache)
 		trackWorkloadRefs(dsID, ds.Namespace, refs)
 	}
 
@@ -2679,7 +2679,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			},
 		})
 
-		refs := extractWorkloadReferences(sts.Spec.Template.Spec)
+		refs := extractWorkloadReferences(sts.Spec.Template.Spec, opts.ForRelationshipCache)
 		trackWorkloadRefs(stsID, sts.Namespace, refs)
 	}
 
@@ -2718,7 +2718,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		})
 
 		// Track ConfigMap/Secret/PVC references
-		refs := extractWorkloadReferences(cj.Spec.JobTemplate.Spec.Template.Spec)
+		refs := extractWorkloadReferences(cj.Spec.JobTemplate.Spec.Template.Spec, opts.ForRelationshipCache)
 		trackWorkloadRefs(cjID, cj.Namespace, refs)
 	}
 
@@ -2938,7 +2938,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		})
 
 		// Track ConfigMap/Secret/PVC references
-		refs := extractWorkloadReferences(job.Spec.Template.Spec)
+		refs := extractWorkloadReferences(job.Spec.Template.Spec, opts.ForRelationshipCache)
 		trackWorkloadRefs(jobID, job.Namespace, refs)
 
 		// Connect to owner CronJob or KEDA ScaledJob
@@ -3133,7 +3133,9 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				Data:   rsData,
 			})
 
-			trackWorkloadRefs(rsID, rs.Namespace, extractWorkloadReferences(rs.Spec.Template.Spec))
+			if opts.ForRelationshipCache {
+				trackWorkloadRefs(rsID, rs.Namespace, extractWorkloadReferences(rs.Spec.Template.Spec, true))
+			}
 
 			// Connect to owner Deployment or Rollout
 			for _, ownerRef := range rs.OwnerReferences {
@@ -8174,9 +8176,19 @@ type workloadRefs struct {
 	serviceAccount string
 }
 
-func extractWorkloadReferences(spec corev1.PodSpec) workloadRefs {
+func extractWorkloadReferences(spec corev1.PodSpec, forRelationships bool) workloadRefs {
 	refs := workloadRefs{configMaps: map[string]bool{}, secrets: map[string]bool{}, pvcs: map[string]bool{}, serviceAccount: spec.ServiceAccountName}
 	for _, reference := range configrefs.PodSpecReferences("", spec) {
+		// Expanded declaration paths belong in resource reads, without redefining application grouping.
+		if !forRelationships {
+			switch reference.Path {
+			case "volumes[].configMap.name", "volumes[].secret.secretName", "volumes[].persistentVolumeClaim.claimName", "serviceAccountName":
+			default:
+				if !strings.HasPrefix(reference.Path, "containers[].env") && !strings.HasPrefix(reference.Path, "initContainers[].env") {
+					continue
+				}
+			}
+		}
 		switch reference.Kind {
 		case "ConfigMap":
 			refs.configMaps[reference.Name] = true
@@ -8189,12 +8201,12 @@ func extractWorkloadReferences(spec corev1.PodSpec) workloadRefs {
 	return refs
 }
 
-func extractWorkloadReferencesFromMap(spec map[string]any) (workloadRefs, error) {
+func extractWorkloadReferencesFromMap(spec map[string]any, forRelationships bool) (workloadRefs, error) {
 	var podSpec corev1.PodSpec
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(spec, &podSpec); err != nil {
 		return workloadRefs{}, err
 	}
-	return extractWorkloadReferences(podSpec), nil
+	return extractWorkloadReferences(podSpec, forRelationships), nil
 }
 
 // getGatewayHealth derives Gateway health from status.conditions

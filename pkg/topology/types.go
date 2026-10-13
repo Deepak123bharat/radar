@@ -375,7 +375,7 @@ type BuildOptions struct {
 	IncludePVCs          bool     // Include PersistentVolumeClaim nodes
 	IncludeReplicaSets   bool     // Include ReplicaSet nodes (noisy intermediate objects)
 	IncludeGenericCRDs   bool     // Include CRDs with owner refs to topology nodes (default: true)
-	ForRelationshipCache bool     // Retain admitted Pod references and skip the large-cluster guard for resource reads
+	ForRelationshipCache bool     // Retain full template/Pod facts and skip the large-cluster guard for resource reads
 	ShowPolicyEffect     bool     // Evaluate NetworkPolicies and annotate edges with allow/block/unprotected
 	SummaryMode          bool     // Collapse the pod tier into per-workload/service counts (set by Build when estimate ≥ SummaryModeThreshold)
 }

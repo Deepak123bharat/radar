@@ -21,19 +21,19 @@ func TestWorkloadReferenceExtractionMatchesTypedAndUnstructuredPodSpecs(t *testi
 			{Name: "csi", VolumeSource: corev1.VolumeSource{CSI: &corev1.CSIVolumeSource{Driver: "example.csi", NodePublishSecretRef: &corev1.LocalObjectReference{Name: "driver-credential"}}}},
 		},
 	}
-	typed := extractWorkloadReferences(spec)
+	typed := extractWorkloadReferences(spec, true)
 	raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&spec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	dynamic, err := extractWorkloadReferencesFromMap(raw)
+	dynamic, err := extractWorkloadReferencesFromMap(raw, true)
 	if err != nil || !reflect.DeepEqual(typed, dynamic) || !typed.configMaps["debug-config"] || !typed.configMaps["projected-config"] || !typed.secrets["registry"] || !typed.secrets["driver-credential"] || !typed.secrets["projected-secret"] {
 		t.Fatalf("typed=%+v dynamic=%+v err=%v", typed, dynamic, err)
 	}
 	if backing[1].Name != "must-not-be-overwritten" {
 		t.Fatal("reference extraction mutated the PodSpec's container backing array")
 	}
-	if _, err := extractWorkloadReferencesFromMap(map[string]any{"containers": "invalid"}); err == nil {
+	if _, err := extractWorkloadReferencesFromMap(map[string]any{"containers": "invalid"}, true); err == nil {
 		t.Fatal("invalid PodSpec silently accepted")
 	}
 }
@@ -81,6 +81,7 @@ func TestAdmittedPodFactsDoNotJoinNormalGraphComponents(t *testing.T) {
 	provider := &mockProvider{configMaps: []*corev1.ConfigMap{{ObjectMeta: metav1.ObjectMeta{Name: "kube-root-ca.crt", Namespace: "team"}}}, serviceAccounts: []*corev1.ServiceAccount{{ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "team"}}}, secrets: []*corev1.Secret{{ObjectMeta: metav1.ObjectMeta{Name: "registry", Namespace: "team"}}}}
 	for i, name := range []string{"a", "b", "six"} {
 		provider.deployments = append(provider.deployments, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team"}, Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}}}}})
+		provider.deployments[i].Spec.Template.Spec.Volumes = []corev1.Volume{{Name: "explicit-root-ca", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{Sources: []corev1.VolumeProjection{{ConfigMap: &corev1.ConfigMapProjection{LocalObjectReference: corev1.LocalObjectReference{Name: "kube-root-ca.crt"}}}}}}}}
 		provider.replicaSets = append(provider.replicaSets, &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "team", OwnerReferences: []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "Deployment", Name: name}}}, Spec: appsv1.ReplicaSetSpec{Template: provider.deployments[i].Spec.Template}})
 		count := 1
 		if name == "six" {
