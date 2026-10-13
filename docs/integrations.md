@@ -136,6 +136,8 @@ All provider-specific NodeClass variants are automatically detected and supporte
 
 **Topology:** Full CAPI ownership chain — ClusterClass → Cluster → KubeadmControlPlane → Machine → Node, and Cluster → MachineDeployment → MachineSet → Machine → Node. MachineHealthCheck → Cluster protection edges. Machine → Node edges use status.nodeRef (semantic, not owner-ref).
 
+ClusterClass links use the namespace declared by the Cluster, defaulting to the Cluster’s namespace when omitted. Both `spec.topology.classRef` and the older supported `class`/`classNamespace` API fields are read. Owner links require the declared API group as well as kind and name; same-named resources from unrelated groups remain distinct.
+
 **Cluster Detail View:**
 - Phase, version, cluster class, control plane endpoint
 - Control plane and worker replica counts (v1beta2-aware)

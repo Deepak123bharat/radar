@@ -1321,7 +1321,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	}
 
 	// CAPI ClusterClass nodes + ClusterClass → Cluster edges
-	clusterClassIDs := make(map[string]string) // name -> classID (cluster-scoped)
+	clusterClassIDs := make(map[string]string) // ns/name -> classID
 	var capiClusterClassGVR schema.GroupVersionResource
 	hasCAPIClusterClasses := false
 	if resourceDiscovery != nil {
@@ -1354,7 +1354,8 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			})
 		}
 
-		// ClusterClass → Cluster edges (via spec.topology.class)
+		// ClusterClass is namespaced: a Cluster names its class's namespace or
+		// uses its own.
 		if len(clusterClassIDs) > 0 {
 			for _, cl := range cachedCAPIClusters {
 				ns := cl.GetNamespace()
@@ -1365,15 +1366,21 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				if !ok {
 					continue
 				}
-				className, _, _ := unstructured.NestedString(cl.Object, "spec", "topology", "class")
+				// v1beta2 names the class in topology.classRef; earlier versions
+				// in topology.class and topology.classNamespace.
+				className, _, _ := unstructured.NestedString(cl.Object, "spec", "topology", "classRef", "name")
+				classNS, _, _ := unstructured.NestedString(cl.Object, "spec", "topology", "classRef", "namespace")
+				if className == "" {
+					className, _, _ = unstructured.NestedString(cl.Object, "spec", "topology", "class")
+					classNS, _, _ = unstructured.NestedString(cl.Object, "spec", "topology", "classNamespace")
+				}
 				if className == "" {
 					continue
 				}
-				// ClusterClass can be in same namespace or cluster-scoped
-				ccID, ok := clusterClassIDs[ns+"/"+className]
-				if !ok {
-					ccID, ok = clusterClassIDs["/"+className]
+				if classNS == "" {
+					classNS = ns
 				}
+				ccID, ok := clusterClassIDs[classNS+"/"+className]
 				if ok {
 					edges = append(edges, Edge{
 						ID:     fmt.Sprintf("%s-to-%s", ccID, clID),
@@ -1421,7 +1428,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 			// Cluster → KCP edge via ownerRef
 			for _, ownerRef := range kcp.GetOwnerReferences() {
-				if ownerRef.Kind == "Cluster" {
+				if ownerRef.Kind == "Cluster" && resourceid.GroupFromAPIVersion(ownerRef.APIVersion) == "cluster.x-k8s.io" {
 					if clID, ok := capiClusterIDs[ns+"/"+ownerRef.Name]; ok {
 						edges = append(edges, Edge{
 							ID:     fmt.Sprintf("%s-to-%s", clID, kcpID),
@@ -1470,7 +1477,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 			// Cluster → MachineDeployment edge via ownerRef
 			for _, ownerRef := range md.GetOwnerReferences() {
-				if ownerRef.Kind == "Cluster" {
+				if ownerRef.Kind == "Cluster" && resourceid.GroupFromAPIVersion(ownerRef.APIVersion) == "cluster.x-k8s.io" {
 					if clID, ok := capiClusterIDs[ns+"/"+ownerRef.Name]; ok {
 						edges = append(edges, Edge{
 							ID:     fmt.Sprintf("%s-to-%s", clID, mdID),
@@ -1519,7 +1526,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 			// Cluster → MachinePool edge via ownerRef
 			for _, ownerRef := range mp.GetOwnerReferences() {
-				if ownerRef.Kind == "Cluster" {
+				if ownerRef.Kind == "Cluster" && resourceid.GroupFromAPIVersion(ownerRef.APIVersion) == "cluster.x-k8s.io" {
 					if clID, ok := capiClusterIDs[ns+"/"+ownerRef.Name]; ok {
 						edges = append(edges, Edge{
 							ID:     fmt.Sprintf("%s-to-%s", clID, mpID),
@@ -1568,7 +1575,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 			// MachineDeployment → MachineSet edge via ownerRef
 			for _, ownerRef := range ms.GetOwnerReferences() {
-				if ownerRef.Kind == "MachineDeployment" {
+				if ownerRef.Kind == "MachineDeployment" && resourceid.GroupFromAPIVersion(ownerRef.APIVersion) == "cluster.x-k8s.io" {
 					if mdID, ok := machineDeploymentIDs[ns+"/"+ownerRef.Name]; ok {
 						edges = append(edges, Edge{
 							ID:     fmt.Sprintf("%s-to-%s", mdID, msID),
@@ -1617,12 +1624,12 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			// Owner edges: MachineSet, KCP, or MachinePool → Machine
 			for _, ownerRef := range m.GetOwnerReferences() {
 				var ownerID string
-				switch ownerRef.Kind {
-				case "MachineSet":
+				switch (resourceid.GroupKind{Group: resourceid.GroupFromAPIVersion(ownerRef.APIVersion), Kind: ownerRef.Kind}) {
+				case resourceid.GroupKind{Group: "cluster.x-k8s.io", Kind: "MachineSet"}:
 					ownerID = capiMachineSetIDs[ns+"/"+ownerRef.Name]
-				case "KubeadmControlPlane":
+				case resourceid.GroupKind{Group: "controlplane.cluster.x-k8s.io", Kind: "KubeadmControlPlane"}:
 					ownerID = kcpIDs[ns+"/"+ownerRef.Name]
-				case "MachinePool":
+				case resourceid.GroupKind{Group: "cluster.x-k8s.io", Kind: "MachinePool"}:
 					ownerID = machinePoolIDs[ns+"/"+ownerRef.Name]
 				}
 				if ownerID != "" {
@@ -1711,7 +1718,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 			// MHC → Cluster edge via ownerRef
 			for _, ownerRef := range mhc.GetOwnerReferences() {
-				if ownerRef.Kind == "Cluster" {
+				if ownerRef.Kind == "Cluster" && resourceid.GroupFromAPIVersion(ownerRef.APIVersion) == "cluster.x-k8s.io" {
 					if clID, ok := capiClusterIDs[ns+"/"+ownerRef.Name]; ok {
 						edges = append(edges, Edge{
 							ID:     fmt.Sprintf("%s-to-%s", mhcID, clID),
@@ -7881,7 +7888,7 @@ func cronWorkflowScheduleString(cwf *unstructured.Unstructured) string {
 
 func argoWorkflowCronOwnerName(wf *unstructured.Unstructured) string {
 	for _, ref := range wf.GetOwnerReferences() {
-		if ref.Kind == "CronWorkflow" && ref.Name != "" && ref.Controller != nil && *ref.Controller {
+		if ref.Kind == "CronWorkflow" && resourceid.GroupFromAPIVersion(ref.APIVersion) == "argoproj.io" && ref.Name != "" && ref.Controller != nil && *ref.Controller {
 			return ref.Name
 		}
 	}
