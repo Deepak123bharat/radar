@@ -358,6 +358,52 @@ func TestCascadePreviewRevisitsSharedDependents(t *testing.T) {
 	}
 }
 
+func TestCascadePreviewRevisitsNestedSharedDependents(t *testing.T) {
+	for _, sharedFirst := range []bool{true, false} {
+		for _, cachedIndex := range []bool{false, true} {
+			t.Run(fmt.Sprintf("shared-first=%t/cached-index=%t", sharedFirst, cachedIndex), func(t *testing.T) {
+				node := func(name string, owners ...metav1.OwnerReference) Node {
+					return Node{ID: "configmap/team/" + name, Kind: KindConfigMap, Name: name, uid: types.UID(name), observed: true, ownerReferences: owners, Data: map[string]any{"namespace": "team", "apiVersion": "v1"}}
+				}
+				ref := func(name string) metav1.OwnerReference {
+					return ownerRef("v1", "ConfigMap", name, types.UID(name), false)
+				}
+				topo := &Topology{Nodes: []Node{
+					node("root"), node("a", ref("root")), node("b", ref("a")),
+					node("c", ref("a"), ref("b")), node("leaf", ref("c")),
+				}}
+				topo.Edges = addObservedOwnerEdges(topo.Nodes, nil)
+				// Make the shared child wait for B in one order; in the other,
+				// B is already marked when A first examines the shared child.
+				var childrenOfA []int
+				for i, edge := range topo.Edges {
+					if edge.Source == "configmap/team/a" {
+						childrenOfA = append(childrenOfA, i)
+					}
+				}
+				if len(childrenOfA) != 2 {
+					t.Fatalf("expected both observed children of A, got %v", childrenOfA)
+				}
+				i, j := childrenOfA[0], childrenOfA[1]
+				if (topo.Edges[i].Target == "configmap/team/c") != sharedFirst {
+					topo.Edges[i], topo.Edges[j] = topo.Edges[j], topo.Edges[i]
+				}
+				var index *RelationshipsIndex
+				if cachedIndex {
+					index = IndexByResource(topo)
+				}
+				preview := GetCascadeDeletePreviewWithIndex(ResourceRef{Kind: "ConfigMap", Namespace: "team", Name: "root"}, topo, nil, index)
+				if got := fmt.Sprint(refNames(preview.Dependents)); got != "[ConfigMap/a ConfigMap/b ConfigMap/c ConfigMap/leaf]" {
+					t.Fatalf("certain dependents: %s; possible: %v", got, refNames(preview.PossibleDependents))
+				}
+				if len(preview.PossibleDependents) != 0 {
+					t.Fatalf("all owners are observed and deleted: %+v", preview.PossibleDependents)
+				}
+			})
+		}
+	}
+}
+
 func TestCompactNeighborhoodKeepsWorkloadContextAtHighReplicaCounts(t *testing.T) {
 	labels := map[string]string{"app": "web"}
 	provider := &mockProvider{
