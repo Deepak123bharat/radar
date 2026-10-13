@@ -251,6 +251,12 @@ func (c *Client) prepareCloudUpgradeWith(ctx context.Context, actionConfig *acti
 	if err := validateOfficialRadarRelease(current); err != nil {
 		return nil, err
 	}
+	// The workload, token Secret and permission checks below all assume the
+	// release runs where its history is stored.
+	if current.Namespace != request.Namespace {
+		return nil, fmt.Errorf("release %q keeps its Helm history in namespace %q but runs in %q; Cloud Connect can only adopt a Radar release kept in one namespace, so upgrade it with the tool that installed it",
+			request.ReleaseName, request.Namespace, current.Namespace)
+	}
 
 	loaded, exactVersion, err := c.resolvePreparedChart(ctx, &request, minimumStableVersion)
 	if err != nil {
@@ -489,9 +495,6 @@ func releaseIdentity(rel *release.Release) (preparedReleaseIdentity, error) {
 }
 
 func runServerUpgradeDryRun(ctx context.Context, actionConfig *action.Configuration, req *InstallRequest, loaded *chart.Chart) (*release.Release, error) {
-	if err := useReleaseTargetNamespace(actionConfig, req.ReleaseName); err != nil {
-		return nil, err
-	}
 	upgrade := preparedUpgradeAction(actionConfig, req.Namespace)
 	upgrade.DryRun = true
 	upgrade.DryRunOption = "server"

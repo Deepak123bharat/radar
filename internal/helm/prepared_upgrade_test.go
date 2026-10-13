@@ -228,6 +228,32 @@ func TestValidatePreparedCloudMutationSurfaceRejectsUnpreflightedObjects(t *test
 	}
 }
 
+func TestPrepareCloudUpgradeRefusesReleaseRunningOutsideItsStorageNamespace(t *testing.T) {
+	cfg := memoryActionConfig(t)
+	currentChart, err := loader.Load("../../deploy/helm/radar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentChart.Metadata.Version = "1.6.0"
+	currentChart.Metadata.AppVersion = "1.6.2"
+	currentReq := &InstallRequest{ReleaseName: "radar", Namespace: "radar-system", ChartName: "radar", Version: "1.6.0", Repository: "unused"}
+	current, err := runServerDryRun(context.Background(), cfg, currentReq, currentChart)
+	if err != nil {
+		t.Fatalf("render current release: %v", err)
+	}
+	current.Info.Status = release.StatusDeployed
+	current.Version = 3
+	if err := cfg.Releases.Create(current); err != nil {
+		t.Fatal(err)
+	}
+
+	request := InstallRequest{ReleaseName: "radar", Namespace: "flux-system", ChartName: "radar", Repository: "unused"}
+	_, err = (&Client{}).prepareCloudUpgradeWith(context.Background(), cfg, request, "1.5.4")
+	if err == nil || !strings.Contains(err.Error(), `history in namespace "flux-system" but runs in "radar-system"`) {
+		t.Fatalf("split-namespace release was not refused: %v", err)
+	}
+}
+
 func TestPrepareCloudUpgradePinsReleaseAndUpgradesToChartAppVersion(t *testing.T) {
 	cfg := memoryActionConfig(t)
 	currentChart, err := loader.Load("../../deploy/helm/radar")

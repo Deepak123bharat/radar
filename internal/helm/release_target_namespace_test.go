@@ -1,7 +1,6 @@
 package helm
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -73,8 +72,8 @@ func targetNamespaceActionConfig(t *testing.T) (*action.Configuration, *[]string
 				t.Error(err)
 			}
 			return
-		case "/api/v1/namespaces/app":
-			writeTestJSON(t, w, corev1.Namespace{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"}, ObjectMeta: metav1.ObjectMeta{Name: "app"}})
+		case "/api/v1/namespaces/app", "/api/v1/namespaces/explicit":
+			writeTestJSON(t, w, corev1.Namespace{TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"}, ObjectMeta: metav1.ObjectMeta{Name: path.Base(r.URL.Path)}})
 			return
 		}
 		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -144,6 +143,13 @@ func TestReleaseTargetNamespaceAndLiveRollbackEffects(t *testing.T) {
 			target.Namespace = "app"
 			target.Manifest = targetNamespaceManifest("update", "create", "explicit")
 			target.Chart = &chart.Chart{Metadata: &chart.Metadata{Name: "radar", Version: "1.0.0"}}
+			for _, hook := range []string{"hook", "explicit-hook"} {
+				manifest := fmt.Sprintf("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\ndata:\n  message: hook\n", hook)
+				if hook == "explicit-hook" {
+					manifest = strings.Replace(manifest, "  name: explicit-hook\n", "  name: explicit-hook\n  namespace: explicit\n", 1)
+				}
+				target.Hooks = append(target.Hooks, &release.Hook{Name: hook, Kind: "ConfigMap", Path: "templates/" + hook + ".yaml", Manifest: manifest, Events: []release.HookEvent{release.HookPreRollback}})
+			}
 			if err := cfg.Releases.Update(target); err != nil {
 				t.Fatal(err)
 			}
@@ -173,7 +179,7 @@ func TestReleaseTargetNamespaceAndLiveRollbackEffects(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertTargetNamespaceStorage(t, cfg)
-			expected := []string{"PATCH app/update", "POST app/create", "PATCH explicit/explicit", "DELETE app/remove"}
+			expected := []string{"PATCH app/update", "POST app/create", "PATCH explicit/explicit", "DELETE app/remove", "POST app/hook", "POST explicit/explicit-hook"}
 			if operation == "uninstall" {
 				expected = []string{"DELETE app/update", "DELETE app/remove", "DELETE explicit/explicit"}
 			}
@@ -198,7 +204,7 @@ func TestReleaseTargetNamespaceAndLiveRollbackEffects(t *testing.T) {
 }
 
 func TestUpgradeAndValuesUseTargetNamespace(t *testing.T) {
-	for _, operation := range []string{"upgrade", "upgrade with progress", "upgrade with values", "apply values", "preview values", "install recovery", "prepared upgrade dry-run"} {
+	for _, operation := range []string{"upgrade", "upgrade with progress", "upgrade with values", "apply values", "preview values", "install recovery"} {
 		t.Run(operation, func(t *testing.T) {
 			cfg, writes := targetNamespaceActionConfig(t)
 			seedRelease(t, cfg, "demo", release.StatusDeployed, 1)
@@ -245,8 +251,6 @@ func TestUpgradeAndValuesUseTargetNamespace(t *testing.T) {
 				_, err = client.previewValuesChangeWith(cfg, "demo", values, "", "")
 			case "install recovery":
 				rendered, err = runInstallOrUpgrade(cfg, &InstallRequest{Namespace: "store", ReleaseName: "demo", Values: values}, &next, installUpgrade)
-			case "prepared upgrade dry-run":
-				rendered, err = runServerUpgradeDryRun(context.Background(), cfg, &InstallRequest{Namespace: "store", ReleaseName: "demo", Values: values}, &next)
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -255,7 +259,7 @@ func TestUpgradeAndValuesUseTargetNamespace(t *testing.T) {
 			if rendered != nil && (rendered.Namespace != "app" || strings.Count(rendered.Manifest, "releaseNamespace: app") != 2) {
 				t.Fatalf("rendered namespace differs from object target: namespace=%q manifest=%s", rendered.Namespace, rendered.Manifest)
 			}
-			dryRun := operation == "preview values" || operation == "prepared upgrade dry-run"
+			dryRun := operation == "preview values"
 			if dryRun {
 				if len(*writes) != 0 {
 					t.Fatalf("preview wrote: %v", *writes)
