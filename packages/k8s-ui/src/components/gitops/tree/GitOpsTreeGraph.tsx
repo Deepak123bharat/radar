@@ -772,10 +772,12 @@ function buildChips(node: GitOpsTreeNode): Array<{ label?: string; value: string
 }
 
 // nodeCause returns the matched issue's cause when the node's hover should
-// show it, and undefined when it shouldn't.
+// show it: only on a node that is actually failing (Degraded or Missing,
+// topology 'unhealthy'). 'degraded' is also where Progressing and Suspended
+// land, and a cause there reads as "this is broken" on a rollout in flight
+// or a deliberate pause.
 export function nodeCause(node: GitOpsTreeNode, cause?: string): string | undefined {
-  const status = normalizeHealth(node.topologyStatus)
-  return status === 'unhealthy' || status === 'degraded' ? cause : undefined
+  return normalizeHealth(node.topologyStatus) === 'unhealthy' ? cause : undefined
 }
 
 // The subtitle is the node's one line of prose, and sync, health and the
