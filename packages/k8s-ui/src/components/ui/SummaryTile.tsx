@@ -15,7 +15,7 @@ export function SummaryTile({
   loading = false,
 }: {
   label: string
-  value: number | string
+  value: number
   tone?: SummaryTone
   onClick?: () => void
   active?: boolean

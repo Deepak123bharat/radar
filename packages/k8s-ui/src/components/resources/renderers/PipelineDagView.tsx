@@ -24,12 +24,11 @@
 // Topology view, without extending the shared NodeKind enum or wiring
 // Tekton into pkg/topology/builder.go — that stays a separate, larger PR.
 
-import { Component, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Component, memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   Controls,
   Handle,
   MarkerType,
-  Panel,
   Position,
   ReactFlow,
   ReactFlowProvider,
@@ -41,7 +40,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import '../../topology/topology.css'
-import { Ban, CheckCircle2, CircleDashed, ListTodo, Loader2, MinusCircle, RotateCcw, XCircle } from 'lucide-react'
+import { Ban, CheckCircle2, CircleDashed, ListTodo, Loader2, MinusCircle, XCircle } from 'lucide-react'
 import { clsx } from 'clsx'
 import { healthToSeverity, SEVERITY_DOT } from '../../../utils/badge-colors'
 import type { TektonTaskNode, TektonTaskNodeStatus } from '../resource-utils-tekton'
@@ -127,7 +126,7 @@ async function layoutNodes(tasks: TektonTaskNode[]): Promise<{ nodes: Node[]; ed
     type: 'tektonTask',
     position: positionByName.get(task.name) ?? { x: 0, y: 0 },
     data: { task },
-    draggable: true,
+    draggable: false,
     selectable: true,
     // Every card is the same fixed size, declared up front instead of
     // discovered via ResizeObserver. Two reasons this matters, both from
@@ -239,42 +238,6 @@ class DagErrorBoundary extends Component<{ children: ReactNode }, { error: Error
   }
 }
 
-// Manual layout persistence: browser-local, keyed by the task set's own
-// structure (names + dependency shape, the same `taskKey` the layout effect
-// already keys off) rather than a pipeline name/namespace — a saved layout
-// is really about "this DAG shape", so it's naturally shared across every
-// PipelineRun of the same underlying Pipeline, not just the one the user
-// happened to drag. Never load-bearing: any localStorage failure (quota,
-// private browsing) just means the auto layout is used instead.
-const LAYOUT_STORAGE_PREFIX = 'radar:pipeline-dag-layout:v1:'
-
-type SavedPositions = Record<string, { x: number; y: number }>
-
-function loadSavedPositions(taskKey: string): SavedPositions | null {
-  try {
-    const raw = localStorage.getItem(LAYOUT_STORAGE_PREFIX + taskKey)
-    return raw ? (JSON.parse(raw) as SavedPositions) : null
-  } catch {
-    return null
-  }
-}
-
-function saveSavedPositions(taskKey: string, positions: SavedPositions): void {
-  try {
-    localStorage.setItem(LAYOUT_STORAGE_PREFIX + taskKey, JSON.stringify(positions))
-  } catch {
-    // best-effort — see comment above
-  }
-}
-
-function clearSavedPositions(taskKey: string): void {
-  try {
-    localStorage.removeItem(LAYOUT_STORAGE_PREFIX + taskKey)
-  } catch {
-    // best-effort — see comment above
-  }
-}
-
 export interface PipelineDagViewProps {
   tasks: TektonTaskNode[]
   height?: number
@@ -282,16 +245,9 @@ export interface PipelineDagViewProps {
 }
 
 export function PipelineDagView({ tasks, height, onTaskClick }: PipelineDagViewProps) {
-  // The pure ELK result — always the "reset" target, and the source of truth
-  // for edges (edges never move, only node positions do).
+  // The ELK result, and the source of truth for edges.
   const [elkResult, setElkResult] = useState<{ nodes: Node[]; edges: Edge[] } | null>(null)
   const [rfNodes, setRfNodes, onNodesChangeBase] = useNodesState<Node>([])
-  const [hasOverride, setHasOverride] = useState(false)
-  // Read inside onNodeDragStop without needing rfNodes in its deps — a plain
-  // closure over state would capture whatever rfNodes was when the callback
-  // was LAST created, not the latest positions from the drag that just ended.
-  const rfNodesRef = useRef<Node[]>([])
-  rfNodesRef.current = rfNodes
   // Read when an async ELK layout resolves. Status updates that land while the
   // layout is in flight find no nodes to update, so the layout result has to
   // carry the latest task data rather than the snapshot it started from.
@@ -300,34 +256,29 @@ export function PipelineDagView({ tasks, height, onTaskClick }: PipelineDagViewP
 
   const taskKey = useMemo(() => tasks.map((t) => `${t.name}:${t.dependsOn.join(',')}`).join('|'), [tasks])
 
-  // Structural layout: ELK, then any saved manual override applied on top.
-  // Re-runs only when the task set or its dependency shape changes — not on
-  // every status update, which would re-run ELK (and blow away a manual
-  // layout) on every poll tick.
+  // Structural layout: ELK. Re-runs only when the task set or its dependency
+  // shape changes, not on every status update, which would re-run ELK on
+  // every poll tick.
   useEffect(() => {
     let cancelled = false
     layoutNodes(tasks).then((result) => {
       if (cancelled) return
       setElkResult(result)
-      const saved = loadSavedPositions(taskKey)
       const latest = latestRef.current
       const byName = new Map(latest.tasks.map((t) => [t.name, t]))
       setRfNodes(result.nodes.map((n) => ({
         ...n,
-        position: saved?.[n.id] ?? n.position,
         data: { task: byName.get(n.id) ?? (n.data as TektonTaskCardData).task, onClick: latest.onTaskClick },
       })))
-      setHasOverride(saved !== null)
     })
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskKey])
 
   // Status/taskRunName changes (live polling) update node data in place
-  // without touching positions — keeps the graph stable, whether auto-laid-
-  // out or hand-placed, while a run progresses instead of jittering it every
-  // few seconds. A no-op before the structural effect above has populated
-  // rfNodes for the first time.
+  // without touching positions, so the graph stays stable while a run
+  // progresses instead of jittering every few seconds. A no-op before the
+  // structural effect above has populated rfNodes for the first time.
   useEffect(() => {
     const byName = new Map(tasks.map((t) => [t.name, t]))
     setRfNodes((prev) => prev.map((n) => ({
@@ -336,26 +287,6 @@ export function PipelineDagView({ tasks, height, onTaskClick }: PipelineDagViewP
     })))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks, onTaskClick])
-
-  // Fires once when a drag ends (not on every intermediate move) — persists
-  // every node's current position, not just the one that moved, so a saved
-  // layout is always a complete map rather than a diff against ELK's.
-  const persistPositions = useCallback(() => {
-    const positions: SavedPositions = {}
-    for (const n of rfNodesRef.current) positions[n.id] = n.position
-    saveSavedPositions(taskKey, positions)
-    setHasOverride(true)
-  }, [taskKey])
-
-  const resetLayout = useCallback(() => {
-    clearSavedPositions(taskKey)
-    setRfNodes((prev) => {
-      if (!elkResult) return prev
-      const basePosition = new Map(elkResult.nodes.map((n) => [n.id, n.position]))
-      return prev.map((n) => ({ ...n, position: basePosition.get(n.id) ?? n.position }))
-    })
-    setHasOverride(false)
-  }, [taskKey, elkResult, setRfNodes])
 
   if (tasks.length === 0) return null
 
@@ -376,10 +307,9 @@ export function PipelineDagView({ tasks, height, onTaskClick }: PipelineDagViewP
               edges={elkResult.edges}
               nodeTypes={NODE_TYPES}
               onNodesChange={onNodesChangeBase}
-              onNodeDragStop={persistPositions}
               fitView
               fitViewOptions={{ padding: 0.2, maxZoom: 1.5 }}
-              nodesDraggable
+              nodesDraggable={false}
               nodesConnectable={false}
               elementsSelectable={false}
               minZoom={0.15}
@@ -390,19 +320,6 @@ export function PipelineDagView({ tasks, height, onTaskClick }: PipelineDagViewP
               proOptions={{ hideAttribution: true }}
             >
               <Controls className="!border-theme-border !bg-theme-surface" showInteractive={false} />
-              {hasOverride && (
-                <Panel position="top-right">
-                  <button
-                    type="button"
-                    onClick={resetLayout}
-                    title="Discard your manual layout and re-run auto layout"
-                    className="inline-flex items-center gap-1.5 rounded-md border border-theme-border bg-theme-surface px-2 py-1 text-xs font-medium text-theme-text-secondary shadow-theme-sm hover:bg-theme-hover hover:text-theme-text-primary"
-                  >
-                    <RotateCcw className="h-3 w-3" aria-hidden />
-                    Reset layout
-                  </button>
-                </Panel>
-              )}
             </ReactFlow>
           </ReactFlowProvider>
         </DagErrorBoundary>
