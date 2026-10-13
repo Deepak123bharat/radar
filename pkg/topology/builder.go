@@ -4382,8 +4382,17 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			})
 
 			// Connect to target workload via spec.targetRef
-			targetAPIVersion, targetKind, targetName, hasTarget := configrefs.VPAPodSelectorTarget(vpa)
-			if hasTarget && targetRefMatchesTopologyKind(targetKind, targetAPIVersion) {
+			targetKind, _, _ := unstructured.NestedString(vpa.Object, "spec", "targetRef", "kind")
+			targetName, _, _ := unstructured.NestedString(vpa.Object, "spec", "targetRef", "name")
+			targetAPIVersion, _, _ := unstructured.NestedString(vpa.Object, "spec", "targetRef", "apiVersion")
+			if targetAPIVersion == "" {
+				builtin, ok := resourceid.BuiltinForKind(targetKind)
+				if !ok {
+					continue
+				}
+				targetAPIVersion = builtin.APIVersion()
+			}
+			if targetName != "" && targetRefMatchesTopologyKind(targetKind, targetAPIVersion) {
 				targetKey := ns + "/" + targetName
 				var targetID string
 				switch targetKind {

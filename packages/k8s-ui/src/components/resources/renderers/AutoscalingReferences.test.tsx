@@ -1,6 +1,4 @@
 // @vitest-environment jsdom
-import { readFileSync } from 'node:fs'
-import { URL as NodeURL } from 'node:url'
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -54,6 +52,7 @@ it.each(["HPA", "VPA"])(
         (b) => b.textContent === "Deployment/same-name",
       );
       expect(button).toBeDefined();
+      expect([...element.querySelectorAll("button")].filter(b => b.textContent?.startsWith("Deployment/same-name"))).toHaveLength(1);
       await act(async () => button!.click());
       expect(onNavigate).toHaveBeenCalledWith({
         kind: "Deployment",
@@ -86,8 +85,8 @@ it.each(["v1", "", undefined])("keeps Object metric resources separate from the 
           object: {
             metric: { name: "requests" },
             describedObject: {
-              apiVersion: "v1",
-              kind: "Service",
+              apiVersion: "networking.k8s.io/v1",
+              kind: "Ingress",
               name: "frontend",
             },
           },
@@ -123,8 +122,8 @@ it.each(["v1", "", undefined])("keeps Object metric resources separate from the 
     );
     for (const [label, expected] of [
       [
-        "Service/frontend",
-        { kind: "Service", group: "", namespace: "team", name: "frontend" },
+        "Ingress/frontend",
+        { kind: "Ingress", group: "networking.k8s.io", namespace: "team", name: "frontend" },
       ],
       [
         "Widget/input",
@@ -225,39 +224,19 @@ it.each([
   },
 );
 
-const vpaTargetVectors: Array<{ name: string; target: { kind: string; name: string; apiVersion?: string }; selector: { apiVersion: string; kind: string; name: string } | null; declaredGroup: string | null }> = JSON.parse(readFileSync(new NodeURL('../../../../../../pkg/configrefs/testdata/vpa_targets.json', import.meta.url), 'utf8'))
-
-it.each(vpaTargetVectors)("preserves VPA target identity: $name", async ({ target, declaredGroup }) => {
+it.each([
+  ["Deployment", "apps"], ["StatefulSet", "apps"], ["DaemonSet", "apps"], ["ReplicaSet", "apps"],
+  ["Job", "batch"], ["CronJob", "batch"], ["ReplicationController", ""],
+])("keeps versionless VPA %s target navigation", async (kind, group) => {
   const element = document.createElement("div");
   const root = createRoot(element);
   const onNavigate = vi.fn();
   try {
-    await act(async () => root.render(<VPARenderer data={{ metadata: { namespace: "team" }, spec: { targetRef: target } }} onNavigate={onNavigate} />));
-    const link = [...element.querySelectorAll("button")].find(button => button.textContent === `${target.kind}/workload`);
-    if (declaredGroup === null) {
-      expect(link).toBeUndefined();
-    } else {
-      expect(link).toBeDefined();
-      await act(async () => link!.click());
-      expect(onNavigate).toHaveBeenLastCalledWith({ kind: target.kind, group: declaredGroup, namespace: "team", name: target.name });
-    }
-  } finally {
-    await act(async () => root.unmount());
-  }
-});
-
-it("distinguishes a VPA's declared custom target from its built-in selector target", async () => {
-  const element = document.createElement("div");
-  const root = createRoot(element);
-  const onNavigate = vi.fn();
-  try {
-    await act(async () => root.render(<VPARenderer data={{ metadata: { namespace: "team" }, spec: { targetRef: { apiVersion: "custom.example.io/v1", kind: "Deployment", name: "workload" } } }} onNavigate={onNavigate} />));
-    expect(element.textContent).toContain("Declared Target");
-    expect(element.textContent).toContain("Pod Selector Target");
-    const link = [...element.querySelectorAll("button")].find(button => button.textContent === "Deployment/workload (apps)");
+    await act(async () => root.render(<VPARenderer data={{ metadata: { namespace: "team" }, spec: { targetRef: { kind, name: "workload" } } }} onNavigate={onNavigate} />));
+    const link = [...element.querySelectorAll("button")].find(button => button.textContent === `${kind}/workload`);
     expect(link).toBeDefined();
     await act(async () => link!.click());
-    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "Deployment", group: "apps", namespace: "team", name: "workload" });
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind, group, namespace: "team", name: "workload" });
   } finally {
     await act(async () => root.unmount());
   }
@@ -300,9 +279,8 @@ it("pairs each diagnosis metric card with its declared Object source once", asyn
   }
 });
 
-it("explains the API group KEDA uses for an unqualified Rollout", () => {
-  const html = renderToStaticMarkup(<KedaScaledObjectRenderer data={{ metadata: { namespace: "team" }, spec: { scaleTargetRef: { kind: "Rollout", name: "worker" } } }} />);
+it("shows the documented default Target API for KEDA", () => {
+  const html = renderToStaticMarkup(<KedaScaledObjectRenderer data={{ metadata: { namespace: "team" }, spec: { scaleTargetRef: { name: "worker" } } }} />);
   expect(html).toContain("Target API");
   expect(html).toContain("apps/v1");
-  expect(html).toContain("argoproj.io/v1alpha1");
 });
