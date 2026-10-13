@@ -164,11 +164,13 @@ export interface FeatureCapabilities {
   yamlSchemas?: boolean
   workloadImages?: boolean
   resourceIssues?: boolean
+  resourceIssueCoverage?: boolean
   podEnvironment?: boolean
   policyResource?: boolean
   workloadHistory?: boolean
   serviceEndpointSlices?: boolean
   trafficRecords?: boolean
+  gitopsWriteEvidence?: boolean
 }
 
 // DeploymentMode is the closed set of topologies Radar can run in.
@@ -200,6 +202,7 @@ export type CoreNodeKind =
   | 'HTTPRoute'
   | 'GRPCRoute'
   | 'TCPRoute'
+  | 'UDPRoute'
   | 'TLSRoute'
   | 'Service'
   | 'Deployment'
@@ -657,6 +660,13 @@ export interface Relationships {
   storageRefs?: ResourceRef[]
   dependencies?: ResourceRef[]
   dependents?: ResourceRef[]
+  monitors?: ResourceRef[]
+  monitorTargets?: ResourceRef[]
+  backends?: ResourceRef[]
+  routedFrom?: ResourceRef[]
+  protects?: ResourceRef[]
+  healthChecks?: ResourceRef[]
+  stagedPolicies?: ResourceRef[]
   scaleTarget?: ResourceRef
   pdbs?: ResourceRef[]              // PodDisruptionBudgets protecting this workload
   networkPolicies?: ResourceRef[]   // NetworkPolicy / CiliumNetworkPolicy / ClusterNetworkPolicy variants selecting this workload
@@ -784,6 +794,8 @@ export interface APIResource {
   name: string // Plural name (e.g., "deployments")
   namespaced: boolean
   isCrd: boolean
+  /** Confirmed, readable cached CRD identity; never inferred from isCrd. */
+  definitionName?: string
   featured?: boolean
   verbs: string[]
   observation?: DynamicResourceObservation
@@ -1072,10 +1084,21 @@ export interface UpgradeInfo {
   error?: string
   // Machine-readable source-resolution failure, used to make the Helm drawer
   // explain whether tracking an OCI source can help.
-  sourceIssue?: 'untracked' | 'repo_index_error' | 'ambiguous_repository'
+  sourceIssue?: 'untracked' | 'repo_index_error' | 'ambiguous_repository' | 'ambiguous_source' | 'source_unavailable'
   // True only when the error is a genuinely untracked source (registering a
   // chart source could fix it). Kept for compatibility; prefer sourceIssue.
   untracked?: boolean
+}
+
+export type ChartSourceCandidate =
+  | { type: 'repository'; reference: string; url: string }
+  | { type: 'oci'; reference: string; url?: never }
+
+export interface ChartSourceStatus {
+  recorded?: ChartSourceCandidate
+  configured: boolean
+  available: boolean
+  candidates?: ChartSourceCandidate[]
 }
 
 // Batch upgrade info keyed by "storageNamespace/name".
