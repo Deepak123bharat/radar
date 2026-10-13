@@ -78,7 +78,7 @@ export function VPARenderer({ data, onNavigate }: VPARendererProps) {
       {/* Target & Mode */}
       <Section title="Configuration" icon={Cpu}>
         <PropertyList>
-          <Property label="Declared Target" value={
+          <Property label={differentSelectorTarget ? "Declared Target" : "Target"} value={
             targetRef.name ? (target ? (
               <ResourceLink {...target} label={`${targetRef.kind}/${targetRef.name}`} onNavigate={onNavigate} />
             ) : `${targetRef.kind || 'Unknown kind'}/${targetRef.name}`) : undefined

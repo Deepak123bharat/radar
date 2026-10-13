@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { Activity, Cpu } from 'lucide-react'
 import { clsx } from 'clsx'
-import { Section, PropertyList, Property, ConditionsSection, ResourceLink, type ConditionTone } from '../../ui/drawer-components'
+import { Section, PropertyList, Property, ConditionsSection, ResourceLink, LabelSelectorDisplay, type ConditionTone } from '../../ui/drawer-components'
 import { Badge } from '../../ui/Badge'
 import { objectReferenceToResourceRef, apiVersionToGroup } from '../../../utils/navigation'
 import type { ResourceRef } from '../../../types'
@@ -41,6 +41,7 @@ export function HPARenderer({ data, onNavigate, hpaDiagnosis, extraSections }: H
   const namespace = data.metadata?.namespace
   const targetRef = spec.scaleTargetRef || {}
   const target = objectReferenceToResourceRef({ ...targetRef, namespace })
+  const hasDiagnosisMetrics = !!hpaDiagnosis?.metrics?.length
   const objectMetrics = (spec.metrics || []).filter((metric: any) => metric.type === 'Object' && metric.object)
 
   return (
@@ -69,11 +70,11 @@ export function HPARenderer({ data, onNavigate, hpaDiagnosis, extraSections }: H
       {hpaDiagnosis?.metrics && hpaDiagnosis.metrics.length > 0 && (
         <Section title="Metrics" defaultExpanded>
           <div className="space-y-2">
-            {hpaDiagnosis.metrics.map((metric) => (
-              <div key={`${metric.type}-${metric.name}`} className="card-inner">
+            {hpaDiagnosis.metrics.map((metric, index) => (
+              <div key={`${metric.type}-${metric.name}-${index}`} className="card-inner">
                 <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
                   <div>
-                    <div className="font-medium text-theme-text-primary">{metric.name}</div>
+                    <div className="font-medium text-theme-text-primary break-words">{spec.metrics?.[index]?.type === 'Object' ? spec.metrics[index].object.metric.name : metric.name}</div>
                     <div className="text-xs text-theme-text-tertiary">{metric.type}</div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-theme-text-secondary">
@@ -84,6 +85,11 @@ export function HPARenderer({ data, onNavigate, hpaDiagnosis, extraSections }: H
                     </Badge>
                   </div>
                 </div>
+                {spec.metrics?.[index]?.type === 'Object' && (
+                  <div className="mt-2">
+                    <HPAObjectMetricSource object={spec.metrics[index].object} namespace={namespace} onNavigate={onNavigate} />
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -120,53 +126,14 @@ export function HPARenderer({ data, onNavigate, hpaDiagnosis, extraSections }: H
         </Section>
       )}
 
-      {objectMetrics.length > 0 && (
+      {!hasDiagnosisMetrics && objectMetrics.length > 0 && (
         <Section title="Object metric sources" defaultExpanded>
           <div className="space-y-3">
-            {objectMetrics.map((metric: any, i: number) => {
-              const described = metric.object.describedObject || {}
-              // The HPA controller measures core Namespace metrics on its own
-              // namespace; describedObject.name cannot escape that scope.
-              const namespaceMetric =
-                described.kind === 'Namespace' &&
-                apiVersionToGroup(described.apiVersion) === ''
-              const name = namespaceMetric ? namespace : described.name
-              const source = objectReferenceToResourceRef({
-                ...described,
-                name,
-                namespace,
-              })
-              return (
-                <div
-                  key={`${metric.object.metric.name}-${i}`}
-                  className="card-inner"
-                >
-                  <PropertyList>
-                    <Property
-                      label="Metric"
-                      value={metric.object.metric.name}
-                    />
-                    <Property
-                      label="Object"
-                      value={
-                        source ? (
-                          <ResourceLink
-                            {...source}
-                            label={`${described.kind}/${name}`}
-                            onNavigate={onNavigate}
-                          />
-                        ) : described.name ? (
-                          `${described.kind || 'Unknown kind'}/${described.name}`
-                        ) : undefined
-                      }
-                    />
-                    {namespaceMetric && (
-                      <Property label="Scope" value="This HPA's namespace" />
-                    )}
-                  </PropertyList>
-                </div>
-              )
-            })}
+            {objectMetrics.map((metric: any, i: number) => (
+              <div key={`${metric.object.metric.name}-${i}`} className="card-inner">
+                <HPAObjectMetricSource object={metric.object} namespace={namespace} onNavigate={onNavigate} showMetric />
+              </div>
+            ))}
           </div>
         </Section>
       )}
@@ -175,5 +142,28 @@ export function HPARenderer({ data, onNavigate, hpaDiagnosis, extraSections }: H
 
       {extraSections}
     </>
+  )
+}
+
+function HPAObjectMetricSource({ object, namespace, onNavigate, showMetric = false }: {
+  object: any
+  namespace?: string
+  onNavigate?: (ref: ResourceRef) => void
+  showMetric?: boolean
+}) {
+  const described = object.describedObject || {}
+  const namespaceMetric = described.kind === 'Namespace' && apiVersionToGroup(described.apiVersion) === ''
+  const name = namespaceMetric ? namespace : described.name
+  const source = objectReferenceToResourceRef({ ...described, name, namespace })
+  return (
+    <PropertyList>
+      {showMetric && <Property label="Metric" value={object.metric.name} />}
+      <Property label="Object" value={source ? (
+        <ResourceLink {...source} label={`${described.kind}/${name}`} onNavigate={onNavigate} />
+      ) : described.name ? `${described.kind || 'Unknown kind'}/${described.name}` : undefined} />
+      {source?.group && <Property label="API Group" value={source.group} />}
+      {object.metric.selector && <Property label="Selector" value={<LabelSelectorDisplay selector={object.metric.selector} />} />}
+      {namespaceMetric && <Property label="Scope" value="This HPA's namespace" />}
+    </PropertyList>
   )
 }

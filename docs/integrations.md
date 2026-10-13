@@ -305,6 +305,8 @@ Radar has first-class renderers for **AWS (CAPA)**, **GCP (CAPG)**, and **Azure 
 
 **Detail View:** Target workload, update mode, per-container resource recommendations (target, lower bound, upper bound, uncapped), resource policy, and conditions.
 
+Target links retain the declared API group. The standard VPA controller reads built-in Pod selectors by Kind for Deployment, StatefulSet, DaemonSet, ReplicaSet, Job, CronJob and ReplicationController, even when `targetRef.apiVersion` is absent or names another group. When a declared group differs, the drawer separates **Declared Target** from **Pod Selector Target**. For the graph's supported target Kinds, topology follows that selector policy. Other Kinds need an explicit API version; a bare `Rollout` is not joined to an Argo Rollout. This is reference navigation and controller selection, not proof of a recommendation or successful resize.
+
 **Problem Detection:** Alerts for unsupported configurations, missing recommendations, and low confidence scores.
 
 ### Supported CRDs

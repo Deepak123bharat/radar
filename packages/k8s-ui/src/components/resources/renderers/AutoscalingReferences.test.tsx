@@ -257,3 +257,40 @@ it("distinguishes a VPA's declared custom target from its built-in selector targ
     await act(async () => root.unmount());
   }
 });
+
+it("pairs each diagnosis metric card with its declared Object source once", async () => {
+  const element = document.createElement("div");
+  const root = createRoot(element);
+  const onNavigate = vi.fn();
+  const objects = [
+    { metric: { name: "requests" }, describedObject: { apiVersion: "v1", kind: "Endpoints", name: "input" } },
+    { metric: { name: "requests" }, describedObject: { apiVersion: "custom.example.io/v1", kind: "Endpoints", name: "input" } },
+    { metric: { name: "queue_depth" }, describedObject: { kind: "Namespace", name: "ignored" } },
+  ];
+  try {
+    await act(async () => root.render(<HPARenderer
+      data={{ metadata: { namespace: "team" }, spec: { metrics: objects.map(object => ({ type: "Object", object })) } }}
+      hpaDiagnosis={{ state: "stable", summary: "Stable", target: {}, bounds: { min: 1, max: 3, current: 2, desired: 2 }, metrics: [
+        { type: "Object", name: "Endpoints/input/requests", current: "10", status: "ok" },
+        { type: "Object", name: "Endpoints (custom.example.io)/input/requests", current: "20", status: "ok" },
+        { type: "Object", name: "Namespace/team/queue_depth", current: "7", status: "ok" },
+        { type: "Object", name: "Service/stale/requests", current: "3", status: "status_only" },
+      ] }} onNavigate={onNavigate} />));
+    expect(element.textContent).not.toContain("Object metric sources");
+    expect(element.textContent).not.toContain("ignored");
+    const endpoints = [...element.querySelectorAll("button")].filter(button => button.textContent === "Endpoints/input");
+    expect(endpoints).toHaveLength(2);
+    await act(async () => endpoints[0].click());
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "Endpoints", group: "", namespace: "team", name: "input" });
+    await act(async () => endpoints[1].click());
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "Endpoints", group: "custom.example.io", namespace: "team", name: "input" });
+    const namespace = [...element.querySelectorAll("button")].find(button => button.textContent === "Namespace/team");
+    expect(namespace).toBeDefined();
+    await act(async () => namespace!.click());
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "Namespace", group: "", namespace: "", name: "team" });
+    expect([...element.querySelectorAll("button")].some(button => button.textContent === "Service/stale")).toBe(false);
+    for (const value of ["Current 10", "Current 20", "Current 7"]) expect(element.textContent).toContain(value);
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
