@@ -628,8 +628,11 @@ Unavailable Pod data, including a missing placement provider, records
 "unavailable"}]`, distinguishing a failed lookup from an observed empty result.
 
 ConfigMap and Secret reverse-reference context uses the same omission when a
-workload or Pod source cannot be read. References from available sources remain
-visible, so the omission also marks a partial consumer inventory.
+scanned workload or Pod source cannot be read. References from available sources
+remain visible. This projection scans selected built-in workload templates and
+controllerless Pods; absence of an omission does not establish complete consumer
+coverage or prove that a resource is unused. Storage audit uses its own consumer
+inventory and coverage rules.
 
 ### Pod/template differences in issue context
 
