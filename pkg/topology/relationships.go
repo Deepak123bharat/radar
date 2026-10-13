@@ -23,6 +23,7 @@ type RelationshipsIndex struct {
 	byNodeID           map[string]*nodeEdgeSlots
 	nodesByID          map[string]*Node
 	nodesByResourceKey map[string]*Node
+	podConsumers       map[string][]ResourceRef
 }
 
 type nodeEdgeSlots struct {
@@ -44,6 +45,7 @@ func IndexByResource(topo *Topology) *RelationshipsIndex {
 		byNodeID:           make(map[string]*nodeEdgeSlots, len(topo.Nodes)),
 		nodesByID:          make(map[string]*Node, len(topo.Nodes)),
 		nodesByResourceKey: make(map[string]*Node, len(topo.Nodes)),
+		podConsumers:       make(map[string][]ResourceRef),
 	}
 	for i := range topo.Nodes {
 		node := &topo.Nodes[i]
@@ -51,6 +53,35 @@ func IndexByResource(topo *Topology) *RelationshipsIndex {
 		for _, key := range nodeResourceKeys(node) {
 			idx.nodesByResourceKey[key] = node
 		}
+	}
+	// A shared snapshot may have been stripped for this user before indexing.
+	visiblePods := map[string]bool{}
+	for _, node := range topo.Nodes {
+		if node.Kind == KindPod {
+			visiblePods[resourceid.ResourceKey("", "Pod", nodeNamespaceFromData(&node), node.Name)] = true
+		}
+		if node.Kind == KindPodGroup {
+			if pods, ok := node.Data["pods"].([]map[string]any); ok {
+				for _, pod := range pods {
+					name, _ := pod["name"].(string)
+					ns, _ := pod["namespace"].(string)
+					visiblePods[resourceid.ResourceKey("", "Pod", ns, name)] = true
+				}
+			}
+		}
+	}
+	for key, refs := range topo.podConsumers {
+		if idx.nodesByResourceKey[key] == nil {
+			continue
+		}
+		for _, ref := range refs {
+			if visiblePods[resourceid.ResourceKey("", "Pod", ref.Namespace, ref.Name)] {
+				idx.podConsumers[key] = append(idx.podConsumers[key], ref)
+			}
+		}
+	}
+	for key, refs := range idx.podConsumers {
+		idx.podConsumers[key] = uniqueResourceRefs(refs)
 	}
 	for _, e := range topo.Edges {
 		if e.Source != "" {
@@ -657,20 +688,8 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 		}
 	}
 
-	if provider != nil && resourceGroup == "" && (resourceKind == "ConfigMap" || resourceKind == "Secret" || resourceKind == "PersistentVolumeClaim") {
-		if pods, err := provider.Pods(); err == nil {
-			for _, pod := range pods {
-				if pod == nil || pod.Namespace != namespace {
-					continue
-				}
-				for _, declaration := range configrefs.PodSpecReferences(pod.Namespace, pod.Spec) {
-					if declaration.Kind == resourceKind && declaration.Name == name {
-						rel.Consumers = append(rel.Consumers, ResourceRef{Kind: "Pod", Namespace: pod.Namespace, Name: pod.Name})
-						break
-					}
-				}
-			}
-		}
+	if resourceGroup == "" && (resourceKind == "ConfigMap" || resourceKind == "Secret" || resourceKind == "PersistentVolumeClaim") {
+		rel.Consumers = append(rel.Consumers, lookupIndex.podConsumers[resourceid.ResourceKey("", resourceKind, namespace, name)]...)
 	}
 	if endpoint, ok := queriedObj.(*unstructured.Unstructured); ok &&
 		(kindLower == "hostendpoint" || kindLower == "hostendpoints") &&

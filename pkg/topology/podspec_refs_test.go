@@ -153,6 +153,10 @@ func TestAdmittedPodFactsDoNotJoinNormalGraphComponents(t *testing.T) {
 	if reverse == nil || len(reverse.Consumers) != 1 || reverse.Consumers[0].Name != "six-0" {
 		t.Fatalf("grouped Pod missing from reverse relationships: %+v", reverse)
 	}
+	indexed := GetRelationshipsWithObject("ConfigMap", "team", "six-0", provider.configMaps[3], cached, nil, nil, IndexByResource(cached))
+	if indexed == nil || len(indexed.Consumers) != 1 || indexed.Consumers[0].Name != "six-0" {
+		t.Fatalf("reverse lookup needs raw provider instead of cached facts: %+v", indexed)
+	}
 	opts.SummaryMode = true
 	summarized, err := NewBuilder(provider).Build(opts)
 	if err != nil {
@@ -161,6 +165,18 @@ func TestAdmittedPodFactsDoNotJoinNormalGraphComponents(t *testing.T) {
 	summaryRel := GetRelationshipsWithObject("Pod", "team", "six-0", provider.pods[2], summarized, provider, nil, nil)
 	if summaryRel == nil || len(summaryRel.ConfigRefs) != 3 {
 		t.Fatalf("summary Pod lost admitted configuration: %+v", summaryRel)
+	}
+	filtered := *cached
+	filtered.Nodes = append([]Node(nil), cached.Nodes...)
+	filtered.Edges = append([]Edge(nil), cached.Edges...)
+	filtered.StripNodeKinds(map[NodeKind]bool{KindPod: true, KindPodGroup: true})
+	denied := GetRelationships("ConfigMap", "team", "six-0", &filtered, provider, nil)
+	if denied != nil {
+		for _, consumer := range denied.Consumers {
+			if consumer.Kind == "Pod" {
+				t.Fatalf("reverse projection bypassed filtered Pod visibility: %+v", consumer)
+			}
+		}
 	}
 	cached.StripSecretsExcept(map[SARTuple]bool{})
 	rel := GetRelationshipsWithObject("Pod", "team", "six-0", provider.pods[2], cached, provider, nil, nil)

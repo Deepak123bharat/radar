@@ -531,6 +531,7 @@ func (s *Server) topologyForContext(namespace string) (*topology.Topology, topol
 		opts.Namespaces = []string{namespace}
 	}
 	opts.IncludeReplicaSets = true
+	opts.IncludeSecrets = true
 	opts.ForRelationshipCache = true
 
 	provider := k8s.NewTopologyResourceProvider(cache)

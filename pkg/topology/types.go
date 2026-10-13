@@ -187,6 +187,7 @@ const (
 
 // Topology represents the complete graph
 type Topology struct {
+	podConsumers            map[string][]ResourceRef
 	Nodes                   []Node   `json:"nodes"`
 	Edges                   []Edge   `json:"edges"`
 	Warnings                []string `json:"warnings,omitempty"`                // Warnings about resources that failed to load

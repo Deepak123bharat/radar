@@ -3181,6 +3181,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	podConfigTargets := make(map[workloadRefKey]bool)
 	podSecretTargets := make(map[workloadRefKey]bool)
 	podPVCTargets := make(map[workloadRefKey]bool)
+	podConsumers := make(map[string][]ResourceRef)
 	if opts.ForRelationshipCache {
 		for _, pod := range pods {
 			if !opts.MatchesNamespaceFilter(pod.Namespace) {
@@ -3188,6 +3189,10 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			}
 			for _, ref := range configrefs.PodSpecReferences(pod.Namespace, pod.Spec) {
 				key := workloadRefKey{namespace: ref.Namespace, name: ref.Name}
+				if ref.Kind == "ConfigMap" || ref.Kind == "Secret" || ref.Kind == "PersistentVolumeClaim" {
+					identity := resourceid.ResourceKey("", ref.Kind, ref.Namespace, ref.Name)
+					podConsumers[identity] = append(podConsumers[identity], ResourceRef{Kind: "Pod", Namespace: pod.Namespace, Name: pod.Name})
+				}
 				switch ref.Kind {
 				case "ConfigMap":
 					podConfigTargets[key] = true
@@ -5820,7 +5825,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	// Summary mode: stamp collapsed pod counts onto their workload nodes.
 	stampPodSummaries(nodes, podSummaries)
 
-	topo := &Topology{Nodes: stampAuditKeys(nodes), Edges: edges, Warnings: warnings}
+	topo := &Topology{Nodes: stampAuditKeys(nodes), Edges: edges, Warnings: warnings, podConsumers: podConsumers}
 
 	// Add CRD discovery status
 	if b.dynamic != nil {
