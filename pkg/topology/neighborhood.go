@@ -1,6 +1,7 @@
 package topology
 
 import (
+	"maps"
 	"strings"
 
 	"github.com/skyhook-io/radar/pkg/resourceid"
@@ -318,10 +319,16 @@ func BuildNeighborhoodWithIndex(t *Topology, root ResourceRef, opts Neighborhood
 	sub.Nodes = make([]Node, 0, len(order))
 	for _, id := range order {
 		if n, ok := nodeByID[id]; ok {
-			sub.Nodes = append(sub.Nodes, *n)
+			node := *n
+			if opts.Allow != nil && node.Data["policyCoverageWorkloads"] != nil {
+				// Internal coverage IDs are not neighborhood edges and have not
+				// passed the BFS authorization gate. Do not serialize them.
+				node.Data = maps.Clone(node.Data)
+				delete(node.Data, "policyCoverageWorkloads")
+			}
+			sub.Nodes = append(sub.Nodes, node)
 		}
 	}
-
 	// Edges: include only edges whose type is allowed AND both endpoints
 	// are in the included set. Walking t.Edges once here keeps the output
 	// edge order stable regardless of whether we used the index or not —

@@ -4415,8 +4415,8 @@ func (s *Server) handleDeleteResource(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleCascadeDeletePreview returns a preview of resources that would be garbage-collected
-// if the specified resource is deleted (via Kubernetes owner reference cascade).
+// handleCascadeDeletePreview returns related resources that deletion may affect.
+// Management edges include controller attribution, not only garbage collection.
 func (s *Server) handleCascadeDeletePreview(w http.ResponseWriter, r *http.Request) {
 	if !s.requireConnected(w) {
 		return
@@ -4430,7 +4430,14 @@ func (s *Server) handleCascadeDeletePreview(w http.ResponseWriter, r *http.Reque
 		namespace = ""
 	}
 
+	if status, message, ok := s.preflightResourceGet(r, kind, namespace, name, group); !ok {
+		s.writeError(w, status, message)
+		return
+	}
 	cachedTopo := s.broadcaster.GetCachedTopology()
+	if cachedTopo != nil && auth.UserFromContext(r.Context()) != nil {
+		cachedTopo = s.relationshipTopologyForUser(r, cachedTopo)
+	}
 	dp := k8s.NewTopologyDynamicProvider(k8s.GetDynamicResourceCache(), k8s.GetResourceDiscovery())
 	preview := topology.GetCascadeDeletePreview(topology.ResourceRef{
 		Kind:      kind,
