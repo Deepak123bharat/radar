@@ -443,8 +443,7 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"term match; modifier-only queries are enumeration, so use list_resources when " +
 			"you already know the kind/namespace. Returns ranked hits with snippets and " +
 			"summaryContext. Covers what you can list; big CRDs need kind:. partial=true: absence " +
-			"unproven, see coverageHint. CEL examples: has(object.subjects); \"app\" in labels; " +
-			"kind == \"Application\" && has(spec.sources) && spec.sources.exists(s, has(s.repoURL)).",
+			"unproven, see coverageHint.",
 		Annotations: readOnly,
 	}, logToolCall("search", handleSearch))
 
