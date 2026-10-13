@@ -48,3 +48,12 @@ tooltip. `certaintyGlyph` and `certaintyValueLabel` expose the same vocabulary.
 `useOpenTerminal` accepts `shell` (one executable name, without arguments), `title`, and `sessionNote`. Dock hosts must forward these fields to their terminal renderer; Radar does so. The shared `TerminalTab` accepts `command` to describe that executable, pin the container, and suppress shell debug advice, plus `note` for session context. `createSession` remains responsible for launching the command. Omitted options retain the normal shell session.
 
 `AreaChart` supports optional `shadedRanges`, controlled `selection`, and `onSelectRange`. Range timestamps use Unix seconds. Dragging selects a range; with positive `stepSeconds`, clicking selects a step-wide window centered on the pointer, clipped at the chart edges. Arrow keys plus Enter select a window from the keyboard. Shaded range labels appear on hover. `AlertBanner.action` places a host-supplied control alongside the title. Omitting these props preserves existing charts and banners.
+
+## GitOps tree kind filters
+
+Use `buildTreeFacets(tree).kinds[].name` as the kind filter value and pass the
+same values to `GitOpsGraphFilterRail.kinds` and `GitOpsTreeGraph.filters.kinds`.
+The values include API-group identity, so core Service and Knative Service can
+be selected independently. The shared rail displays group names only when a
+kind has multiple groups in the tree. Consumers with custom filter controls
+should use these facet values rather than bare Kubernetes kinds.

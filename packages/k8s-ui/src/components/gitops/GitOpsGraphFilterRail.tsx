@@ -1,6 +1,7 @@
 import { CheckCircle2, CircleDot, GitBranch, HeartPulse, LayoutGrid, List, Search } from 'lucide-react'
 
 import { GitOpsFacetButton, GitOpsFilterSection } from './GitOpsTableView'
+import { gitOpsTreeKindLabel } from './tree/tree-helpers'
 import { Input } from '../ui/Input'
 import type { GitOpsResourceTree } from '../../types/gitops-tree'
 import type { GitOpsTreePreset } from './tree'
@@ -31,7 +32,7 @@ export function buildTreeFacets(tree: GitOpsResourceTree | null | undefined): Gi
   const nodes = tree?.nodes ?? []
   return {
     kinds: countValues(
-      nodes.filter((n) => n.role !== 'group').map((n) => n.ref.kind).filter(Boolean),
+      nodes.filter((n) => n.role !== 'group').map((n) => gitOpsTreeKindLabel(n.ref)),
     ),
     sync: countValues(nodes.map((n) => n.sync || 'Unknown')),
     health: countValues(nodes.map((n) => n.health || 'Unknown')),
@@ -110,7 +111,7 @@ export function GitOpsGraphFilterRail({
         {facets.kinds.slice(0, 14).map((item) => (
           <GitOpsFacetButton
             key={item.name}
-            label={item.name}
+            label={facets.kinds.some((other) => other.name !== item.name && other.name.split(' (')[0] === item.name.split(' (')[0]) ? item.name : item.name.split(' (')[0]}
             count={item.count}
             active={kinds.has(item.name)}
             onClick={() => onToggleKind(item.name)}

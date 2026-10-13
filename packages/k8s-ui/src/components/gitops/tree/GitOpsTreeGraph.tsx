@@ -26,9 +26,9 @@ import { healthToSeverity, SEVERITY_DOT } from '../../../utils/badge-colors'
 import { formatCompactAge } from '../../../utils/format'
 import { radarHealthNote } from '../health-provenance'
 import { servicePortsTooltip, type ServicePortEntry } from '../../topology/K8sResourceNode'
-import { getTopologyIcon } from '../../../utils/resource-icons'
+import { getResourceIcon, getTopologyIcon } from '../../../utils/resource-icons'
 import { Tooltip } from '../../ui/Tooltip'
-import { hasGitOpsTreeFilters, matchesGitOpsTreeFilters, type GitOpsTreeFilters } from './tree-helpers'
+import { gitOpsTreeKindLabel, hasGitOpsTreeFilters, matchesGitOpsTreeFilters, type GitOpsTreeFilters } from './tree-helpers'
 
 export type GitOpsTreePreset = 'full' | 'compact' | 'workloads' | 'app'
 
@@ -452,7 +452,7 @@ function applyGraphFilters(tree: GitOpsResourceTree, filters?: GitOpsTreeFilters
   }
 }
 
-function compactInfra(tree: GitOpsResourceTree, expandedGroups?: Set<string>): GitOpsResourceTree {
+export function compactInfra(tree: GitOpsResourceTree, expandedGroups?: Set<string>): GitOpsResourceTree {
   const children = new Map<string, string[]>()
   const parent = new Map<string, string>()
   for (const edge of tree.edges) {
@@ -466,17 +466,18 @@ function compactInfra(tree: GitOpsResourceTree, expandedGroups?: Set<string>): G
     if ((children.get(node.id) ?? []).length > 0) continue
     const p = parent.get(node.id)
     if (!p) continue
-    const key = `${p}|${node.ref.kind}`
+    const key = `${p}|${gitOpsTreeKindLabel(node.ref)}`
     groups.set(key, [...(groups.get(key) ?? []), node])
   }
 
   const remove = new Set<string>()
   const additions: GitOpsTreeNode[] = []
   const edgeAdditions: GitOpsResourceTree['edges'] = []
-  for (const [key, nodes] of groups) {
+  for (const nodes of groups.values()) {
     if (nodes.length < 2) continue
-    const [p, kind] = key.split('|')
-    const id = `${p}/compact/${kind}`
+    const p = parent.get(nodes[0].id)!
+    const { kind, group } = nodes[0].ref
+    const id = `${p}/compact/${group || ''}/${kind}`
     // Per-group expand: when the user has clicked this group's bubble,
     // skip the collapse step for that group only — leave the children
     // visible alongside any other still-collapsed groups in the tree.
@@ -484,7 +485,7 @@ function compactInfra(tree: GitOpsResourceTree, expandedGroups?: Set<string>): G
     for (const node of nodes) remove.add(node.id)
     additions.push({
       id,
-      ref: { kind, namespace: '', name: `${nodes.length} ${pluralize(kind)}` },
+      ref: { kind, group, namespace: '', name: `${nodes.length} ${pluralize(kind)}` },
       role: 'group',
       tool: nodes[0].tool,
       topologyStatus: 'unknown',
@@ -584,7 +585,7 @@ const GitOpsResourceNode = memo(function GitOpsResourceNode({ data }: NodeProps<
   const gitopsTool = gitopsToolForNode(node)
   const chips = buildChips(node)
   const dim = getNodeDimensions(node)
-  const KindIcon = getTopologyIcon(kind)
+  const KindIcon = (node.role === 'group' && kind === 'PodGroup' || node.ref.kind === 'PodGroup' && !node.ref.group) ? getTopologyIcon(kind) : getResourceIcon(node.ref.kind, node.ref.group)
   // Only unhealthy nodes carry a cause worth surfacing — a healthy node
   // matched by a stale/unrelated issue ref shouldn't show a tooltip.
   const cause = status === 'unhealthy' || status === 'degraded' ? data.cause : undefined
@@ -598,7 +599,7 @@ const GitOpsResourceNode = memo(function GitOpsResourceNode({ data }: NodeProps<
   // affordance the topology graph's Service node carries, same renderer. Stood
   // down when the card already explains an unhealthy verdict: that reason is
   // what the hover should say, and only one tooltip is ever visible anyway.
-  const portsTooltip = kind === 'Service' && !cause
+  const portsTooltip = kind === 'Service' && !node.ref.group && !cause
     ? servicePortsTooltip((node.data?.ports as ServicePortEntry[] | undefined) ?? [])
     : null
   const subtitle = getSubtitle(node)
@@ -643,9 +644,9 @@ const GitOpsResourceNode = memo(function GitOpsResourceNode({ data }: NodeProps<
         <div className="px-3 py-2.5">
           <div className="mb-1 flex items-center gap-1.5">
             <KindIcon className="h-3.5 w-3.5 shrink-0 text-theme-text-tertiary" aria-hidden />
-            <span className="truncate text-[10px] font-medium uppercase tracking-wide text-theme-text-tertiary">
+            <Tooltip content={gitOpsTreeKindLabel(node.ref)} delay={200} wrapperClassName="min-w-0" disabled={!!cause} preserveWrapperWhenDisabled><span className="truncate text-[10px] font-medium uppercase tracking-wide text-theme-text-tertiary" aria-label={gitOpsTreeKindLabel(node.ref)}>
               {node.role === 'group' ? displayKind((node.data?.groupedKind as string) || kind) : displayKind(kind)}
-            </span>
+            </span></Tooltip>
             {/* Tool badge for GitOps portal nodes — sits between the kind
                 label and the status dot, signaling "this is a managed-
                 GitOps-app, not a leaf K8s resource". Keeps the dot's
@@ -706,7 +707,7 @@ const GitOpsResourceNode = memo(function GitOpsResourceNode({ data }: NodeProps<
   return (
     <>
       <Handle type="target" position={Position.Left} className="!h-0 !w-0 !border-0 !bg-transparent" />
-      {cause ? <Tooltip content={cause} delay={200}>{card}</Tooltip> : card}
+      {cause ? <Tooltip content={`${gitOpsTreeKindLabel(node.ref)}: ${cause}`} delay={200}>{card}</Tooltip> : card}
       <Handle type="source" position={Position.Right} className="!h-0 !w-0 !border-0 !bg-transparent" />
     </>
   )
