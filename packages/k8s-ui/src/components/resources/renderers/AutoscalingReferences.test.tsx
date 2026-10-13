@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
+import { URL as NodeURL } from 'node:url'
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -223,19 +225,22 @@ it.each([
   },
 );
 
-it.each([
-  ["Deployment", "apps"], ["StatefulSet", "apps"], ["DaemonSet", "apps"], ["ReplicaSet", "apps"],
-  ["Job", "batch"], ["CronJob", "batch"], ["ReplicationController", ""],
-])("keeps VPA's %s selector target navigable without apiVersion", async (kind, group) => {
+const vpaTargetVectors: Array<{ name: string; target: { kind: string; name: string; apiVersion?: string }; selector: { apiVersion: string; kind: string; name: string } | null; declaredGroup: string | null }> = JSON.parse(readFileSync(new NodeURL('../../../../../../pkg/configrefs/testdata/vpa_targets.json', import.meta.url), 'utf8'))
+
+it.each(vpaTargetVectors)("preserves VPA target identity: $name", async ({ target, declaredGroup }) => {
   const element = document.createElement("div");
   const root = createRoot(element);
   const onNavigate = vi.fn();
   try {
-    await act(async () => root.render(<VPARenderer data={{ metadata: { namespace: "team" }, spec: { targetRef: { kind, name: "workload" } } }} onNavigate={onNavigate} />));
-    const link = [...element.querySelectorAll("button")].find(button => button.textContent === `${kind}/workload`);
-    expect(link).toBeDefined();
-    await act(async () => link!.click());
-    expect(onNavigate).toHaveBeenLastCalledWith({ kind, group, namespace: "team", name: "workload" });
+    await act(async () => root.render(<VPARenderer data={{ metadata: { namespace: "team" }, spec: { targetRef: target } }} onNavigate={onNavigate} />));
+    const link = [...element.querySelectorAll("button")].find(button => button.textContent === `${target.kind}/workload`);
+    if (declaredGroup === null) {
+      expect(link).toBeUndefined();
+    } else {
+      expect(link).toBeDefined();
+      await act(async () => link!.click());
+      expect(onNavigate).toHaveBeenLastCalledWith({ kind: target.kind, group: declaredGroup, namespace: "team", name: target.name });
+    }
   } finally {
     await act(async () => root.unmount());
   }
@@ -293,4 +298,11 @@ it("pairs each diagnosis metric card with its declared Object source once", asyn
   } finally {
     await act(async () => root.unmount());
   }
+});
+
+it("explains the API group KEDA uses for an unqualified Rollout", () => {
+  const html = renderToStaticMarkup(<KedaScaledObjectRenderer data={{ metadata: { namespace: "team" }, spec: { scaleTargetRef: { kind: "Rollout", name: "worker" } } }} />);
+  expect(html).toContain("Target API");
+  expect(html).toContain("apps/v1");
+  expect(html).toContain("argoproj.io/v1alpha1");
 });

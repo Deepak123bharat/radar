@@ -1,0 +1,158 @@
+[
+  {
+    "name": "implicit Deployment",
+    "target": {
+      "kind": "Deployment",
+      "name": "workload"
+    },
+    "selector": {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "name": "workload"
+    },
+    "declaredGroup": "apps"
+  },
+  {
+    "name": "implicit StatefulSet",
+    "target": {
+      "kind": "StatefulSet",
+      "name": "workload"
+    },
+    "selector": {
+      "apiVersion": "apps/v1",
+      "kind": "StatefulSet",
+      "name": "workload"
+    },
+    "declaredGroup": "apps"
+  },
+  {
+    "name": "implicit DaemonSet",
+    "target": {
+      "kind": "DaemonSet",
+      "name": "workload"
+    },
+    "selector": {
+      "apiVersion": "apps/v1",
+      "kind": "DaemonSet",
+      "name": "workload"
+    },
+    "declaredGroup": "apps"
+  },
+  {
+    "name": "implicit ReplicaSet",
+    "target": {
+      "kind": "ReplicaSet",
+      "name": "workload"
+    },
+    "selector": {
+      "apiVersion": "apps/v1",
+      "kind": "ReplicaSet",
+      "name": "workload"
+    },
+    "declaredGroup": "apps"
+  },
+  {
+    "name": "implicit Job",
+    "target": {
+      "kind": "Job",
+      "name": "workload"
+    },
+    "selector": {
+      "apiVersion": "batch/v1",
+      "kind": "Job",
+      "name": "workload"
+    },
+    "declaredGroup": "batch"
+  },
+  {
+    "name": "implicit CronJob",
+    "target": {
+      "kind": "CronJob",
+      "name": "workload"
+    },
+    "selector": {
+      "apiVersion": "batch/v1",
+      "kind": "CronJob",
+      "name": "workload"
+    },
+    "declaredGroup": "batch"
+  },
+  {
+    "name": "implicit ReplicationController",
+    "target": {
+      "kind": "ReplicationController",
+      "name": "workload"
+    },
+    "selector": {
+      "apiVersion": "v1",
+      "kind": "ReplicationController",
+      "name": "workload"
+    },
+    "declaredGroup": ""
+  },
+  {
+    "name": "custom Deployment declaration",
+    "target": {
+      "kind": "Deployment",
+      "apiVersion": "custom.example.io/v1",
+      "name": "workload"
+    },
+    "selector": {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "name": "workload"
+    },
+    "declaredGroup": "custom.example.io"
+  },
+  {
+    "name": "bare Rollout",
+    "target": {
+      "kind": "Rollout",
+      "name": "workload"
+    },
+    "selector": null,
+    "declaredGroup": null
+  },
+  {
+    "name": "explicit Argo Rollout",
+    "target": {
+      "kind": "Rollout",
+      "apiVersion": "argoproj.io/v1alpha1",
+      "name": "workload"
+    },
+    "selector": {
+      "kind": "Rollout",
+      "apiVersion": "argoproj.io/v1alpha1",
+      "name": "workload"
+    },
+    "declaredGroup": "argoproj.io"
+  },
+  {
+    "name": "empty target version",
+    "target": {
+      "kind": "Deployment",
+      "apiVersion": "",
+      "name": "workload"
+    },
+    "selector": {
+      "kind": "Deployment",
+      "apiVersion": "apps/v1",
+      "name": "workload"
+    },
+    "declaredGroup": "apps"
+  },
+  {
+    "name": "explicit custom Widget",
+    "target": {
+      "kind": "Widget",
+      "apiVersion": "custom.example.io/v1",
+      "name": "workload"
+    },
+    "selector": {
+      "kind": "Widget",
+      "apiVersion": "custom.example.io/v1",
+      "name": "workload"
+    },
+    "declaredGroup": "custom.example.io"
+  }
+]

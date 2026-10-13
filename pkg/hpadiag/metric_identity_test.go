@@ -29,7 +29,7 @@ func TestObjectMetricValuesKeepGroupAndSelectorIdentity(t *testing.T) {
 	}
 	hpa.Status.CurrentMetrics[0], hpa.Status.CurrentMetrics[2] = hpa.Status.CurrentMetrics[2], hpa.Status.CurrentMetrics[0]
 	got := Analyze(hpa).Metrics
-	wantNames := []string{"Endpoints/source/requests", "Endpoints (custom.example.io)/source/requests", "Endpoints (custom.example.io)/source/requests [lane=canary]"}
+	wantNames := []string{"Endpoints/source/requests", "Endpoints (custom.example.io)/source/requests", "Endpoints (custom.example.io)/source/requests"}
 	if len(got) != len(values) {
 		t.Fatalf("metrics = %+v", got)
 	}

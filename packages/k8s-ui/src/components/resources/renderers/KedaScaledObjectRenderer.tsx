@@ -88,6 +88,7 @@ export function KedaScaledObjectRenderer({ data, onNavigate }: KedaScaledObjectR
             }
             return getScaledObjectTarget(data)
           })()} />
+          <Property label="Target API" value={data.spec?.scaleTargetRef?.apiVersion || 'apps/v1'} />
           <Property label="Replicas" value={getScaledObjectReplicas(data)} />
           <Property label="Polling Interval" value={`${getScaledObjectPollingInterval(data)}s`} />
           <Property label="Cooldown Period" value={`${getScaledObjectCooldownPeriod(data)}s`} />
@@ -100,6 +101,11 @@ export function KedaScaledObjectRenderer({ data, onNavigate }: KedaScaledObjectR
           })()} />
           <Property label="Last Active" value={<TimeValue timestamp={data.status?.lastActiveTime} />} />
         </PropertyList>
+        {data.spec?.scaleTargetRef?.kind === 'Rollout' && !data.spec.scaleTargetRef.apiVersion && (
+          <p className="mt-2 text-sm text-theme-text-secondary">
+            KEDA defaults an omitted apiVersion to apps/v1. For an Argo Rollout, set apiVersion to argoproj.io/v1alpha1.
+          </p>
+        )}
         {fallback && (
           <div className="mt-2 pt-2 border-t border-theme-border">
             <div className="text-xs font-medium text-theme-text-secondary uppercase tracking-wider mb-1">Fallback</div>
