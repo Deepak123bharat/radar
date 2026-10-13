@@ -2,7 +2,9 @@ package topology
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -35,5 +37,45 @@ func TestAuthorizedNeighborhoodDoesNotExposeInternalCoverageIDs(t *testing.T) {
 	}
 	if topo.Nodes[0].Data["policyCoverageWorkloads"] == nil {
 		t.Fatal("mutated cached metadata")
+	}
+}
+
+func TestPolicyFilteringDoesNotWriteUnqualifiedSharedData(t *testing.T) {
+	for _, status := range []string{"absent", "nil", "protected"} {
+		t.Run(status, func(t *testing.T) {
+			data := map[string]any{"namespace": "app", "label": "public"}
+			expected := map[string]any{"namespace": "app", "label": "public"}
+			if status == "nil" {
+				data["policyStatus"] = nil
+				expected["policyStatus"] = nil
+			}
+			if status == "protected" {
+				data["policyStatus"] = "protected"
+				expected["policyStatus"] = "protected"
+			}
+			original := &Topology{Nodes: []Node{{ID: "service/app/web", Kind: KindService, Data: data}, {ID: "ciliumnetworkpolicy/app/private", Kind: KindCiliumNetworkPolicy, Data: map[string]any{"namespace": "app"}}}}
+			var workers sync.WaitGroup
+			workers.Add(2)
+			go func() {
+				defer workers.Done()
+				for i := 0; i < 1000; i++ {
+					for key, value := range original.Nodes[0].Data {
+						_ = key
+						_ = value
+					}
+				}
+			}()
+			go func() {
+				defer workers.Done()
+				for i := 0; i < 1000; i++ {
+					filtered := &Topology{Nodes: append([]Node(nil), original.Nodes...)}
+					filtered.StripNodeIDs(map[string]bool{"ciliumnetworkpolicy/app/private": true})
+				}
+			}()
+			workers.Wait()
+			if !reflect.DeepEqual(data, expected) {
+				t.Fatalf("shared data mutated: %#v", data)
+			}
+		})
 	}
 }

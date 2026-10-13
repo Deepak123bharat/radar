@@ -270,7 +270,8 @@ func (t *Topology) StripNodeIDs(deny map[string]bool) {
 	for i := range t.Nodes {
 		node := &t.Nodes[i]
 		ns, _ := node.Data["namespace"].(string)
-		if node.Data["policyCoverageWorkloads"] != nil || (hiddenPolicyNamespaces[""] || hiddenPolicyNamespaces[ns]) && (node.Data["policyStatus"] != nil) {
+		_, hasPolicyStatus := node.Data["policyStatus"]
+		if node.Data["policyCoverageWorkloads"] != nil || (hiddenPolicyNamespaces[""] || hiddenPolicyNamespaces[ns]) && hasPolicyStatus {
 			// Topology clones share node Data until a consumer modifies it.
 			node.Data = maps.Clone(node.Data)
 		}
@@ -285,7 +286,7 @@ func (t *Topology) StripNodeIDs(deny map[string]bool) {
 				node.Data[field] = visible
 			}
 		}
-		if hiddenPolicyNamespaces[""] || hiddenPolicyNamespaces[ns] {
+		if hasPolicyStatus && (hiddenPolicyNamespaces[""] || hiddenPolicyNamespaces[ns]) {
 			// The annotation was computed before filtering. Withhold it when
 			// its evidence may include policies the caller cannot see.
 			delete(node.Data, "policyStatus")
