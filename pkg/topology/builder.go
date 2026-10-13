@@ -3175,6 +3175,30 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		}
 		pods = ps
 	}
+
+	// Admitted defaults describe individual Pods, not application boundaries.
+	// Retain observed targets for per-Pod projection even when Pods are grouped.
+	podConfigTargets := make(map[workloadRefKey]bool)
+	podSecretTargets := make(map[workloadRefKey]bool)
+	podPVCTargets := make(map[workloadRefKey]bool)
+	if opts.ForRelationshipCache {
+		for _, pod := range pods {
+			if !opts.MatchesNamespaceFilter(pod.Namespace) {
+				continue
+			}
+			for _, ref := range configrefs.PodSpecReferences(pod.Namespace, pod.Spec) {
+				key := workloadRefKey{namespace: ref.Namespace, name: ref.Name}
+				switch ref.Kind {
+				case "ConfigMap":
+					podConfigTargets[key] = true
+				case "Secret":
+					podSecretTargets[key] = true
+				case "PersistentVolumeClaim":
+					podPVCTargets[key] = true
+				}
+			}
+		}
+	}
 	// podSummaries accumulates per-workload pod health in summary mode; stamped
 	// onto the workload nodes just before return. Empty (and the stamp a no-op)
 	// in normal mode.
@@ -3230,7 +3254,9 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 						podNode.Data["trafficRole"] = role
 					}
 					nodes = append(nodes, podNode)
-					trackWorkloadRefs(podID, pod.Namespace, extractWorkloadReferences(pod.Spec))
+					if opts.ForRelationshipCache {
+						trackWorkloadRefs(podID, pod.Namespace, extractWorkloadReferences(pod.Spec))
+					}
 
 					// Connect to owner (resources view specific)
 					edges = append(edges, b.createPodOwnerEdges(pod, podID, opts, replicaSetIDs, replicaSetToDeployment, replicaSetToRollout, rolloutTrafficByID, jobIDs, jobToCronJob, jobToScaledJob, workflowIDs, workflowToCronWorkflow)...)
@@ -3807,7 +3833,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				})
 			}
 
-			if len(consumers) > 0 {
+			if len(consumers) > 0 || podConfigTargets[workloadRefKey{namespace: cm.Namespace, name: cm.Name}] {
 				nodes = append(nodes, configMapNode(cm))
 			}
 		}
@@ -3840,7 +3866,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				})
 			}
 
-			if len(consumers) > 0 {
+			if len(consumers) > 0 || podSecretTargets[workloadRefKey{namespace: secret.Namespace, name: secret.Name}] {
 				visibleSecretIDs[workloadRefKey{namespace: secret.Namespace, name: secret.Name}] = secretID
 				nodes = append(nodes, secretNode(secret))
 			}
@@ -3947,7 +3973,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				})
 			}
 
-			if len(consumers) > 0 {
+			if len(consumers) > 0 || podPVCTargets[workloadRefKey{namespace: pvc.Namespace, name: pvc.Name}] {
 				// Get storage info
 				var storageSize string
 				if pvc.Spec.Resources.Requests != nil {

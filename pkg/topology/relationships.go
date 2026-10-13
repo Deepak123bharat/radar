@@ -8,6 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/skyhook-io/radar/pkg/configrefs"
 	"github.com/skyhook-io/radar/pkg/resourceid"
 )
 
@@ -609,6 +610,22 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 		queriedObj = lookupObjectMetadata(kindLower, namespace, name, provider, dp)
 	}
 	if pod, ok := queriedObj.(*corev1.Pod); ok {
+
+		for _, declaration := range configrefs.PodSpecReferences(pod.Namespace, pod.Spec) {
+			if declaration.Kind == "ServiceAccount" {
+				continue
+			}
+			target := lookupIndex.nodesByResourceKey[resourceid.ResourceKey("", declaration.Kind, declaration.Namespace, declaration.Name)]
+			if target == nil {
+				continue
+			}
+			ref := ResourceRef{Kind: declaration.Kind, Namespace: declaration.Namespace, Name: declaration.Name}
+			if declaration.Kind == "PersistentVolumeClaim" {
+				rel.StorageRefs = append(rel.StorageRefs, ref)
+			} else {
+				rel.ConfigRefs = append(rel.ConfigRefs, ref)
+			}
+		}
 		if sa := pod.Spec.ServiceAccountName; sa != "" {
 			saRef := ResourceRef{Kind: "ServiceAccount", Namespace: namespace, Name: sa}
 			enrichRef(&saRef, dp)
@@ -636,6 +653,22 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 				rel.ResourceClaims = append(rel.ResourceClaims, ResourceRef{
 					Kind: "ResourceClaim", Namespace: namespace, Name: claimName, Group: "resource.k8s.io",
 				})
+			}
+		}
+	}
+
+	if provider != nil && resourceGroup == "" && (resourceKind == "ConfigMap" || resourceKind == "Secret" || resourceKind == "PersistentVolumeClaim") {
+		if pods, err := provider.Pods(); err == nil {
+			for _, pod := range pods {
+				if pod == nil || pod.Namespace != namespace {
+					continue
+				}
+				for _, declaration := range configrefs.PodSpecReferences(pod.Namespace, pod.Spec) {
+					if declaration.Kind == resourceKind && declaration.Name == name {
+						rel.Consumers = append(rel.Consumers, ResourceRef{Kind: "Pod", Namespace: pod.Namespace, Name: pod.Name})
+						break
+					}
+				}
 			}
 		}
 	}

@@ -229,6 +229,7 @@ func mcpTopologyForContext(namespace string) (*topo.Topology, topo.ResourceProvi
 	// the relationship cache uses a thinner shape — silently weakening
 	// resourceContext for MCP callers.
 	opts.IncludeReplicaSets = true
+	opts.IncludeSecrets = true
 	opts.ForRelationshipCache = true
 	if namespace != "" {
 		opts.Namespaces = []string{namespace}
