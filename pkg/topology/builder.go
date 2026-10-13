@@ -3181,6 +3181,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	podConfigTargets := make(map[workloadRefKey]bool)
 	podSecretTargets := make(map[workloadRefKey]bool)
 	podPVCTargets := make(map[workloadRefKey]bool)
+	podServiceAccountTargets := make(map[workloadRefKey]bool)
 	podConsumers := make(map[string][]ResourceRef)
 	if opts.ForRelationshipCache {
 		for _, pod := range pods {
@@ -3189,7 +3190,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			}
 			for _, ref := range configrefs.PodSpecReferences(pod.Namespace, pod.Spec) {
 				key := workloadRefKey{namespace: ref.Namespace, name: ref.Name}
-				if ref.Kind == "ConfigMap" || ref.Kind == "Secret" || ref.Kind == "PersistentVolumeClaim" {
+				if ref.Kind == "ConfigMap" || ref.Kind == "Secret" || ref.Kind == "PersistentVolumeClaim" || ref.Kind == "ServiceAccount" {
 					identity := resourceid.ResourceKey("", ref.Kind, ref.Namespace, ref.Name)
 					podConsumers[identity] = append(podConsumers[identity], ResourceRef{Kind: "Pod", Namespace: pod.Namespace, Name: pod.Name})
 				}
@@ -3200,6 +3201,8 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 					podSecretTargets[key] = true
 				case "PersistentVolumeClaim":
 					podPVCTargets[key] = true
+				case "ServiceAccount":
+					podServiceAccountTargets[key] = true
 				}
 			}
 		}
@@ -3259,9 +3262,6 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 						podNode.Data["trafficRole"] = role
 					}
 					nodes = append(nodes, podNode)
-					if opts.ForRelationshipCache {
-						trackWorkloadRefs(podID, pod.Namespace, extractWorkloadReferences(pod.Spec))
-					}
 
 					// Connect to owner (resources view specific)
 					edges = append(edges, b.createPodOwnerEdges(pod, podID, opts, replicaSetIDs, replicaSetToDeployment, replicaSetToRollout, rolloutTrafficByID, jobIDs, jobToCronJob, jobToScaledJob, workflowIDs, workflowToCronWorkflow)...)
@@ -3896,7 +3896,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			}
 			key := workloadRefKey{namespace: serviceAccount.Namespace, name: serviceAccount.Name}
 			consumers := consumersByServiceAccount[key]
-			if len(consumers) == 0 {
+			if len(consumers) == 0 && !podServiceAccountTargets[key] {
 				continue
 			}
 			serviceAccountID := fmt.Sprintf("serviceaccount/%s/%s", serviceAccount.Namespace, serviceAccount.Name)

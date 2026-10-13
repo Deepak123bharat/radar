@@ -1,6 +1,7 @@
 package topology
 
 import (
+	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -82,6 +83,13 @@ func IndexByResource(topo *Topology) *RelationshipsIndex {
 	}
 	for key, refs := range idx.podConsumers {
 		idx.podConsumers[key] = uniqueResourceRefs(refs)
+		sort.Slice(idx.podConsumers[key], func(i, j int) bool {
+			a, b := idx.podConsumers[key][i], idx.podConsumers[key][j]
+			if a.Namespace != b.Namespace {
+				return a.Namespace < b.Namespace
+			}
+			return a.Name < b.Name
+		})
 	}
 	for _, e := range topo.Edges {
 		if e.Source != "" {
@@ -688,7 +696,7 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 		}
 	}
 
-	if resourceGroup == "" && (resourceKind == "ConfigMap" || resourceKind == "Secret" || resourceKind == "PersistentVolumeClaim") {
+	if resourceGroup == "" && (resourceKind == "ConfigMap" || resourceKind == "Secret" || resourceKind == "PersistentVolumeClaim" || resourceKind == "ServiceAccount") {
 		rel.Consumers = append(rel.Consumers, lookupIndex.podConsumers[resourceid.ResourceKey("", resourceKind, namespace, name)]...)
 	}
 	if endpoint, ok := queriedObj.(*unstructured.Unstructured); ok &&

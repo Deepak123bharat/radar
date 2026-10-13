@@ -157,6 +157,15 @@ func TestAdmittedPodFactsDoNotJoinNormalGraphComponents(t *testing.T) {
 	if indexed == nil || len(indexed.Consumers) != 1 || indexed.Consumers[0].Name != "six-0" {
 		t.Fatalf("reverse lookup needs raw provider instead of cached facts: %+v", indexed)
 	}
+	account := GetRelationships("ServiceAccount", "team", "default", cached, provider, nil)
+	if account == nil || len(account.Consumers) != 8 {
+		t.Fatalf("ServiceAccount lost grouped Pod consumers: %+v", account)
+	}
+	for _, edge := range cached.Edges {
+		if edge.Type == EdgeConfigures && len(edge.Target) >= 4 && edge.Target[:4] == "pod/" {
+			t.Fatalf("admitted Pod projection enrolled a neighborhood hub: %+v", edge)
+		}
+	}
 	opts.SummaryMode = true
 	summarized, err := NewBuilder(provider).Build(opts)
 	if err != nil {
