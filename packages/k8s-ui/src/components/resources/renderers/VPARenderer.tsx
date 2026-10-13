@@ -1,8 +1,14 @@
 import { Cpu } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Section, PropertyList, Property, ConditionsSection, AlertBanner, ResourceLink } from '../../ui/drawer-components'
-import { objectReferenceToResourceRef } from '../../../utils/navigation'
+import { objectReferenceToResourceRef, apiVersionToGroup } from '../../../utils/navigation'
 import type { ResourceRef } from '../../../types'
+
+// VPA's built-in selector fetchers resolve these Kinds without consulting apiVersion.
+const VPA_SELECTOR_GROUPS = new Map<string, string>([
+  ['Deployment', 'apps'], ['StatefulSet', 'apps'], ['DaemonSet', 'apps'], ['ReplicaSet', 'apps'],
+  ['Job', 'batch'], ['CronJob', 'batch'], ['ReplicationController', ''],
+])
 
 interface VPARendererProps {
   data: any
@@ -18,7 +24,15 @@ export function VPARenderer({ data, onNavigate }: VPARendererProps) {
   const spec = data.spec || {}
   const status = data.status || {}
   const targetRef = spec.targetRef || {}
-  const target = objectReferenceToResourceRef({ ...targetRef, namespace: data.metadata?.namespace })
+  const namespace = data.metadata?.namespace
+  const selectorGroup = VPA_SELECTOR_GROUPS.get(targetRef.kind)
+  const selectorTarget = selectorGroup !== undefined && targetRef.name && namespace
+    ? { kind: targetRef.kind, group: selectorGroup, namespace, name: targetRef.name }
+    : null
+  const target = !targetRef.apiVersion && selectorTarget
+    ? selectorTarget
+    : objectReferenceToResourceRef({ ...targetRef, namespace })
+  const differentSelectorTarget = selectorTarget && targetRef.apiVersion && apiVersionToGroup(targetRef.apiVersion) !== selectorGroup
   const updatePolicy = spec.updatePolicy || {}
   const resourcePolicy = spec.resourcePolicy || {}
   const containerPolicies = resourcePolicy.containerPolicies || []
@@ -64,11 +78,16 @@ export function VPARenderer({ data, onNavigate }: VPARendererProps) {
       {/* Target & Mode */}
       <Section title="Configuration" icon={Cpu}>
         <PropertyList>
-          <Property label="Target" value={
+          <Property label="Declared Target" value={
             targetRef.name ? (target ? (
               <ResourceLink {...target} label={`${targetRef.kind}/${targetRef.name}`} onNavigate={onNavigate} />
             ) : `${targetRef.kind || 'Unknown kind'}/${targetRef.name}`) : undefined
           } />
+          {differentSelectorTarget && (
+            <Property label="Pod Selector Target" value={
+              <ResourceLink {...selectorTarget} label={`${targetRef.kind}/${targetRef.name} (${selectorGroup || 'core'})`} onNavigate={onNavigate} />
+            } />
+          )}
           <Property label="Update Mode" value={
             <span className={clsx(
               updateMode === 'Auto' && 'text-green-400',
@@ -85,6 +104,11 @@ export function VPARenderer({ data, onNavigate }: VPARendererProps) {
             } />
           )}
         </PropertyList>
+        {differentSelectorTarget && (
+          <p className="mt-2 text-sm text-theme-text-secondary">
+            For standard workload Kinds, VPA reads the built-in workload's Pod selector regardless of the declared API group.
+          </p>
+        )}
       </Section>
 
       {/* Recommendations */}

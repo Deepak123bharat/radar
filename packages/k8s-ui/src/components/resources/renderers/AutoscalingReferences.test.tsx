@@ -66,7 +66,7 @@ it.each(["HPA", "VPA"])(
   },
 );
 
-it("keeps Object metric resources separate from the scale target and measures its own Namespace", async () => {
+it.each(["v1", "", undefined])("keeps Object metric resources separate from the scale target and measures its own Namespace (apiVersion %s)", async (namespaceAPIVersion) => {
   const element = document.createElement("div");
   const root = createRoot(element);
   const onNavigate = vi.fn();
@@ -106,7 +106,7 @@ it("keeps Object metric resources separate from the scale target and measures it
           object: {
             metric: { name: "namespace-metric" },
             describedObject: {
-              apiVersion: "v1",
+              apiVersion: namespaceAPIVersion,
               kind: "Namespace",
               name: "cannot-escape",
             },
@@ -222,3 +222,38 @@ it.each([
     }
   },
 );
+
+it.each([
+  ["Deployment", "apps"], ["StatefulSet", "apps"], ["DaemonSet", "apps"], ["ReplicaSet", "apps"],
+  ["Job", "batch"], ["CronJob", "batch"], ["ReplicationController", ""],
+])("keeps VPA's %s selector target navigable without apiVersion", async (kind, group) => {
+  const element = document.createElement("div");
+  const root = createRoot(element);
+  const onNavigate = vi.fn();
+  try {
+    await act(async () => root.render(<VPARenderer data={{ metadata: { namespace: "team" }, spec: { targetRef: { kind, name: "workload" } } }} onNavigate={onNavigate} />));
+    const link = [...element.querySelectorAll("button")].find(button => button.textContent === `${kind}/workload`);
+    expect(link).toBeDefined();
+    await act(async () => link!.click());
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind, group, namespace: "team", name: "workload" });
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
+it("distinguishes a VPA's declared custom target from its built-in selector target", async () => {
+  const element = document.createElement("div");
+  const root = createRoot(element);
+  const onNavigate = vi.fn();
+  try {
+    await act(async () => root.render(<VPARenderer data={{ metadata: { namespace: "team" }, spec: { targetRef: { apiVersion: "custom.example.io/v1", kind: "Deployment", name: "workload" } } }} onNavigate={onNavigate} />));
+    expect(element.textContent).toContain("Declared Target");
+    expect(element.textContent).toContain("Pod Selector Target");
+    const link = [...element.querySelectorAll("button")].find(button => button.textContent === "Deployment/workload (apps)");
+    expect(link).toBeDefined();
+    await act(async () => link!.click());
+    expect(onNavigate).toHaveBeenLastCalledWith({ kind: "Deployment", group: "apps", namespace: "team", name: "workload" });
+  } finally {
+    await act(async () => root.unmount());
+  }
+});

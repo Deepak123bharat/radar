@@ -124,19 +124,18 @@ export function HPARenderer({ data, onNavigate, hpaDiagnosis, extraSections }: H
         <Section title="Object metric sources" defaultExpanded>
           <div className="space-y-3">
             {objectMetrics.map((metric: any, i: number) => {
-              const described = metric.object.describedObject || {};
+              const described = metric.object.describedObject || {}
               // The HPA controller measures core Namespace metrics on its own
               // namespace; describedObject.name cannot escape that scope.
               const namespaceMetric =
-                described.kind === "Namespace" &&
-                described.apiVersion &&
-                apiVersionToGroup(described.apiVersion) === "";
-              const name = namespaceMetric ? namespace : described.name;
+                described.kind === 'Namespace' &&
+                apiVersionToGroup(described.apiVersion) === ''
+              const name = namespaceMetric ? namespace : described.name
               const source = objectReferenceToResourceRef({
                 ...described,
                 name,
                 namespace,
-              });
+              })
               return (
                 <div
                   key={`${metric.object.metric.name}-${i}`}
@@ -157,7 +156,7 @@ export function HPARenderer({ data, onNavigate, hpaDiagnosis, extraSections }: H
                             onNavigate={onNavigate}
                           />
                         ) : described.name ? (
-                          `${described.kind || "Unknown kind"}/${described.name}`
+                          `${described.kind || 'Unknown kind'}/${described.name}`
                         ) : undefined
                       }
                     />
@@ -166,7 +165,7 @@ export function HPARenderer({ data, onNavigate, hpaDiagnosis, extraSections }: H
                     )}
                   </PropertyList>
                 </div>
-              );
+              )
             })}
           </div>
         </Section>
