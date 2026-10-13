@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"github.com/skyhook-io/radar/internal/podlogs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/skyhook-io/radar/pkg/k8score"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -17,9 +19,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-
-	"github.com/skyhook-io/radar/internal/podlogs"
-	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
 func comparisonJob(name, role string) *batchv1.Job {

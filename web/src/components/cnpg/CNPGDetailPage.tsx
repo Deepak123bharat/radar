@@ -84,8 +84,8 @@ export function CNPGDetailPage({
     [navigate, activeContext, onOpenResource],
   )
 
-  // A Radar without the workspace endpoints shows the standard detail.
-  const cnpgWorkspace = useRadarFeature('cnpgWorkspace').support !== 'unsupported'
+  // The extra tabs require the advertised runtime contracts.
+  const cnpgWorkspace = useRadarFeature('cnpgWorkspace').support === 'supported'
   const isCluster = target.plural === 'clusters' && target.group === CNPG_GROUP && cnpgWorkspace
   // A tab change on this page, applied like a tab click: the previous tab's
   // own params (section, chart group, instance) are dropped unless named.
@@ -101,9 +101,17 @@ export function CNPGDetailPage({
   )
   const openHistory = useCallback((charts: CNPGChartGroup) => goTab('performance', { section: 'history', charts }), [goTab])
   const extraTabs = useMemo<WorkloadExtraTab[] | undefined>(() => {
-    if (!isCluster) return undefined
+    if (target.plural !== 'clusters' || target.group !== CNPG_GROUP) return undefined
     const ns = target.namespace
     const name = target.name
+    const activity: WorkloadExtraTab = {
+      id: 'activity',
+      label: 'Activity',
+      icon: <Activity className="h-4 w-4" />,
+      replaces: 'timeline',
+      render: () => <CNPGClusterActivity namespace={ns} name={name} onNavigate={openRelated} />,
+    }
+    if (!cnpgWorkspace) return [activity]
     return [
       {
         id: 'replication',
@@ -162,15 +170,9 @@ export function CNPGDetailPage({
           />
         ),
       },
-      {
-        id: 'activity',
-        label: 'Activity',
-        icon: <Activity className="h-4 w-4" />,
-        replaces: 'timeline',
-        render: () => <CNPGClusterActivity namespace={ns} name={name} onNavigate={openRelated} />,
-      },
+      activity,
     ]
-  }, [isCluster, target.namespace, target.name, goTab, openHistory, onOpenResource, openRelated, navigate, activeContext, searchParams, setSearchParams, location.state])
+  }, [cnpgWorkspace, target.plural, target.group, target.namespace, target.name, goTab, openHistory, onOpenResource, openRelated, navigate, activeContext, searchParams, setSearchParams, location.state])
 
   if (pinnedContext && activeContext && pinnedContext !== activeContext) {
     return <NotInContext target={target} pinnedContext={pinnedContext} activeContext={activeContext} homeLabel={home.label} homePath={home.path} />

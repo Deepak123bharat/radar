@@ -1,4 +1,3 @@
-// Shared table cell classes: every workspace table (Capacity, CloudNativePG) looks the same.
 export const TABLE_WRAP = 'overflow-x-auto';
 export const TABLE_HEAD =
   'border-b border-theme-border bg-theme-base/60 text-[11px] uppercase tracking-wide text-theme-text-tertiary';

@@ -3,12 +3,16 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/skyhook-io/radar/internal/podlogs"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/skyhook-io/radar/internal/auth"
+	"github.com/skyhook-io/radar/internal/k8s"
+	"github.com/skyhook-io/radar/pkg/k8score"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -16,11 +20,6 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
-
-	"github.com/skyhook-io/radar/internal/auth"
-	"github.com/skyhook-io/radar/internal/k8s"
-	"github.com/skyhook-io/radar/internal/podlogs"
-	"github.com/skyhook-io/radar/pkg/k8score"
 )
 
 func TestRayClusterGroupCannotIncludeHead(t *testing.T) {

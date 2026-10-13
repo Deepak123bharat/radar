@@ -432,7 +432,7 @@ function specClusterName(obj: any): string | undefined {
 }
 
 function coverageOf(resp: CNPGWorkspaceResponse, k: CNPGWorkspaceKey): CNPGKindCoverage {
-  return resp.coverage?.[k] ?? { state: 'notInstalled' }
+  return resp.coverage[k] ?? { state: 'uncached' }
 }
 
 /** Coverage is usable in a namespace when that namespace's objects were read. */

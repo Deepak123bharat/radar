@@ -858,7 +858,7 @@ function WorkspaceDestinations({
                 </Tooltip>
               ) : d.count !== undefined && d.count > 0 ? (
                 <Tooltip content={d.countTitle ?? `${d.count}`} position="left">
-                  <span className="text-xs py-0.5 rounded text-center font-mono min-w-8 px-1 status-degraded">
+                  <span className={clsx('text-xs py-0.5 rounded text-center font-mono status-degraded', d.countLowerBound ? 'min-w-8 px-1' : 'w-8')}>
                     {d.countLowerBound && certaintyGlyph('lower_bound')}
                     {d.count}
                   </span>

@@ -2,14 +2,14 @@ import { useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 import { PaneLoader, type WorkloadExtraTab } from '@skyhook-io/k8s-ui'
 import { useRadarFeature } from '../api/client'
-import { apiVersionToGroup } from '../utils/navigation'
 import type { RenderDiagnoseAction } from '../context/DiagnoseCustomization'
+import { apiVersionToGroup } from '../utils/navigation'
 import type { SelectedResource } from '../types'
 import { cnpgResourceHost } from '../components/cnpg/host'
 import {
   composeDetailSlots, composeResourceHosts, hostsForResource, hostSupport, resourceHostForSlot,
-  type DetailSlots, type HostFeatures, type HostResource, type HostKind,
-  type KindListProps, type ResourceHost,
+  type DetailSlots, type HostResource, type HostFeatures, type HostKind, type KindListProps,
+  type ResourceHost,
 } from './resourceHost'
 import { RayJobRenderer } from '../components/resources/renderers/RayJobRenderer'
 import { JobRenderer, JobSetRenderer } from '../components/resources/renderers/JobAdmissionRenderers'
@@ -52,34 +52,23 @@ export const resourceHosts: readonly ResourceHost[] = [
 
 export const resourceRendererOverrides = composeResourceHosts(resourceHosts)
 
-export function useResourceHostFeatures(): HostFeatures {
-  // Hook order is fixed here; selected adapters mount components that own their data hooks.
-  const { support } = useRadarFeature('cnpgWorkspace')
-  return useMemo(() => ({ cnpgWorkspace: support }), [support])
+export function resourceExpandedPath(resource: HostResource, context?: string, tab?: 'yaml'): string | null {
+  return resourceHostForSlot(resourceHosts, resource, 'destination')?.expandedPath?.(resource, context, tab) ?? null
 }
 
-export function resourceExpandedPath(resource: HostResource, features: HostFeatures, context?: string, tab?: 'yaml'): string | null {
-  return resourceHostForSlot(resourceHosts, resource, 'destination', features)?.expandedPath?.(resource, context, tab) ?? null
+export function resourceDetailRedirect(resource: HostResource, search: URLSearchParams): string | null {
+  return resourceHostForSlot(resourceHosts, resource, 'destination')?.detailRedirect?.(resource, search) ?? null
 }
 
-export function resourceDetailRedirect(resource: HostResource, features: HostFeatures, search: URLSearchParams): string | null {
-  return resourceHostForSlot(resourceHosts, resource, 'destination', features)?.detailRedirect?.(resource, search) ?? null
-}
-
-export function resourceDetailSlots(resource: HostResource, features: HostFeatures, inheritedTabs?: WorkloadExtraTab[]): DetailSlots {
+export function resourceDetailSlots(resource: HostResource, inheritedTabs?: WorkloadExtraTab[]): DetailSlots {
   const slots = hostsForResource(resourceHosts, resource)
-    .filter(host => host.canRender?.(hostSupport(host, features)) ?? true)
     .map(host => ({ id: host.id, slots: host.detailSlots?.(resource) }))
   return composeDetailSlots(slots, inheritedTabs)
 }
 
-export function decorateResourceDiagnose(render: RenderDiagnoseAction | undefined): RenderDiagnoseAction | undefined {
-  return resourceHosts.reduce((current, host) => host.diagnoseAction?.(current) ?? current, render)
-}
-
-export function resourceLogs(resource: HostResource, data: { apiVersion?: string } | null | undefined, features: HostFeatures) {
+export function resourceLogs(resource: HostResource, data: { apiVersion?: string } | null | undefined) {
   const observed = { ...resource, group: data?.apiVersion ? apiVersionToGroup(data.apiVersion) : resource.group }
-  const host = resourceHostForSlot(resourceHosts, observed, 'logs', features)
+  const host = resourceHostForSlot(resourceHosts, observed, 'logs')
   return host?.logs?.(observed, data) ?? null
 }
 
@@ -92,6 +81,18 @@ export function ResourceDrawerNavigation({ resource }: { resource: SelectedResou
     return <Component key={host.id} resource={resource} />
   })}</>
 }
+
+export function useResourceHostFeatures(): HostFeatures {
+  // Hook order is fixed here; selected adapters mount components that own their data hooks.
+  const { support } = useRadarFeature('cnpgWorkspace')
+  return useMemo(() => ({ cnpgWorkspace: support }), [support])
+}
+
+
+export function decorateResourceDiagnose(render: RenderDiagnoseAction | undefined): RenderDiagnoseAction | undefined {
+  return resourceHosts.reduce((current, host) => host.diagnoseAction?.(current) ?? current, render)
+}
+
 
 function kindListHost(kind: Pick<HostKind, 'name' | 'group'> | null) {
   return kind ? resourceHosts.flatMap(host => (host.kindLists ?? []).map(list => ({ host, list })))

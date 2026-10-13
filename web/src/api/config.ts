@@ -1,4 +1,3 @@
-import { stripTrailingSlashes } from '@skyhook-io/k8s-ui/utils/url-path'
 // Runtime configuration for Radar's frontend.
 //
 // When Radar runs as its own binary (standalone or in-cluster), the
@@ -32,7 +31,7 @@ export function getApiBase(): string {
  *   - An absolute URL: `https://api.radarhq.io/c/abc/api` (URLs use that origin)
  */
 export function setApiBase(url: string): void {
-  apiBase = stripTrailingSlashes(url);
+  apiBase = url.replace(/\/+$/, '');
 }
 
 /**
@@ -50,7 +49,7 @@ export function getBasename(): string {
  * to construct a URL relative to the host app's origin.
  */
 export function setBasename(value: string): void {
-  basename = stripTrailingSlashes(value);
+  basename = value.replace(/\/+$/, '');
 }
 
 /**

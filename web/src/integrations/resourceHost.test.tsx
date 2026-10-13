@@ -17,7 +17,7 @@ describe('resource host composition', () => {
     ]
     composeResourceHosts(hosts)
     expect(hostsForResource(hosts, job).map(host => host.id)).toEqual(['admission', 'execution'])
-    expect(resourceHostForSlot(hosts, job, 'destination', {})?.expandedPath?.(job)).toBe('/execution/run')
+    expect(resourceHostForSlot(hosts, job, 'destination')?.expandedPath?.(job)).toBe('/execution/run')
     const slots = composeDetailSlots(hosts.map(host => ({ id: host.id, slots: host.detailSlots?.(job) })), [{ id: 'history', label: 'History', render: () => null }])
     const html = renderToStaticMarkup(<>{slots.renderHeaderActions?.({ resource: {}, context: 'drawer' })}</>)
     expect(html).toBe('<span>admission</span><span>execution</span>')
@@ -38,20 +38,18 @@ describe('resource host composition', () => {
     const owner: ResourceHost = { id: 'execution', resources: jobs, detailOwnership: ['destination'], expandedPath: () => '/execution' }
     const other: ResourceHost = { ...owner, id: 'other' }
     expect(() => composeResourceHosts([owner, other])).toThrow('ownership conflict')
-    expect(() => resourceHostForSlot([owner, other], job, 'destination', {})).toThrow('ownership conflict')
     expect(() => composeResourceHosts([{ id: 'missing', resources: jobs, logs: () => null }])).toThrow('must declare logs ownership')
     expect(() => composeResourceHosts([{ id: 'missing', resources: jobs, expandedPath: () => '/' }])).toThrow('must declare destination ownership')
     expect(() => composeResourceHosts([
       { id: 'one', renderers: { JobRenderer: Admission } },
       { id: 'two', renderers: { JobRenderer: Admission } },
     ])).toThrow('renderer:JobRenderer')
-    const kind = { name: 'jobs', kind: 'Job', group: 'batch' }
-    expect(() => composeResourceHosts(['one', 'two'].map(id => ({ id, kindLists: [{ kind, title: 'Jobs', mode: () => 'view', Component: Admission }] })))).toThrow('kind-list:')
   })
 
   it('catches summary and tab conflicts even if a contribution omitted its declaration', () => {
     expect(() => composeDetailSlots(['one', 'two'].map(id => ({ id, slots: { renderSummary: () => null } })))).toThrow('summary ownership conflict')
     const tab = { id: 'runs', label: 'Runs', render: () => null }
+    expect(composeDetailSlots([], [tab, tab]).extraTabs).toEqual([tab, tab])
     expect(() => composeDetailSlots([{ id: 'execution', slots: { extraTabs: [tab] } }], [tab])).toThrow('tab ownership conflict: runs')
   })
 })

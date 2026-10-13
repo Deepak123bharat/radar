@@ -12,6 +12,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/skyhook-io/radar/internal/auth"
 	integration "github.com/skyhook-io/radar/internal/integration"
@@ -156,6 +157,7 @@ var (
 )
 
 type localCanIEntry struct {
+	client  *kubernetes.Clientset
 	allowed bool
 	expires time.Time
 }
@@ -165,24 +167,27 @@ func localCanI(ctx context.Context, g Grant) (bool, bool) {
 	if g.Subresource != "" {
 		resource += "/" + g.Subresource
 	}
-	key := strings.Join([]string{k8s.GetContextName(), g.Verb, g.Group, resource, g.Namespace}, "\x00")
+	var contextName string
+	var client *kubernetes.Clientset
+	if !k8s.CaptureClusterReads(func() {
+		contextName, client = k8s.GetContextName(), k8s.GetClient()
+	}) || client == nil {
+		return false, false
+	}
+	key := strings.Join([]string{contextName, g.Verb, g.Group, resource, g.Namespace}, "\x00")
 	now := time.Now()
 	localCanIMu.Lock()
-	if e, ok := localCanIMemo[key]; ok && now.Before(e.expires) {
+	if e, ok := localCanIMemo[key]; ok && e.client == client && now.Before(e.expires) {
 		localCanIMu.Unlock()
 		return e.allowed, true
 	}
 	localCanIMu.Unlock()
-	client := k8s.GetClient()
-	if client == nil {
-		return true, true
-	}
 	allowed, apiErr := k8score.CanI(ctx, client, g.Namespace, g.Group, resource, g.Verb)
 	if apiErr {
 		return false, false
 	}
 	localCanIMu.Lock()
-	localCanIMemo[key] = localCanIEntry{allowed: allowed, expires: now.Add(localCanITTL)}
+	localCanIMemo[key] = localCanIEntry{client: client, allowed: allowed, expires: now.Add(localCanITTL)}
 	localCanIMu.Unlock()
 	return allowed, true
 }

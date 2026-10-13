@@ -53,13 +53,7 @@ export function CustomIcon() {
 export function WithAction() {
   return (
     <div style={wrap}>
-      <AlertBanner
-        variant="warning"
-        title="The operator is not reconciling: status below may be stale"
-        message="The operator Deployment has no ready Pod."
-        action={<button type="button" className="text-xs font-medium text-accent-text hover:underline">Open Operator →</button>}
-        className="px-3 py-2"
-      />
+      <AlertBanner variant="warning" title="Metrics are unavailable" message="Check the connection to resume charts." action={<button type="button" className="text-xs font-medium text-accent-text hover:underline">Open Metrics settings →</button>} />
     </div>
   )
 }

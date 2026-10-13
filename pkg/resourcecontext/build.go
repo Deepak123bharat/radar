@@ -504,10 +504,10 @@ func ownerFromObject(obj runtime.Object, namespace string) *ContextRef {
 // buildUsesFromPod extracts ConfigMap/Secret/PVC/ServiceAccount references
 // from pod.Spec. Returns nil when the pod uses no configuration.
 //
-// Sources scanned:
-//   - Volumes: ConfigMap / Secret / PVC / Projected (configMap + secret entries)
-//   - Containers (init + regular): EnvFrom configMapRef/secretRef, Env valueFrom.{configMap,secret}KeyRef
-//   - Spec.ServiceAccountName
+// Reference extraction is shared with audit and reverse context, including
+// init/debug containers, image pull credentials and volume-driver credentials.
+// Only the PodSpec's declared references are used; current ServiceAccount pull
+// secrets are not inferred into an already-admitted Pod.
 func buildUsesFromPod(ctx context.Context, pod *corev1.Pod, ac RefAccessChecker, omitted *omittedTracker) *UsesBlock {
 	if pod == nil {
 		return nil
@@ -520,9 +520,16 @@ func buildUsesFromPodSpec(ctx context.Context, namespace string, spec corev1.Pod
 	secretSet := newRefSet()
 	pvcSet := newRefSet()
 
-	scanVolumes(spec.Volumes, namespace, cmSet, secretSet, pvcSet)
-	scanContainers(spec.InitContainers, namespace, cmSet, secretSet)
-	scanContainers(spec.Containers, namespace, cmSet, secretSet)
+	for _, reference := range configrefs.PodSpecReferences(namespace, spec) {
+		switch reference.Kind {
+		case "ConfigMap":
+			cmSet.add(reference.Name, reference.Namespace)
+		case "Secret":
+			secretSet.add(reference.Name, reference.Namespace)
+		case "PersistentVolumeClaim":
+			pvcSet.add(reference.Name, reference.Namespace)
+		}
+	}
 
 	uses := &UsesBlock{
 		ConfigMaps: filterRefs(ctx, ac, cmSet.refs("ConfigMap", ""), "uses.configMaps", omitted),
@@ -579,7 +586,7 @@ func buildReferencedBy(ctx context.Context, obj runtime.Object, provider topolog
 	}
 
 	ident, ok := identityOf(obj)
-	if !ok || ident.Namespace == "" {
+	if !ok || ident.Group != "" || ident.Namespace == "" {
 		return nil
 	}
 
@@ -587,8 +594,8 @@ func buildReferencedBy(ctx context.Context, obj runtime.Object, provider topolog
 	switch ident.Kind {
 	case "ConfigMap":
 		target = refTarget{kind: "ConfigMap", namespace: ident.Namespace, name: ident.Name}
-	case "Secret":
-		target = refTarget{kind: "Secret", namespace: ident.Namespace, name: ident.Name}
+	case "Secret", "PersistentVolumeClaim", "ServiceAccount":
+		target = refTarget{kind: ident.Kind, namespace: ident.Namespace, name: ident.Name}
 	default:
 		return nil
 	}
@@ -601,7 +608,9 @@ func buildReferencedBy(ctx context.Context, obj runtime.Object, provider topolog
 		refs = append(refs, ref)
 	}
 
-	if deployments, _ := provider.Deployments(); deployments != nil {
+	if deployments, err := provider.Deployments(); err != nil {
+		omitted.add("referencedBy", OmittedUnavailable)
+	} else {
 		for _, d := range deployments {
 			if d == nil || d.Namespace != target.namespace {
 				continue
@@ -609,7 +618,9 @@ func buildReferencedBy(ctx context.Context, obj runtime.Object, provider topolog
 			appendRef(referenceUseForPodSpec("Deployment", "apps", d.Namespace, d.Name, d.Spec.Template.Spec, "spec.template.spec", target))
 		}
 	}
-	if statefulSets, _ := provider.StatefulSets(); statefulSets != nil {
+	if statefulSets, err := provider.StatefulSets(); err != nil {
+		omitted.add("referencedBy", OmittedUnavailable)
+	} else {
 		for _, s := range statefulSets {
 			if s == nil || s.Namespace != target.namespace {
 				continue
@@ -617,7 +628,9 @@ func buildReferencedBy(ctx context.Context, obj runtime.Object, provider topolog
 			appendRef(referenceUseForPodSpec("StatefulSet", "apps", s.Namespace, s.Name, s.Spec.Template.Spec, "spec.template.spec", target))
 		}
 	}
-	if daemonSets, _ := provider.DaemonSets(); daemonSets != nil {
+	if daemonSets, err := provider.DaemonSets(); err != nil {
+		omitted.add("referencedBy", OmittedUnavailable)
+	} else {
 		for _, d := range daemonSets {
 			if d == nil || d.Namespace != target.namespace {
 				continue
@@ -625,7 +638,19 @@ func buildReferencedBy(ctx context.Context, obj runtime.Object, provider topolog
 			appendRef(referenceUseForPodSpec("DaemonSet", "apps", d.Namespace, d.Name, d.Spec.Template.Spec, "spec.template.spec", target))
 		}
 	}
-	if jobs, _ := provider.Jobs(); jobs != nil {
+	if replicaSets, err := provider.ReplicaSets(); err != nil {
+		omitted.add("referencedBy", OmittedUnavailable)
+	} else {
+		for _, replicaSet := range replicaSets {
+			if replicaSet == nil || replicaSet.Namespace != target.namespace {
+				continue
+			}
+			appendRef(referenceUseForPodSpec("ReplicaSet", "apps", replicaSet.Namespace, replicaSet.Name, replicaSet.Spec.Template.Spec, "spec.template.spec", target))
+		}
+	}
+	if jobs, err := provider.Jobs(); err != nil {
+		omitted.add("referencedBy", OmittedUnavailable)
+	} else {
 		for _, j := range jobs {
 			if j == nil || j.Namespace != target.namespace {
 				continue
@@ -633,7 +658,9 @@ func buildReferencedBy(ctx context.Context, obj runtime.Object, provider topolog
 			appendRef(referenceUseForPodSpec("Job", "batch", j.Namespace, j.Name, j.Spec.Template.Spec, "spec.template.spec", target))
 		}
 	}
-	if cronJobs, _ := provider.CronJobs(); cronJobs != nil {
+	if cronJobs, err := provider.CronJobs(); err != nil {
+		omitted.add("referencedBy", OmittedUnavailable)
+	} else {
 		for _, c := range cronJobs {
 			if c == nil || c.Namespace != target.namespace {
 				continue
@@ -641,9 +668,11 @@ func buildReferencedBy(ctx context.Context, obj runtime.Object, provider topolog
 			appendRef(referenceUseForPodSpec("CronJob", "batch", c.Namespace, c.Name, c.Spec.JobTemplate.Spec.Template.Spec, "spec.jobTemplate.spec.template.spec", target))
 		}
 	}
-	if pods, _ := provider.Pods(); pods != nil {
+	if pods, err := provider.Pods(); err != nil {
+		omitted.add("referencedBy", OmittedUnavailable)
+	} else {
 		for _, p := range pods {
-			if p == nil || p.Namespace != target.namespace || hasControllerOwner(p.OwnerReferences) {
+			if p == nil || p.Namespace != target.namespace {
 				continue
 			}
 			appendRef(referenceUseForPodSpec("Pod", "", p.Namespace, p.Name, p.Spec, "spec", target))
@@ -670,7 +699,8 @@ func buildReferencedBy(ctx context.Context, obj runtime.Object, provider topolog
 	// emitted above signals that some refs were filtered without
 	// disclosing how many.
 	visible := 0
-	filtered := make([]ReferenceUse, 0, minInt(len(refs), maxReferencedByItems))
+	groups := make(map[[2]string][]ReferenceUse)
+	var order [][2]string
 	for i := range refs {
 		ref := refs[i]
 		if len(ref.Paths) > maxReferencedByPathsPerRef {
@@ -682,8 +712,29 @@ func buildReferencedBy(ctx context.Context, obj runtime.Object, provider topolog
 			continue
 		}
 		visible++
-		if len(filtered) < maxReferencedByItems {
-			filtered = append(filtered, ref)
+		key := [2]string{ref.Kind, ref.Group}
+		if _, exists := groups[key]; !exists {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], ref)
+	}
+	// Round-robin readable kinds so a large replica population cannot hide
+	// the workload and revision templates that explain those Pods' references.
+	filtered := make([]ReferenceUse, 0, minInt(visible, maxReferencedByItems))
+	for row := 0; len(filtered) < maxReferencedByItems; row++ {
+		added := false
+		for _, key := range order {
+			if row >= len(groups[key]) {
+				continue
+			}
+			filtered = append(filtered, groups[key][row])
+			added = true
+			if len(filtered) == maxReferencedByItems {
+				break
+			}
+		}
+		if !added {
+			break
 		}
 	}
 	if len(filtered) == 0 {
@@ -715,39 +766,11 @@ func referenceUseForPodSpec(kind, group, namespace, name string, spec corev1.Pod
 
 func podSpecReferencePaths(spec corev1.PodSpec, pathPrefix string, target refTarget) []string {
 	pathSet := map[string]struct{}{}
-	add := func(path string) {
-		pathSet[path] = struct{}{}
-	}
-
-	for _, v := range spec.Volumes {
-		if target.kind == "ConfigMap" && v.ConfigMap != nil && v.ConfigMap.Name == target.name {
-			add(pathPrefix + ".volumes[].configMap.name")
-		}
-		if target.kind == "Secret" && v.Secret != nil && v.Secret.SecretName == target.name {
-			add(pathPrefix + ".volumes[].secret.secretName")
-		}
-		if v.Projected != nil {
-			for _, src := range v.Projected.Sources {
-				if target.kind == "ConfigMap" && src.ConfigMap != nil && src.ConfigMap.Name == target.name {
-					add(pathPrefix + ".volumes[].projected.sources[].configMap.name")
-				}
-				if target.kind == "Secret" && src.Secret != nil && src.Secret.Name == target.name {
-					add(pathPrefix + ".volumes[].projected.sources[].secret.name")
-				}
-			}
+	for _, ref := range configrefs.PodSpecReferences(target.namespace, spec) {
+		if ref.Kind == target.kind && ref.Name == target.name {
+			pathSet[pathPrefix+"."+ref.Path] = struct{}{}
 		}
 	}
-	if target.kind == "Secret" {
-		for _, pullSecret := range spec.ImagePullSecrets {
-			if pullSecret.Name == target.name {
-				add(pathPrefix + ".imagePullSecrets[].name")
-			}
-		}
-	}
-
-	scanContainerReferencePaths(spec.InitContainers, pathPrefix, target, add)
-	scanContainerReferencePaths(spec.Containers, pathPrefix, target, add)
-
 	paths := make([]string, 0, len(pathSet))
 	for path := range pathSet {
 		paths = append(paths, path)
@@ -756,92 +779,11 @@ func podSpecReferencePaths(spec corev1.PodSpec, pathPrefix string, target refTar
 	return paths
 }
 
-func scanContainerReferencePaths(containers []corev1.Container, pathPrefix string, target refTarget, add func(string)) {
-	for _, c := range containers {
-		for _, ef := range c.EnvFrom {
-			if target.kind == "ConfigMap" && ef.ConfigMapRef != nil && ef.ConfigMapRef.Name == target.name {
-				add(pathPrefix + ".containers[].envFrom[].configMapRef.name")
-			}
-			if target.kind == "Secret" && ef.SecretRef != nil && ef.SecretRef.Name == target.name {
-				add(pathPrefix + ".containers[].envFrom[].secretRef.name")
-			}
-		}
-		for _, e := range c.Env {
-			if e.ValueFrom == nil {
-				continue
-			}
-			if target.kind == "ConfigMap" && e.ValueFrom.ConfigMapKeyRef != nil && e.ValueFrom.ConfigMapKeyRef.Name == target.name {
-				add(pathPrefix + ".containers[].env[].valueFrom.configMapKeyRef.name")
-			}
-			if target.kind == "Secret" && e.ValueFrom.SecretKeyRef != nil && e.ValueFrom.SecretKeyRef.Name == target.name {
-				add(pathPrefix + ".containers[].env[].valueFrom.secretKeyRef.name")
-			}
-		}
-	}
-}
-
-func hasControllerOwner(refs []metav1.OwnerReference) bool {
-	for _, ref := range refs {
-		if ref.Controller != nil && *ref.Controller {
-			return true
-		}
-	}
-	return false
-}
-
 func minInt(a, b int) int {
 	if a < b {
 		return a
 	}
 	return b
-}
-
-func scanVolumes(vols []corev1.Volume, ns string, cm, secret, pvc *refSet) {
-	for _, v := range vols {
-		if v.ConfigMap != nil {
-			cm.add(v.ConfigMap.Name, ns)
-		}
-		if v.Secret != nil {
-			secret.add(v.Secret.SecretName, ns)
-		}
-		if v.PersistentVolumeClaim != nil {
-			pvc.add(v.PersistentVolumeClaim.ClaimName, ns)
-		}
-		if v.Projected != nil {
-			for _, src := range v.Projected.Sources {
-				if src.ConfigMap != nil {
-					cm.add(src.ConfigMap.Name, ns)
-				}
-				if src.Secret != nil {
-					secret.add(src.Secret.Name, ns)
-				}
-			}
-		}
-	}
-}
-
-func scanContainers(containers []corev1.Container, ns string, cm, secret *refSet) {
-	for _, c := range containers {
-		for _, ef := range c.EnvFrom {
-			if ef.ConfigMapRef != nil {
-				cm.add(ef.ConfigMapRef.Name, ns)
-			}
-			if ef.SecretRef != nil {
-				secret.add(ef.SecretRef.Name, ns)
-			}
-		}
-		for _, e := range c.Env {
-			if e.ValueFrom == nil {
-				continue
-			}
-			if e.ValueFrom.ConfigMapKeyRef != nil {
-				cm.add(e.ValueFrom.ConfigMapKeyRef.Name, ns)
-			}
-			if e.ValueFrom.SecretKeyRef != nil {
-				secret.add(e.ValueFrom.SecretKeyRef.Name, ns)
-			}
-		}
-	}
 }
 
 const maxServicePodRefs = 10

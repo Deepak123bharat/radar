@@ -53,7 +53,7 @@ func (s *Server) handleJobSetLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	podlogs.Sort(snapshot.Logs)
 	s.writeJSON(w, map[string]any{
-		"uid": root.GetUID(), "pods": buildPodInfos(shownPods), "logs": snapshot.Logs,
+		"uid": root.GetUID(), "pods": podlogs.BuildPodInfos(shownPods), "logs": snapshot.Logs,
 		"notice": snapshot.Notice, "sourceLabels": shownLabels, "capturedAt": time.Now().UTC().Format(time.RFC3339),
 		"emptyMessage": "No readable logs in this snapshot. Select a member Job to investigate its Pods or refresh after they start.",
 	})

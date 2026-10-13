@@ -99,5 +99,9 @@ func (s *Server) handleCNPGRestoreCapability(w http.ResponseWriter, r *http.Requ
 		s.writeError(w, http.StatusBadRequest, "namespace must be a valid namespace name")
 		return
 	}
-	s.writeJSON(w, s.cnpgReader(r).RestoreCapability(r.Context(), namespace))
+	reader, ok := s.requireCNPGReader(w, r)
+	if !ok {
+		return
+	}
+	s.writeJSON(w, reader.RestoreCapability(r.Context(), namespace))
 }

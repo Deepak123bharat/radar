@@ -80,8 +80,14 @@ type NodeStartupCorroboration struct {
 // successor to the v0 standalone "problems" feature, NOT a parallel surface to
 // issues.
 type Detection struct {
-	NodeStartupCorroboration   *NodeStartupCorroboration `json:"-"`
-	MessageBeforeCorroboration string                    `json:"-"`
+	TerminatingFinalizers []string `json:"-"`
+	// TerminatingRemovals maps each operator finalizer to a dry-run removal.
+	// Issue composition offers one only as a ConditionalCleanup, after finding
+	// no running copy of the finalizer's catalog controller.
+	TerminatingRemovals        map[string]issuesapi.FinalizerRemoval `json:"-"`
+	ConditionalCleanup         *issuesapi.ConditionalCleanup         `json:"-"`
+	NodeStartupCorroboration   *NodeStartupCorroboration             `json:"-"`
+	MessageBeforeCorroboration string                                `json:"-"`
 	Kind                       string
 	Namespace                  string
 	Name                       string
@@ -1705,7 +1711,7 @@ func terminatingProblemSince(kind, group string, obj metav1.Object, now, started
 	finalizers := obj.GetFinalizers()
 	usesShortWarningWindow := group == "" &&
 		(kind == "ConfigMap" || kind == "Secret") &&
-		hasNonGarbageCollectionFinalizer(finalizers)
+		HasNonGarbageCollectionFinalizer(finalizers)
 	warningAfter := terminatingWarningAfter
 	if usesShortWarningWindow {
 		warningAfter = configMapSecretTerminatingWarningAfter
@@ -1751,7 +1757,7 @@ func terminatingProblemSince(kind, group string, obj metav1.Object, now, started
 	return detection, true
 }
 
-func hasNonGarbageCollectionFinalizer(finalizers []string) bool {
+func HasNonGarbageCollectionFinalizer(finalizers []string) bool {
 	for _, finalizer := range finalizers {
 		// Garbage collection may legitimately wait for dependents to finish
 		// terminating, so it keeps the generic grace period.

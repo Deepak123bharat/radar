@@ -13,11 +13,10 @@ import { actionErrorCode, type ActionCapability, type ActionErrorCode, type Acti
 // workspace screens, the Resources sidebar counts and the composed summaries,
 // so they can never disagree about what they count.
 export function useCNPGWorkspace(namespaces: string[], options?: { enabled?: boolean }) {
-  const { guard, gatedKey } = useRadarFeature('cnpgWorkspace')
   const ns = [...namespaces].sort().join(',')
   return useQuery<CNPGWorkspaceResponse>({
-    queryKey: ['cnpg', 'workspace', ns, ...gatedKey],
-    queryFn: ({ signal }) => guard(() => fetchJSON<CNPGWorkspaceResponse>(`/cnpg/workspace${ns ? `?namespaces=${encodeURIComponent(ns)}` : ''}`, signal)),
+    queryKey: ['cnpg', 'workspace', ns ],
+    queryFn: ({ signal }) => fetchJSON<CNPGWorkspaceResponse>(`/cnpg/workspace${ns ? `?namespaces=${encodeURIComponent(ns)}` : ''}`, signal),
     enabled: options?.enabled ?? true,
     staleTime: 10_000,
     refetchInterval: 30_000,
@@ -84,10 +83,9 @@ export interface CNPGOperatorResponse {
 // Deliberately not filtered by the namespace view filter: the operator runs in
 // its own namespace, which users rarely have selected.
 export function useCNPGOperator(options?: { enabled?: boolean }) {
-  const { guard, gatedKey } = useRadarFeature('cnpgWorkspace')
   return useQuery<CNPGOperatorResponse>({
-    queryKey: ['cnpg', 'operator', ...gatedKey],
-    queryFn: ({ signal }) => guard(() => fetchJSON<CNPGOperatorResponse>('/cnpg/operator', signal)),
+    queryKey: ['cnpg', 'operator' ],
+    queryFn: ({ signal }) => fetchJSON<CNPGOperatorResponse>('/cnpg/operator', signal),
     enabled: options?.enabled ?? true,
     staleTime: 30_000,
     refetchInterval: 60_000,
@@ -138,16 +136,15 @@ export interface CNPGClusterActivityResponse {
 // The Cluster's history together with its instance Pods and every CNPG object
 // attributed to it, including ones since deleted.
 export function useCNPGClusterActivity(namespace: string, name: string, sinceHours = 24) {
-  const { guard, gatedKey } = useRadarFeature('cnpgWorkspace')
   return useQuery<CNPGClusterActivityResponse>({
-    queryKey: ['cnpg', 'activity', namespace, name, sinceHours, ...gatedKey],
-    queryFn: ({ signal }) => guard(() => {
+    queryKey: ['cnpg', 'activity', namespace, name, sinceHours ],
+    queryFn: ({ signal }) => {
       const since = new Date(Date.now() - sinceHours * 3600_000).toISOString()
       return fetchJSON<CNPGClusterActivityResponse>(
         `/cnpg/clusters/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/activity?since=${encodeURIComponent(since)}&limit=500`,
         signal,
       )
-    }),
+    },
     staleTime: 10_000,
     refetchInterval: 30_000,
     retry: shouldRetryRadarQuery,

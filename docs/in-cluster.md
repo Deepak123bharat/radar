@@ -446,13 +446,13 @@ Radar doesn't attach image-pull secrets to debug containers or pods — ephemera
 
 ### CRD Permissions
 
-Radar reads CRDs from many popular tools. Each CRD group can be toggled individually:
+Radar reads CRDs from many popular tools. Common CRD groups can be toggled individually:
 
 ```yaml
 rbac:
   crdGroups:
-    all: false          # Wildcard — grant read access to ALL API groups
-    # Individual groups (all default to true):
+    all: false          # get/list/watch on every API group and resource, including Secrets
+    # Individual groups (default true unless noted):
     argo: true          # argoproj.io
     calico: true        # projectcalico.org, crd.projectcalico.org
     certManager: true   # cert-manager.io
@@ -470,6 +470,10 @@ rbac:
 ```
 
 Calico access is read-only (`get`, `list`, and `watch`) for both API groups and is enabled by default. Set `rbac.crdGroups.calico=false` to disable it. If chart-managed Calico access is disabled, grant only the resources you need through `rbac.additionalRules`; both groups may be required while a cluster exposes modern and legacy Calico APIs.
+
+The chart grants cluster-wide `get/list/watch` on VictoriaMetrics VMAgent, VMCluster and VMSingle whenever it grants cluster-wide Secrets reads: `rbac.secrets: true`, `rbac.helm: true`, auth enabled (`auth.mode != none`), or cloud mode. These objects can carry inline credentials, so they share the same grant decision as Secrets; there is no separate VictoriaMetrics setting. All other VictoriaMetrics kinds are excluded from this rule. See the [chart reference](../deploy/helm/radar/README.md#crd-access) for exclusions and wildcard grants.
+
+Radar decides what it can read at startup, so RBAC changes take effect when the Radar pod restarts. `helm upgrade` rolls the pod whenever `rbac` values change; restart Radar yourself after changing its RBAC outside Helm.
 
 ### Graceful RBAC Degradation
 
@@ -624,7 +628,7 @@ See [Helm Chart README](../deploy/helm/radar/README.md) for all available values
 | `rbac.viewWebhooks` | Show admission webhook configurations | `false` |
 | `rbac.viewNodeRuntime` | Inspect kubelet metrics and effective configuration for upgrade impact | `false` |
 | `rbac.traffic` | Read Hubble TLS certs | `true` |
-| `rbac.crdGroups.all` | Wildcard CRD read access | `false` |
+| `rbac.crdGroups.all` | `get/list/watch` on every API group and resource, including core Secrets; overrides per-group flags | `false` |
 
 **Response compression:** Radar gzip-compresses HTTP responses by default (streaming endpoints like SSE are excluded). The level defaults to `1` (best speed), since on large clusters peak response size coincides with peak CPU. Set the `RADAR_COMPRESS_LEVEL` environment variable (via the chart's pod `env`) to `0` to disable, or `2`-`9` to trade CPU for smaller bodies on bandwidth-bound deployments.
 
@@ -644,7 +648,35 @@ kubectl get ingress -n radar -o yaml
 kubectl logs -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx
 ```
 
-If the UI loads through an ingress but pod exec does not connect, ensure the ingress forwards WebSocket upgrades and preserves the browser-facing `Host` header. Preserving `Host` is the compatibility requirement across browsers and proxies; Fetch Metadata is an additional signal only when both sides forward it. Radar logs rejected handshakes with both `Origin` and `Host`.
+If the UI loads through an ingress but pod exec does not connect, ensure the ingress forwards WebSocket upgrades. If it does and exec still fails, see the next section: the terminal uses the same address check as changes.
+
+### Changes fail with "Radar refused this request"
+
+If you can browse, but every action that changes the cluster (apply, delete, scale, restart, drain, Argo CD or Flux sync) fails with *Radar refused this request because it came from ...*, the proxy in front of Radar is rewriting the `Host` header. The pod terminal does not connect, and a few views that load data with POST, such as application cost, fail the same way. Radar accepts these only from a page served at its own address, so that another website you have open cannot act through your browser, and a rewritten `Host` hides that address. The message names both addresses: where the request came from, and the `Host` Radar received.
+
+Fix it either way:
+
+- Configure the proxy to keep the original `Host` header.
+- Tell Radar the address you open it at. In the Helm chart:
+
+  ```yaml
+  trustedOrigins:
+    - http://radar.internal
+  ```
+
+  Outside Helm, set `RADAR_TRUSTED_ORIGINS` or pass `--trusted-origins`. Use the scheme and host exactly as they appear in your browser's address bar, with the port if there is one. Separate several with commas.
+
+  A trusted origin can do everything Radar's own page can: read, make changes and open pod terminals (and, on a local install, the local terminal). List only addresses that serve Radar. This setting does not cover the MCP endpoint at `/mcp`, which has its own `RADAR_MCP_TRUSTED_ORIGINS`.
+
+A page served from any other address cannot call Radar's API at all, reads included. That covers another port on `localhost`, because browsers treat all ports on a host as one site. If you run your own browser tool that calls Radar's API, for example a dashboard on `http://localhost:3000`, add its address to trusted origins the same way. curl, scripts and MCP clients are not affected.
+
+This read check relies on the `Sec-Fetch-Site` header, which browsers send only to HTTPS addresses and to `localhost`. If you open Radar over plain HTTP at any other address, a page on another site can still make Radar answer a read, though it cannot see the answer. Changes stay protected either way. Serve Radar over HTTPS to close that gap.
+
+Radar logs each refusal with the headers it received:
+
+```bash
+kubectl logs -n radar -l app.kubernetes.io/name=radar | grep '\[origin\] refused'
+```
 
 ### Metrics charts show "Prometheus not connected"
 

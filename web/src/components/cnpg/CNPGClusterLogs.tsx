@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
 import { useLocation, useSearchParams } from 'react-router-dom'
-import { WorkloadLogsViewer, type WorkloadLogsFetchParams, type WorkloadLogsResult } from '@skyhook-io/k8s-ui'
+import { PaneLoader, WorkloadLogsViewer, type WorkloadLogsFetchParams, type WorkloadLogsResult } from '@skyhook-io/k8s-ui'
 import { fetchJSON, useRadarFeature } from '../../api/client'
 import { getApiBase, getCredentialsMode } from '../../api/config'
 import { useDesktopDownload } from '../../hooks/useDesktopDownload'
@@ -14,9 +14,10 @@ function logsPath(namespace: string, name: string) {
   return `/cnpg/clusters/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/logs`
 }
 
-export function query(params: WorkloadLogsFetchParams, tailDefault?: number) {
+export function query(params: WorkloadLogsFetchParams, tailDefault?: number, allContainersSupported = true) {
   const q = new URLSearchParams()
-  q.set('container', params.container || 'all')
+  const container = params.container || (allContainersSupported ? 'all' : '')
+  if (container && (container !== 'all' || allContainersSupported)) q.set('container', container)
   const tail = params.tailLines ?? tailDefault
   if (tail) q.set('tailLines', String(tail))
   if (params.sinceSeconds) q.set('sinceSeconds', String(params.sinceSeconds))
@@ -56,19 +57,23 @@ export function CNPGClusterLogs({ namespace, name }: { namespace: string; name: 
   const until = interval?.until
 
   const { guard, support } = useRadarFeature('cnpgWorkspace')
+  const allContainersSupported = support === 'supported'
   const fetchAll = useCallback(
     (params: WorkloadLogsFetchParams) =>
-      guard(() => fetchJSON<WorkloadLogsResult>(`${logsPath(namespace, name)}${since && until ? intervalQuery(params, since, until) : query(params)}`, { signal: params.signal })),
-    [guard, namespace, name, since, until],
+      since && until
+        ? guard(() => fetchJSON<WorkloadLogsResult>(`${logsPath(namespace, name)}${intervalQuery(params, since, until)}`, { signal: params.signal }))
+        : fetchJSON<WorkloadLogsResult>(`${logsPath(namespace, name)}${query(params, undefined, allContainersSupported)}`, { signal: params.signal }),
+    [guard, namespace, name, since, until, allContainersSupported],
   )
   const stream = useCallback(
     (params: WorkloadLogsFetchParams) =>
-      new EventSource(`${getApiBase()}${logsPath(namespace, name)}/stream${query(params, 50)}`, {
+      new EventSource(`${getApiBase()}${logsPath(namespace, name)}/stream${query(params, 50, allContainersSupported)}`, {
         withCredentials: getCredentialsMode() === 'include',
       }),
-    [namespace, name],
+    [namespace, name, allContainersSupported],
   )
-  const createStream = support === 'unsupported' ? undefined : stream
+
+  if (interval && support === 'unknown') return <PaneLoader label="Checking interval support…" className="flex-1" />
 
   return (
     <div className="flex h-full flex-col">
@@ -77,29 +82,30 @@ export function CNPGClusterLogs({ namespace, name }: { namespace: string; name: 
           <CNPGIntervalBanner
             since={interval.since}
             until={interval.until}
-            note="Selected on a History chart. Lines from the start of the interval, up to 64 KiB per instance; the line-count selector does not apply and streaming is off."
+            note={support === 'unsupported' ? 'This interval needs a newer Radar. Clear it to read ordinary logs.' : 'Selected on a History chart. Lines from the start of the interval, up to 64 KiB per instance; the line-count selector does not apply and streaming is off.'}
             onClear={interval.clear}
           />
         </div>
       )}
       <div className="min-h-0 flex-1">
         <WorkloadLogsViewer
-          key={`${pod ?? ''}|${container ?? ''}|${since ?? ''}|${until ?? ''}`}
+          key={`${pod ?? ''}|${container ?? ''}|${since ?? ''}|${until ?? ''}|${allContainersSupported}`}
           name={name}
+          allowAllContainers={allContainersSupported}
           disableSourceControlsWithoutSource
           emptySourceState={<div className="space-y-2 text-sm text-theme-text-secondary">
             <p>No instance log source yet. {row?.hibernated ? 'The Cluster is hibernated.' : problem?.title}</p>
             <button type="button" className="text-accent-text hover:underline" onClick={() => navigate(inPlace ?? overviewPath, { replace: !!inPlace, state: location.state })}>{problem ? 'See Overview’s problem →' : 'Open Overview →'}</button>
           </div>}
           fetchAll={fetchAll}
-          createStream={interval ? undefined : createStream}
+          createStream={interval ? undefined : stream}
           overrideDownload={desktopDownload}
           forceDark={theme === 'dark' ? true : undefined}
           // Light logs on a dark app are never wanted: dark theme pins the palette,
           // light theme only sets where it starts and leaves the toggle available.
           defaultDark={false}
           initialPods={pod ? [pod] : undefined}
-          initialContainer={container ?? undefined}
+          initialContainer={container && container !== 'all' ? container : allContainersSupported ? undefined : 'postgres'}
         />
       </div>
     </div>

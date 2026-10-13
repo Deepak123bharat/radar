@@ -78,6 +78,26 @@ shared renderers.
   never both; don't inadvertently remove useful vendor fields. Reuse printer-column
   evaluation rather than writing another JSONPath parser.
 
+### Workspace and resource hosts
+
+`web/src/integrations/resourceHosts.tsx` registers host renderer wrappers and
+resource-specific summary, log and destination callbacks. Keep each adapter beside
+its integration. Match exact group + resource identity; use the loaded object's
+`apiVersion` for detail facts. Renderer overrides are composed once, with duplicate
+ownership rejected. Generic detail pages and drawers call these seams rather than
+importing integration screens.
+
+`workspaceRoutes.ts` owns route metadata (title, navigation placement, namespace
+view scope and context-switch query policy); `workspaceScreens.tsx` mounts the
+integration screen. Capacity remains cluster-wide. Shared workspace notices, empty
+states and table styles live in `web/src/components/workspace/`; certainty glyphs
+live in k8s-ui's `components/facts/certainty.tsx`.
+
+A host can supply k8s-ui `ResourcesView.renderKindView` to replace one kind's table
+while retaining the sidebar and drawer. Return `null` or `false` for the ordinary table. A
+replacement disables row/search/bulk shortcuts and column-preference loading/saving;
+sidebar kind navigation stays available. The caller owns fetching and capability decisions.
+
 ### Issues
 
 - [ ] Inspect generic detection in `internal/issues/source_conditions.go`, nearby
@@ -87,6 +107,29 @@ shared renderers.
 - [ ] Check detector ownership and fallback suppression: avoid duplicate failures
   or the generic pass reintroducing warnings for intentional states. Don't suppress
   a whole API group when only some kinds are covered.
+
+### Finalizer controller recognition
+
+Stuck-deletion detection covers already-watched, synchronized CRDs. Adding an
+owner enriches those findings; it needs no per-kind detector or renderer.
+
+- [ ] Add documented keys and controller names, labels and image paths in
+  [`pkg/finalizers/catalog.go`](../pkg/finalizers/catalog.go). Disambiguate shared
+  keys by API group/kind, and shared images or identities by role/image checks.
+  Name guesses for uncataloged finalizers remain candidates, never owners.
+- [ ] Review cleanup semantics before setting `AllowConditionalCleanup` (false
+  by default). Leave it disabled for unreviewed cleanup, off-cluster controllers
+  or infrastructure cleanup; record those limits on the entry.
+- [ ] Add identity fixtures in
+  [`pkg/finalizers/catalog_test.go`](../pkg/finalizers/catalog_test.go) and
+  guidance/eligibility cases in
+  [`internal/issues/finalizers_test.go`](../internal/issues/finalizers_test.go),
+  including unrelated workloads and incomplete visibility.
+- [ ] Keep reads and policy in `internal/issues/finalizers.go`, pod health in
+  `pkg/health`. Catalog additions should not change the shared API/UI machinery.
+- [ ] Verify a real stuck deletion, including intentional uninstall if enabling
+  removal. Update the [MCP contract](mcp.md#read-tools) when supported behavior
+  changes; distinguish controller evidence from synthetic fixtures.
 
 ### MCP / AI context
 
@@ -148,8 +191,9 @@ unknown, partial and denied values first: every piece here exists to keep them.
   - The in-drawer trail is `?drawer=`, encoded by `web/src/utils/drawer-trail.ts`.
   - Back labels come from `currentPageLabel` and subject-filtered Issues links
     from `issuesPathForSubject` (both in `web/src/utils/page-links.ts`).
-  - Pin `ctx` on a detail page. After a context switch, say the object is not in
-    this context; never open a same-named object from another cluster.
+  - Declare the context-switch policy in workspace metadata. CNPG pins `ctx` on
+    details to avoid opening a same-named object in another cluster; Capacity
+    follows the active cluster.
 - [ ] **One aggregate endpoint.**
   - List each kind with `readWorkspaceKind` (dynamic kinds) or
     `typedKindScope` (typed kinds such as Pods), both in
@@ -171,8 +215,9 @@ unknown, partial and denied values first: every piece here exists to keep them.
   flag and a `radarFeatures.ts` entry with `flagShippedWithEndpoint: true`.
   - Gate every hook with `useRadarFeature`, including mutations, streams and
     downloads. Never add `retry` to a mutation.
-  - When the Radar is too old, hide the sidebar destinations and fall back to
-    the standard detail views.
+  - Gate new contracts while retaining already-shipped reads whose producer
+    contract is unchanged. Hide unsupported new destinations or fall back to
+    standard detail views.
 - [ ] **Guided multi-resource setup.** Keep integration-specific target models and workflow state in the app. CNPG reuses its target fields between Create and Restore, its schedule inputs between Edit and Create, and the shared strict-create/YAML review for both. Put preflight and reviewed conditional writes in the integration service, with thin HTTP adapters and a new feature flag when the endpoint/verb is new. Each independent write needs its own review and observed follow-through; saving declarations is not end-to-end success. Do not grow a universal provisioning registry around one integration. A future second concrete setup flow should extract only the seam it actually shares.
 - [ ] **Domain rules.** Put interpretation reused by checks, findings and actions in a pure integration package (CNPG uses `pkg/cnpg`), independent of HTTP and caller permissions. Keep matching frontend derivations together; share fixture cases for rules represented in both languages. Put request-independent orchestration in an integration service (`internal/cnpg` is the current example), with caller-scoped observations/clients supplied by server adapters. Share typed service reads between endpoints and reports rather than invoking handlers through a response recorder. Keep HTTP requests, routing and process-wide client resolution outside the service.
 - [ ] **Findings.** The Issues engine owns findings from cached Kubernetes objects. Cross-resource findings retain their inventory operations in `Issue.RequiredReads`; hosts supply `CanReadEvidence` for both composition and cached related-issue projections. A live proxy or Prometheus measurement stays in the workspace as a `WorkspaceProblem` with `source: 'measurement'`, `measuredBy` and, when matched by name only, `unverifiedMatch`. Add no new severity ladder, and title reasons the Issues page already titles with `issueReasonTitle`. Carry semantic reasons/states through presentation; never branch on generated IDs or display text.
@@ -226,62 +271,27 @@ unknown, partial and denied values first: every piece here exists to keep them.
   comes from and how it reads when unknown, a `scripts/<x>-demo.sh` with its
   README, and a CLAUDE.md row.
 
-### Host ownership and future extension points
+### Future extension points
 
-`web/src/integrations/resourceHosts.tsx` is the app-owned composition root for
-integration adapters. Generic resource views consume its typed routing, detail,
-log, renderer and kind-list operations. CNPG's adapter remains in
-`web/src/components/cnpg/host.tsx`; existing Karpenter, batch/admission, Ray and
-other renderer wrappers register in the same root. This interface is private to
-the app; it does not change the public radar-app embedding API.
+Use the [resource and workspace hosts](#workspace-and-resource-hosts) for
+integration contributions. A kind-list replacement uses one `table / wait / view`
+decision for both fetching and rendering, keyed by exact API group and plural.
+Keep data hooks in mounted integration components and gate new contracts with
+capabilities.
 
-Add an adapter and registration when extending these existing slots. Reuse
-`RendererOverrides` and the detail props from k8s-ui. Resources are keyed by
-exact API group and plural; an unresolved group cannot select a colliding CRD.
-Declare exclusive ownership of summary, destination and logs. Competing
-renderer, kind-list and exclusive-slot owners are rejected. Header actions and
-extra tabs compose in order, with duplicate tab IDs rejected. Data-bearing
-contributions are mounted components whose hooks remain integration-owned.
+Two host seams need another concrete consumer before choosing a common shape:
 
-Workspace metadata lives in `workspaceRoutes.ts`, while `workspaceScreens.tsx`
-registers screens separately so they can use `WorkloadView` without a circular
-import. Register metadata and a screen for another workspace; retain its parser,
-placement, namespace policy and context-switch policy in its own adapter. The
-[architecture plan](CNPG_ARCHITECTURE_PLAN.md) records the extraction rationale.
-
-When adding another integration, check these specific places before extending
-generic hosts:
-
-| Extension | Current location | Rule to preserve |
+| Seam | Location | Constraint |
 |---|---|---|
-| Detail summary, header actions, Diagnose, logs and renderer wrappers | `web/src/integrations/resourceHosts.tsx` and integration host adapters | Reuse the existing detail slots and `RendererOverrides`. Mount integration-owned components for their hooks. Match exact group and Kind; keep version/spec-shape dispatch where it already lives. |
-| Drawer expansion and navigation trail | `resourceHosts.tsx` destination/drawer contributions | Keep context, tab/query state, history and API-group collisions. |
-| A kind list replaced by a workspace view | `resourceHosts.tsx` kind-list contributions, consumed by `ResourcesView.tsx` | One ownership decision must control both fetching and rendering, including capability loading and unsupported Radar fallback. |
-| Workspace routes, labels and context-switch policy | `web/src/integrations/workspaceRoutes.ts` and `workspaceScreens.tsx`; integration route helpers | CNPG and Capacity share registration metadata. Their route parsing, placement and namespace scope remain integration-owned. |
-| Category-workspace counts and coverage | `ResourcesView.tsx`'s `useCNPGSidebarWorkspace` and `sidebarCategoryWorkspaces` | Generalize the data-provider composition when another category workspace needs it. Reuse the current sidebar props and retain partial/denied coverage. |
-| Event-driven workspace invalidation | `App.tsx`'s CNPG pending flag and batched invalidation | Generalize change-to-query-key contributions when another workspace needs them; reuse the existing batches and connection lifetime. |
+| Category-workspace counts and coverage | `ResourcesView.tsx`'s `useCNPGSidebarWorkspace` and `sidebarCategoryWorkspaces` | Reuse the sidebar props and preserve partial/denied coverage; mount data hooks in integration-owned components. |
+| Event-driven workspace invalidation | `App.tsx`'s CNPG pending flag and batched invalidation | Contribute query keys to the existing batches and connection lifetime. |
 
-A resource can have contributions from multiple integrations, such as batch
-execution and Kueue admission on a Job. Compose additive slots explicitly; give
-summary, renderer, logs, destination and kind-list takeover an explicit owner.
-Registration order must not silently pick between conflicting owners. This is
-an internal app interface, not a new public radar-app plugin API.
-
-The sidebar-provider and event-invalidation shapes above are deliberately left
-open until another matching consumer appears. The listed locations are the
-places to revisit, rather than another set of integration-specific branches to
-copy into generic views.
-
-These other pieces are not shared yet, because they have one integration
-consumer and the second should shape them:
-- the operation tracker
-- the fixed-path `pods/proxy` reader
-- the merged log stream
-- the report bundle
-- operator diagnosis
-
-Read CloudNativePG's versions (`web/src/components/cnpg/`,
-`internal/cnpg/`), and extract the demonstrated common part when a second integration needs it. The merged log engine already lives in `internal/server/workload_logs.go`; reuse its protocol instead of duplicating it.
+Operation tracking, fixed-path proxy reads, integration-specific log streaming,
+report bundles and operator diagnosis remain integration-owned. Read CNPG's
+implementations in `web/src/components/cnpg/` and `internal/cnpg/` when a second
+integration needs the same behavior. Reuse `internal/podlogs` for bounded log
+collection and replay; source selection and browser stream framing retain their
+own owners.
 
 ## 4. Before submitting
 

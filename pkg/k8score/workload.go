@@ -401,7 +401,9 @@ func (m *WorkloadManager) ApplyResource(ctx context.Context, opts ApplyResourceO
 		result.Created = true
 		result.Action = "create"
 		result.Object = created
-		result.UID = created.GetUID()
+		if !opts.DryRun {
+			result.UID = created.GetUID()
+		}
 		m.populateApplyWarnings(ctx, result, obj, pre, created, ns, kind, name, opts.DryRun)
 		return result, nil
 	}
@@ -421,7 +423,9 @@ func (m *WorkloadManager) ApplyResource(ctx context.Context, opts ApplyResourceO
 		result.Created = true
 		result.Action = "create"
 		result.Object = created
-		result.UID = created.GetUID()
+		if !opts.DryRun {
+			result.UID = created.GetUID()
+		}
 		m.populateApplyWarnings(ctx, result, obj, pre, created, ns, kind, name, opts.DryRun)
 		return result, nil
 	}
@@ -445,7 +449,9 @@ func (m *WorkloadManager) ApplyResource(ctx context.Context, opts ApplyResourceO
 	// SSA results report "applied"; Action carries create/update classification.
 	result.Created = false
 	result.Object = applied
-	result.UID = applied.GetUID()
+	if !opts.DryRun {
+		result.UID = applied.GetUID()
+	}
 
 	// Post-apply GET feeds the state-derived warnings (run against what
 	// actually landed) and the field-removal diff. Fetch it for creates too,

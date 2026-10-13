@@ -1,4 +1,3 @@
-import { stripTrailingSlashes } from '../../utils/url-path'
 import { argoApplicationSetConditionsToGitOpsStatus, argoStatusToGitOpsStatus, fluxConditionsToGitOpsStatus, type FluxCondition, type GitOpsStatus } from '../../types/gitops'
 import type { GitOpsResourceTree } from '../../types/gitops-tree'
 import { formatCompactAge } from '../../utils/format'
@@ -34,7 +33,7 @@ export function formatGitOpsDestination(server: string | undefined, namespace: s
   // "https://kubernetes.default.svc/" variant (the in-cluster URL with a
   // trailing slash that some controller versions emit) matches the literal
   // we collapse to "in-cluster".
-  let host = stripTrailingSlashes((server || '').trim())
+  let host = (server || '').trim().replace(/\/+$/, '')
   if (host === '' || host === 'https://kubernetes.default.svc' || host === 'in-cluster') {
     host = 'in-cluster'
   } else {

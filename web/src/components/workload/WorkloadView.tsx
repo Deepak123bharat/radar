@@ -1,4 +1,4 @@
-import { decorateResourceDiagnose, resourceDetailRedirect, resourceDetailSlots, resourceLogs, resourceRendererOverrides, useResourceHostFeatures } from '../../integrations/resourceHosts'
+import { decorateResourceDiagnose, resourceDetailRedirect, resourceDetailSlots, resourceLogs, resourceRendererOverrides } from '../../integrations/resourceHosts'
 import { useMemo, useEffect, useCallback, useRef, useState, type ReactNode } from 'react'
 import { useQueries, useQueryClient } from '@tanstack/react-query'
 import { Navigate, useNavigate, useLocation, useSearchParams } from 'react-router-dom'
@@ -162,8 +162,6 @@ export function WorkloadViewRoute({ onNavigateToResource }: WorkloadViewRoutePro
   const location = useLocation()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  // The redirect replaces the URL, so it waits for a confirmed workspace.
-  const hostFeatures = useResourceHostFeatures()
 
   // Parse /workload/:kind/:ns/:name from pathname. Segments are URL-encoded by
   // buildWorkloadPath; names can also contain literal slashes (e.g. some CRD names),
@@ -193,7 +191,7 @@ export function WorkloadViewRoute({ onNavigateToResource }: WorkloadViewRoutePro
     namespace = nsSegment === '_' || nsSegment === '' ? '' : decode(nsSegment)
     name = parts.slice(3).map(decode).join('/')
   }
-  const group = searchParams.get('apiGroup') ?? undefined
+  const group = searchParams.get('apiGroup') || ''
 
   const handleBack = useCallback(() => {
     if (window.history.length > 1) {
@@ -220,7 +218,7 @@ export function WorkloadViewRoute({ onNavigateToResource }: WorkloadViewRoutePro
     )
   }
 
-  const detailPath = resourceDetailRedirect({ kind, group, namespace, name }, hostFeatures, searchParams)
+  const detailPath = resourceDetailRedirect({ kind, group, namespace, name }, searchParams)
   if (detailPath) return <Navigate replace to={detailPath} state={location.state} />
 
   return (
@@ -498,7 +496,6 @@ export function WorkloadView({
 }: WorkloadViewProps) {
   const [searchParams, setSearchParams] = useSearchParams()
   const location = useLocation()
-  const hostFeatures = useResourceHostFeatures()
   const apiKind = kindToPluralWithGroup(kindProp, rest.group ?? '')
   const queryClient = useQueryClient()
   const [imageTargetOwnership, setImageTargetOwnership] =
@@ -1181,12 +1178,11 @@ export function WorkloadView({
           <LogsTabContent
             {...props}
             group={effectiveGroup}
-            hostFeatures={hostFeatures}
             selectedRunKey={selectedRunKey}
             onSelectRun={handleSelectedRunChange}
           />
         )}
-        {...resourceDetailSlots({ kind: apiKind, group: resource?.apiVersion ? resourceGroup : effectiveGroup, namespace, name }, hostFeatures, rest.extraTabs)}
+        {...resourceDetailSlots({ kind: apiKind, group: resource?.apiVersion ? resourceGroup : effectiveGroup, namespace, name }, rest.extraTabs)}
         renderExpandedOverview={({ kind: k, apiKind, namespace: ns, name: n, resource: res }) =>
           supportsBatchExecution(k, apiKind, effectiveGroup, res?.apiVersion) &&
           res ? (
@@ -1447,7 +1443,6 @@ function LogsTabContent({
   onConsumeInitialContainer,
   selectedRunKey,
   onSelectRun,
-  hostFeatures,
 }: {
   kind: string
   apiKind: string
@@ -1462,7 +1457,6 @@ function LogsTabContent({
   onConsumeInitialContainer: () => void
   selectedRunKey: string
   onSelectRun: (runKey: string) => void
-  hostFeatures: import('../../integrations/resourceHost').HostFeatures
 }) {
   if (SCHEDULED_LOG_KINDS.has(kind) && supportsBatchExecution(kind, apiKind, group, resource?.apiVersion)) {
     return (
@@ -1478,7 +1472,7 @@ function LogsTabContent({
     )
   }
 
-  const integrationLogs = resourceLogs({ kind, group, namespace, name }, resource, hostFeatures)
+  const integrationLogs = resourceLogs({ kind, group, namespace, name }, resource)
   if (integrationLogs) return integrationLogs
 
   // Workload kinds with stable pod selectors use the aggregated workload logs viewer

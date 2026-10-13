@@ -74,11 +74,21 @@ func TestStreamCursorKeepsIdenticalLines(t *testing.T) {
 func TestStreamCursorReplacementPod(t *testing.T) {
 	cursors := map[string]*StreamCursor{}
 	old := CursorFor(cursors, "web-0/app", "uid-old", 1)
-	old.Admit(cursorLine(1, "2026-09-28T14:00:09Z", "old pod line"))
+	oldLine := cursorLine(1, "2026-09-28T14:00:09Z", "old pod line")
+	old.Admit(oldLine)
+	if !old.FromCurrentPod(oldLine) {
+		t.Fatal("the original cursor lost its Pod identity")
+	}
 
 	c := CursorFor(cursors, "web-0/app", "uid-new", 2)
 	if c == old {
 		t.Fatal("replacement Pod reused the old cursor")
+	}
+	if c.FromCurrentPod(oldLine) {
+		t.Fatal("queued old lines must not certify the replacement Pod is readable")
+	}
+	if !c.FromCurrentPod(cursorLine(2, "2026-09-28T14:00:08Z", "new pod line")) {
+		t.Fatal("replacement lines lost their Pod identity")
 	}
 	if opts := c.RestartOptions("app", 50, nil); opts.SinceTime != nil || opts.TailLines == nil {
 		t.Fatalf("replacement start = %+v, want the caller's tail", opts)

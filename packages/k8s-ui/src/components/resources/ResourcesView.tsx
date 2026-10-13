@@ -1460,6 +1460,15 @@ const KNOWN_COLUMNS: Record<string, Column[]> = {
     { key: 'rules', label: 'Rules', width: 'w-20' },
     { key: 'age', label: 'Age', width: 'w-24' },
   ],
+  udproutes: [
+    { key: 'name', label: 'Name' },
+    { key: 'namespace', label: 'Namespace', width: 'w-48' },
+    { key: 'status', label: 'Status', width: 'w-28', tooltip: 'Accepted = controllers accepted this route and confirmed it can use the backends and other objects it names. Traffic has not been tested. Degraded or Not Accepted: open the route to see which Gateway or backend failed. Pending or Unknown: check the named Gateways or Services and their controllers.' },
+    { key: 'parents', label: 'Gateways', width: 'w-36' },
+    { key: 'backends', label: 'Backends', width: 'w-48', tooltip: 'Backend services receiving traffic' },
+    { key: 'rules', label: 'Rules', width: 'w-20' },
+    { key: 'age', label: 'Age', width: 'w-24' },
+  ],
   tlsroutes: [
     { key: 'name', label: 'Name' },
     { key: 'namespace', label: 'Namespace', width: 'w-48' },
@@ -2884,6 +2893,7 @@ const CURATED_COLUMN_GROUPS: Record<string, readonly string[]> = {
   grpcroutes: ['gateway.networking.k8s.io'],
   httproutes: ['gateway.networking.k8s.io'],
   tcproutes: ['gateway.networking.k8s.io'],
+  udproutes: ['gateway.networking.k8s.io'],
   tlsroutes: ['gateway.networking.k8s.io'],
   helmreleases: ['helm.toolkit.fluxcd.io'],
   awsmachines: ['infrastructure.cluster.x-k8s.io'],
@@ -3417,7 +3427,8 @@ interface ResourcesViewProps {
   onCreateResource?: (kind: { name: string; kind: string; group: string } | null) => void
   /** A kind's own view, rendered in place of the table: the sidebar, kind
    *  selection and the drawer (`?resource=`) stay; the table, its toolbar and
-   *  its keyboard shortcuts do not run. Return null to keep the table. */
+   *  its row/search/bulk shortcuts do not run. Sidebar kind navigation stays.
+   *  Return null or false to keep the table. */
   renderKindView?: (kind: SelectedKindInfo) => React.ReactNode | null
   /** Default kind when the URL does not include one. */
   defaultKind?: SelectedKindInfo
@@ -3690,18 +3701,23 @@ export function ResourcesView({
       kindFromURL.name !== prev.name || kindFromURL.group !== prev.group ? kindFromURL : prev,
     )
   }, [basePath, defaultKind, locationPathname, locationSearch])
+  const contributedKindView = renderKindView?.(selectedKind)
+  const kindView = contributedKindView === false ? null : contributedKindView ?? null
+  const tableActive = kindView === null
+
   // Notify parent of selected kind changes (including initial mount)
   useEffect(() => {
     onSelectedKindChange?.(selectedKind)
+  }, [selectedKind.name, selectedKind.group]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     setBulkMode(false)
     setCheckedResources(new Set())
     setShowBulkDeleteConfirm(false)
     setShowBulkRestartConfirm(false)
     setShowBulkScaleDialog(false)
     setBulkForceDelete(false)
-  }, [selectedKind.name, selectedKind.group]) // eslint-disable-line react-hooks/exhaustive-deps
-  const kindView = renderKindView?.(selectedKind) ?? null
-  const tableActive = kindView === null
+  }, [selectedKind.name, selectedKind.group, tableActive])
   const [searchTerm, setSearchTerm] = useState(initialFilters.search)
   // Typing must never wait on the list or the router. The input renders raw
   // searchTerm; filtering consumes the deferred copy (React yields to keep
@@ -4238,7 +4254,7 @@ export function ResourcesView({
   useEffect(() => {
     setComparePicks([])
     setCompareMode(false)
-  }, [selectedKind.name, selectedKind.group])
+  }, [selectedKind.name, selectedKind.group, tableActive])
 
   const exitCompareMode = useCallback(() => {
     setCompareMode(false)
@@ -4285,6 +4301,15 @@ export function ResourcesView({
       virtuosoRef.current?.scrollToIndex({ index: highlightedIndex, align: 'center', behavior: 'auto' })
     }
   }, [highlightedIndex])
+
+  useEffect(() => {
+    if (tableActive) return
+    setHighlightedIndex(-1)
+    setShowColumnPicker(false)
+    setOpenColumnFilter(null)
+    setShowProblemsDropdown(false)
+    setShowLabelsDropdown(false)
+  }, [tableActive])
 
   // Open logs for pod / workload resources — provided via props
   const openLogs = onOpenLogs
@@ -5288,7 +5313,7 @@ export function ResourcesView({
 
   // Filter resources by search term, status, problems, and sort
   const filteredResources = useMemo(() => {
-    if (!resources) return []
+    if (!tableActive || !resources) return []
 
     let result = resources
 
@@ -5474,7 +5499,7 @@ export function ResourcesView({
     }
 
     return result
-  }, [resources, deferredSearchTerm, regexMode, searchRegex, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, labelSelector, ownerKind, ownerName, selectedKind.name, effectiveSortColumn, sortDirection, getSortValue, extraColumnsByKey, podMatchesProblemFilter])
+  }, [tableActive, resources, deferredSearchTerm, regexMode, searchRegex, columnFilters, columnFilterExcludes, problemFilters, showInactiveReplicaSets, labelSelector, ownerKind, ownerName, selectedKind.name, effectiveSortColumn, sortDirection, getSortValue, extraColumnsByKey, podMatchesProblemFilter])
 
   // For nodes table: compute the majority minor version so outliers can be highlighted
   const majorityNodeMinorVersion = useMemo(() => {
@@ -5670,7 +5695,7 @@ export function ResourcesView({
 
   // Calculate filter options with counts based on current resources (before filtering)
   const filterOptions = useMemo(() => {
-    if (!resources || resources.length === 0) return null
+    if (!tableActive || !resources || resources.length === 0) return null
 
     const kindLower = normalizeKindToPlural(selectedKind.name, selectedKind.group)
     const cellFilterKind = getCellFilterKind(selectedKind.name, selectedKind.group)
@@ -5783,7 +5808,7 @@ export function ResourcesView({
 
     if (filterableColumns.length === 0 && !problems && labelValues.length === 0) return null
     return { columns: filterableColumns, problems, labels: labelValues }
-  }, [resources, selectedKind.name, selectedKind.group, allColumns])
+  }, [tableActive, resources, selectedKind.name, selectedKind.group, allColumns])
 
   // Map filterable columns by key for O(1) lookup in header rendering
   const filterableColumnMap = useMemo(() => {
@@ -5889,7 +5914,6 @@ export function ResourcesView({
         />
       )}
 
-      {/* Main Content - the kind's own view, or the resource table */}
       {kindView !== null ? (
         <div className="flex-1 flex flex-col overflow-hidden min-w-0 bg-theme-surface">{kindView}</div>
       ) : (
@@ -6793,7 +6817,7 @@ export function ResourcesView({
 
     {/* Bulk delete confirmation */}
     <ConfirmDialog
-      open={showBulkDeleteConfirm}
+      open={tableActive && showBulkDeleteConfirm}
       onClose={() => { setShowBulkDeleteConfirm(false); setBulkForceDelete(false) }}
       onConfirm={() => {
         onBulkDelete?.(checkedBulkItems, {
@@ -6824,7 +6848,7 @@ export function ResourcesView({
       </label>
     </ConfirmDialog>
     <ConfirmDialog
-      open={showBulkRestartConfirm}
+      open={tableActive && showBulkRestartConfirm}
       onClose={() => setShowBulkRestartConfirm(false)}
       onConfirm={() => {
         onBulkRestart?.(checkedBulkItems, {
@@ -6843,7 +6867,7 @@ export function ResourcesView({
       isClosable
     />
     <ConfirmDialog
-      open={showBulkScaleDialog}
+      open={tableActive && showBulkScaleDialog}
       onClose={() => setShowBulkScaleDialog(false)}
       onConfirm={() => {
         onBulkScale?.(checkedBulkItems, bulkScaleReplicas, {
@@ -7249,6 +7273,7 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
     case 'grpcroutes':
     case 'tcproutes':
     case 'tlsroutes':
+    case 'udproutes':
       return <RouteCell resource={resource} column={column} />
     case 'gatewayclasses':
       return <GatewayClassCell resource={resource} column={column} />
@@ -9144,7 +9169,7 @@ function GatewayClassCell({ resource, column }: { resource: any; column: string 
   }
 }
 
-// Shared cell renderer for all Gateway API route types (HTTPRoute, GRPCRoute, TCPRoute, TLSRoute)
+// Shared cell renderer for all Gateway API route types (HTTPRoute, GRPCRoute, TCPRoute, TLSRoute, UDPRoute)
 function RouteCell({ resource, column }: { resource: any; column: string }) {
   switch (column) {
     case 'status': {

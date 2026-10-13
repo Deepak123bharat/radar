@@ -28,18 +28,20 @@ export function cnpgDiscovered(apiResources: APIResource[] | undefined): boolean
 // replication lag and disk growth join the same way.
 export function useCNPGFleet(namespaces: string[], enabled = true) {
   const query = useCNPGWorkspace(namespaces, { enabled })
-  const disk = useCNPGFleetDisk(namespaces, enabled && !!query.data?.installed)
-  const metrics = useCNPGFleetMetrics(namespaces, enabled && !!query.data?.installed)
+  const { support } = useRadarFeature('cnpgWorkspace')
+  const enrich = enabled && support === 'supported' && !!query.data?.installed
+  const disk = useCNPGFleetDisk(namespaces, enrich)
+  const metrics = useCNPGFleetMetrics(namespaces, enrich)
   const fleet = useMemo<CNPGFleet | null>(
     () =>
       query.data?.installed
         ? applyCNPGFleetMetrics(
-            applyCNPGDisk(buildCNPGFleet(query.data), disk.data?.clusters ?? (disk.error ? diskFailed(query.data.objects.clusters ?? [], disk.error) : undefined)),
-            metrics.data?.clusters,
-            metrics.data,
+            applyCNPGDisk(buildCNPGFleet(query.data), enrich ? disk.data?.clusters ?? (disk.error ? diskFailed(query.data.objects.clusters ?? [], disk.error) : undefined) : undefined),
+            enrich ? metrics.data?.clusters : undefined,
+            enrich ? metrics.data : undefined,
           )
         : null,
-    [query.data, disk.data, disk.error, metrics.data],
+    [query.data, disk.data, disk.error, metrics.data, enrich],
   )
   return { query, fleet }
 }
@@ -87,10 +89,7 @@ export function useCNPGSidebarWorkspace({
   active?: { screen: CNPGScreen; child?: { label: string; title?: string } }
 }): Record<string, SidebarCategoryWorkspace> | undefined {
   const navigate = useCNPGNavigate()
-  // A Radar that predates the workspace serves none of its endpoints: no
-  // destinations rather than ones that fail when opened.
-  const { support } = useRadarFeature('cnpgWorkspace')
-  const available = cnpgDiscovered(apiResources) && support !== 'unsupported'
+  const available = cnpgDiscovered(apiResources)
   const { fleet } = useCNPGFleet(namespaces, available)
   const nsKey = namespaces.join(',')
 

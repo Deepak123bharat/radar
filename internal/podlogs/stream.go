@@ -59,11 +59,17 @@ func (c *StreamCursor) RestartOptions(container string, tailLines int64, sinceSe
 	return opts
 }
 
+// Queued lines from a replaced Pod are retained, but cannot establish that
+// its replacement is readable.
+func (c *StreamCursor) FromCurrentPod(entry Entry) bool {
+	return entry.Follow >= c.firstFollow
+}
+
 // Admit reports whether an entry is new, recording it when it is. Lines
 // arrive in order per container, so anything before the last delivered
 // timestamp was already sent.
 func (c *StreamCursor) Admit(entry Entry) bool {
-	if entry.Follow < c.firstFollow {
+	if !c.FromCurrentPod(entry) {
 		return true
 	}
 	ts, err := time.Parse(time.RFC3339Nano, entry.Timestamp)

@@ -125,9 +125,8 @@ func logAPIServer(t *testing.T, body string) *kubernetes.Clientset {
 	return client
 }
 
-// The CNPG live view emits a stream's last line even when it arrives with the
-// end of the stream, so the kubelet's notice used to show up as a Postgres line,
-// again every time the view reopened the stream.
+// The kubelet's unavailability notice is a source failure, not PostgreSQL output.
+// It can arrive as the stream's only line without a trailing newline.
 func TestFollowCNPGContainerLogs_DropsLogsUnavailableNotice(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -141,7 +140,7 @@ func TestFollowCNPGContainerLogs_DropsLogsUnavailableNotice(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			client := logAPIServer(t, tc.body)
 			logCh := make(chan podlogs.Entry, 10)
-			_, err := followCNPGContainerLogs(context.Background(), client, "db", "pg-orders-2", corev1.PodLogOptions{Container: "postgres", Timestamps: true, Follow: true}, 1, logCh)
+			_, err := followCNPGContainerLogs(context.Background(), client, "db", "pg-orders-2", corev1.PodLogOptions{Container: "postgres", Timestamps: true, Follow: true}, 1, "", logCh)
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("err = %v, want %v", err, tc.wantErr)
 			}

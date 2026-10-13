@@ -450,11 +450,13 @@ export function AlertBanner({ variant, icon, title, message, items, children, ac
             )}
             {children}
           </div>
-        ) : (
+        ) : action ? (
           <div className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-3 gap-y-1">
             <div className={clsx('min-w-0 text-sm font-medium', colors.title)}>{title}</div>
-            {action && <div className="shrink-0">{action}</div>}
+            <div className="shrink-0">{action}</div>
           </div>
+        ) : (
+          <div className={clsx('text-sm font-medium', colors.title)}>{title}</div>
         )}
       </div>
     </div>
@@ -751,7 +753,7 @@ export function formatKindName(kind: string): string {
     pods: 'Pod', deployments: 'Deployment', daemonsets: 'DaemonSet', statefulsets: 'StatefulSet',
     replicasets: 'ReplicaSet', services: 'Service', endpointslices: 'EndpointSlice', ingresses: 'Ingress',
     gateways: 'Gateway', httproutes: 'HTTPRoute', grpcroutes: 'GRPCRoute',
-    tcproutes: 'TCPRoute', tlsroutes: 'TLSRoute', configmaps: 'ConfigMap',
+    tcproutes: 'TCPRoute', tlsroutes: 'TLSRoute', udproutes: 'UDPRoute', configmaps: 'ConfigMap',
     secrets: 'Secret', jobs: 'Job', cronjobs: 'CronJob', hpas: 'HPA',
     horizontalpodautoscalers: 'HPA', nodes: 'Node', namespaces: 'Namespace',
     persistentvolumeclaims: 'PVC', persistentvolumes: 'PV',
@@ -1059,6 +1061,7 @@ function formatKindForRef(kind: string, group?: string): string {
     httproute: 'hr',
     grpcroute: 'grpc',
     tcproute: 'tcp',
+    udproute: 'udp',
     tlsroute: 'tls',
     secret: 'secret',
     pod: 'pod',

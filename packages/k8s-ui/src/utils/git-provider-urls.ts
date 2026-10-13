@@ -1,4 +1,3 @@
-import { stripTrailingSlashes } from './url-path'
 type ParsedRepo =
   | { provider: 'github' | 'gitlab' | 'bitbucket'; owner: string; repo: string }
   | { provider: 'azure-devops'; org: string; project: string; repo: string }
@@ -43,7 +42,7 @@ function parseHttpRepoUrl(repoURL: string | undefined | null): URL | null {
 
 function detectProvider(url: URL): ParsedRepo {
   const hostname = url.hostname.toLowerCase()
-  const pathParts = stripTrailingSlashes(url.pathname.replace(/^\/+/, '')).split('/')
+  const pathParts = url.pathname.replace(/^\/+/, '').replace(/\/+$/, '').split('/')
 
   if (hostname === 'github.com' || hostname === 'bitbucket.org') {
     if (pathParts.length < 2) return { provider: 'unknown' }

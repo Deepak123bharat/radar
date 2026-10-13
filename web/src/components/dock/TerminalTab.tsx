@@ -41,6 +41,7 @@ export function TerminalTab({ namespace, podName, containerName, containers, isA
       createSession={createSession}
       createDebugContainer={shell ? undefined : createDebugContainer}
       note={note}
+      command={shell}
     />
   )
 }

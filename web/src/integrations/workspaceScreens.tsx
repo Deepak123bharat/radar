@@ -5,7 +5,7 @@ import type { WorkspaceRoute, WorkspaceScreenProps } from './workspaceRoute'
 
 const screens: Record<WorkspaceRoute['id'], ComponentType<WorkspaceScreenProps>> = {
   cnpg: CNPGView,
-  capacity: CapacityView,
+  capacity: ({ onOpenResource }) => <CapacityView onOpenResource={onOpenResource} />,
 }
 
 export function WorkspaceScreen({ workspace, ...props }: WorkspaceScreenProps & { workspace: WorkspaceRoute }) {

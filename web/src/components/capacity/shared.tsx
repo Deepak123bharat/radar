@@ -245,7 +245,6 @@ export function observationTitle(
   return parts.join(" ");
 }
 
-/** Small bordered mono glyph chip; hover reveals certainty/source/asOf. */
 // ============================================================================
 // Quantity / resource formatting
 // ============================================================================

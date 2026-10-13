@@ -1,3 +1,4 @@
+import { useRadarFeature } from '../../../api/client'
 import type { ReactNode } from 'react'
 import { CNPG_BARMAN_OBJECTSTORE_GROUP, isApiGroup, type NavigateToResource } from '@skyhook-io/k8s-ui'
 import { CNPGClusterActions } from './CNPGClusterActions'
@@ -14,7 +15,7 @@ function backupRestoreBlocker(b: any): string | undefined {
   return undefined
 }
 
-export function renderCNPGHeaderActions({
+function headerActions({
   resource,
   namespace,
   name,
@@ -46,4 +47,14 @@ export function renderCNPGHeaderActions({
   if (resource.kind === 'ScheduledBackup') return <CNPGScheduleActions namespace={namespace} name={name} />
   if (resource.kind === 'Pooler') return <CNPGPoolerActions namespace={namespace} name={name} />
   return null
+}
+
+
+function CNPGHeaderActionsForServer(props: Parameters<typeof headerActions>[0]) {
+  const { support } = useRadarFeature('cnpgWorkspace')
+  return support === 'supported' ? headerActions(props) : null
+}
+
+export function renderCNPGHeaderActions(props: Parameters<typeof headerActions>[0]): ReactNode {
+  return <CNPGHeaderActionsForServer {...props} />
 }

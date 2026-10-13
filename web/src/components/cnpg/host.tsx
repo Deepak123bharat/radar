@@ -1,3 +1,4 @@
+import { useRadarFeature } from '../../api/client'
 import { useState } from 'react'
 import { isApiGroup } from '@skyhook-io/k8s-ui'
 import type { RenderDiagnoseAction } from '../../context/DiagnoseCustomization'
@@ -36,7 +37,8 @@ export const cnpgHost = {
     const tab = params.get('tab')
     if (plural === 'clusters' && (tab === 'timeline' || tab === 'events')) params.set('tab', 'activity')
     const base = cnpgDetailPath({ plural, namespace: resource.namespace, name: resource.name })
-    return `${base}${params.size ? `?${params}` : ''}`
+    const qs = params.toString()
+    return qs ? `${base}?${qs}` : base
   },
 
   detailSlots(namespace: string, name: string, group?: string): DetailSlots {
@@ -48,13 +50,20 @@ export const cnpgHost = {
 
   diagnoseAction(render: RenderDiagnoseAction | undefined): RenderDiagnoseAction | undefined {
     return render ? (context) => context.kind === 'Cluster' && context.group === 'postgresql.cnpg.io'
-      ? <CNPGInvestigationAction namespace={context.namespace} name={context.name} render={render} context={context} />
+      ? <CNPGDiagnoseForServer render={render} context={context} />
       : render(context) : undefined
   },
 
   logs(kind: string, resource: { apiVersion?: string } | null | undefined, namespace: string, name: string) {
     return kind === 'Cluster' && isApiGroup(resource?.apiVersion, 'postgresql.cnpg.io') ? <CNPGClusterLogs namespace={namespace} name={name} /> : null
   },
+}
+
+function CNPGDiagnoseForServer({ render, context }: { render: RenderDiagnoseAction; context: Parameters<RenderDiagnoseAction>[0] }) {
+  const { support } = useRadarFeature('cnpgWorkspace')
+  return support === 'supported'
+    ? <CNPGInvestigationAction namespace={context.namespace} name={context.name} render={render} context={context} />
+    : render(context)
 }
 
 function CNPGKindList(props: KindListProps) {
@@ -73,8 +82,6 @@ export const cnpgResourceHost: ResourceHost = {
   },
   resources: Object.entries(CNPG_DETAIL_KINDS).map(([name, kind]) => ({ name, group: kind.group })),
   feature: 'cnpgWorkspace',
-  canRender: support => support !== 'unsupported',
-  canRedirect: support => support === 'supported',
   expandedPath: cnpgHost.expandedPath,
   detailRedirect: cnpgHost.detailRedirect,
   detailOwnership: ['summary', 'destination', 'logs'],

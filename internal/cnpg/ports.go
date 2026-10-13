@@ -35,7 +35,8 @@ type Observations struct {
 }
 
 type ReadClients struct {
-	Exec ExecFunc
+	ClusterDone <-chan struct{}
+	Exec        ExecFunc
 
 	Typed kubernetes.Interface
 	Proxy kubernetes.Interface

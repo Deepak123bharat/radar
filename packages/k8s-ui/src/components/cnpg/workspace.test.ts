@@ -634,3 +634,15 @@ it('matches in-tree recovery by the actual archive and endpoint rather than serv
   const other = { ...source, spec: { backup: { barmanObjectStore: { ...archive, endpointURL: 'https://other.example' } } } }
   expect(cnpgRecoveryMatchesCluster(restored, other, [])).toBe(false)
 })
+
+
+it('keeps newly unreported kind coverage unknown in the shipped workspace envelope', () => {
+  const data = resp({ clusters: [cluster('pg-a', 'db')] })
+  delete data.coverage.databaseRoles
+  const fleet = buildCNPGFleet(data)
+  expect(fleet.rows[0].name).toBe('pg-a')
+  expect(fleet.rows[0].cluster.status.phase).toBe('Cluster in healthy state')
+  expect(fleet.incompleteKinds).toContain('databaseRoles')
+  data.coverage.databaseRoles = { state: 'notInstalled' }
+  expect(buildCNPGFleet(data).incompleteKinds).not.toContain('databaseRoles')
+})

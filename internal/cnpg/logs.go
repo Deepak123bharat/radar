@@ -235,13 +235,25 @@ func cnpgSnapshotLogSources(pods []*corev1.Pod, selected string) []podlogs.Sourc
 }
 
 type cnpgStreamHandle struct {
+	uid    types.UID
 	cancel context.CancelFunc
+}
+
+type cnpgLogSourceFailure struct {
+	key string
+	uid types.UID
+}
+
+type cnpgCompletedLogRun struct {
+	key string
+	uid types.UID
+	run string
 }
 
 // followCNPGContainerLogs reports whether it read the stream to its end, and
 // returns k8score.ErrLogsUnavailable when the node answers with its notice
 // instead of logs.
-func followCNPGContainerLogs(ctx context.Context, client kubernetes.Interface, namespace, podName string, opts corev1.PodLogOptions, follow int, logCh chan<- podlogs.Entry) (bool, error) {
+func followCNPGContainerLogs(ctx context.Context, client kubernetes.Interface, namespace, podName string, opts corev1.PodLogOptions, follow int, sourceLabel string, logCh chan<- podlogs.Entry) (bool, error) {
 	stream, err := client.CoreV1().Pods(namespace).GetLogs(podName, &opts).Stream(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -261,7 +273,7 @@ func followCNPGContainerLogs(ctx context.Context, client kubernetes.Interface, n
 			}
 			ts, content := podlogs.ParseLine(line)
 			select {
-			case logCh <- podlogs.Entry{Pod: podName, Container: opts.Container, Timestamp: ts, Content: content, Previous: opts.Previous, Follow: follow}:
+			case logCh <- podlogs.Entry{Pod: podName, Container: opts.Container, Timestamp: ts, Content: content, SourceLabel: sourceLabel, Previous: opts.Previous, Follow: follow}:
 			case <-ctx.Done():
 				return false, nil
 			}
@@ -464,6 +476,7 @@ func (target *LogTarget) Snapshot(ctx context.Context, query LogQuery) (ClusterL
 
 func (target *LogTarget) Follow(parent context.Context, query LogQuery, send func(string, any)) {
 	namespace, name, cluster, pods, cache, client := target.namespace, target.name, target.cluster, target.pods, target.cache, target.reader.Clients.Typed
+	clusterDone := target.reader.Clients.ClusterDone
 	uid := cluster.GetUID()
 	send("connected", map[string]any{
 		"cluster": name, "namespace": namespace, "uid": uid, "pods": podlogs.BuildPodInfos(pods),
@@ -472,13 +485,34 @@ func (target *LogTarget) Follow(parent context.Context, query LogQuery, send fun
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	logCh := make(chan podlogs.Entry, 1000)
-	unavailableCh := make(chan string)
+	unavailableCh := make(chan cnpgLogSourceFailure)
+	completedCh := make(chan cnpgCompletedLogRun)
 	unavailable := podlogs.UnavailableSources{}
 	sendUnavailable := func() { send("notice", map[string]string{"notice": unavailable.Notice()}) }
 	var active sync.Map
-	var completed sync.Map
+	completed := map[string]cnpgCompletedLogRun{}
 	roles := map[string]string{}
 	cursors := map[string]*podlogs.StreamCursor{}
+	stopPod := func(podName string) {
+		active.Range(func(key, value any) bool {
+			if strings.HasPrefix(key.(string), podName+"/") {
+				value.(*cnpgStreamHandle).cancel()
+				active.CompareAndDelete(key, value)
+			}
+			return true
+		})
+		for key := range cursors {
+			if strings.HasPrefix(key, podName+"/") {
+				delete(cursors, key)
+			}
+		}
+		for key := range completed {
+			if strings.HasPrefix(key, podName+"/") {
+				delete(completed, key)
+			}
+		}
+		delete(roles, podName)
+	}
 	follows := 0
 	start := func(pods []*corev1.Pod) {
 		for _, pod := range pods {
@@ -500,11 +534,15 @@ func (target *LogTarget) Follow(parent context.Context, query LogQuery, send fun
 					run = fmt.Sprintf("%s/%d/previous", status.LastTerminationState.Terminated.ContainerID, status.RestartCount)
 				}
 				terminated := status.State.Terminated != nil || previous
-				if read, ok := completed.Load(key); terminated && ok && read == run {
+				if read, ok := completed[key]; terminated && ok && read.uid == pod.UID && read.run == run {
 					continue
 				}
-				if _, exists := active.Load(key); exists {
-					continue
+				if value, exists := active.Load(key); exists {
+					handle := value.(*cnpgStreamHandle)
+					if handle.uid == pod.UID {
+						continue
+					}
+					handle.cancel()
 				}
 				follows++
 				follow := follows
@@ -513,21 +551,29 @@ func (target *LogTarget) Follow(parent context.Context, query LogQuery, send fun
 					opts.Previous = true
 					opts.Follow = false
 				}
+				sourceLabel := cnpgLogSourceLabel(roles[pod.Name], c, query.Container)
+				if previous && sourceLabel != "" {
+					sourceLabel += " · previous run"
+				}
 				streamCtx, streamCancel := context.WithCancel(ctx)
-				handle := &cnpgStreamHandle{cancel: streamCancel}
+				handle := &cnpgStreamHandle{uid: pod.UID, cancel: streamCancel}
 				active.Store(key, handle)
 				go func(podName, key string) {
+					defer streamCancel()
 					defer active.CompareAndDelete(key, handle)
-					done, err := followCNPGContainerLogs(streamCtx, client, namespace, podName, opts, follow, logCh)
+					done, err := followCNPGContainerLogs(streamCtx, client, namespace, podName, opts, follow, sourceLabel, logCh)
 					if err != nil {
 						select {
-						case unavailableCh <- key:
+						case unavailableCh <- cnpgLogSourceFailure{key: key, uid: handle.uid}:
 						case <-streamCtx.Done():
 						}
 						return
 					}
-					if done && terminated {
-						completed.Store(key, run)
+					if done && terminated && streamCtx.Err() == nil {
+						select {
+						case completedCh <- cnpgCompletedLogRun{key: key, uid: handle.uid, run: run}:
+						case <-streamCtx.Done():
+						}
 					}
 				}(pod.Name, key)
 			}
@@ -535,9 +581,9 @@ func (target *LogTarget) Follow(parent context.Context, query LogQuery, send fun
 	}
 	start(pods)
 
-	known := map[string]bool{}
+	known := map[string]types.UID{}
 	for _, p := range pods {
-		known[p.Name] = true
+		known[p.Name] = p.UID
 	}
 	ticker := time.NewTicker(logDiscoveryInterval)
 	defer ticker.Stop()
@@ -545,25 +591,39 @@ func (target *LogTarget) Follow(parent context.Context, query LogQuery, send fun
 		select {
 		case <-ctx.Done():
 			return
-		case key := <-unavailableCh:
+		case <-clusterDone:
+			send("end", map[string]string{"reason": "context changed"})
+			return
+		case failure := <-unavailableCh:
 			// A stream canceled during pod removal can still deliver its report.
+			key := failure.key
 			podName, _, _ := strings.Cut(key, "/")
-			if known[podName] && unavailable.Add(key) {
+			if uid, seen := known[podName]; seen && uid == failure.uid && unavailable.Add(key) {
 				sendUnavailable()
+			}
+		case read := <-completedCh:
+			podName, _, _ := strings.Cut(read.key, "/")
+			if uid, seen := known[podName]; seen && uid == read.uid {
+				completed[read.key] = read
 			}
 		case entry := <-logCh:
-			if unavailable.Remove(entry.Pod + "/" + entry.Container) {
+			key := entry.Pod + "/" + entry.Container
+			cursor := cursors[key]
+			fromCurrentPod := cursor != nil && cursor.FromCurrentPod(entry)
+			if fromCurrentPod && unavailable.Remove(key) {
 				sendUnavailable()
 			}
-			if cursor := cursors[entry.Pod+"/"+entry.Container]; cursor != nil && !cursor.Admit(entry) {
+			if cursor != nil && !cursor.Admit(entry) {
 				continue
 			}
 			if !query.keep(entry) {
 				continue
 			}
-			entry.SourceLabel = cnpgLogSourceLabel(roles[entry.Pod], entry.Container, query.Container)
-			if entry.Previous && entry.SourceLabel != "" {
-				entry.SourceLabel += " · previous run"
+			if fromCurrentPod {
+				entry.SourceLabel = cnpgLogSourceLabel(roles[entry.Pod], entry.Container, query.Container)
+				if entry.Previous && entry.SourceLabel != "" {
+					entry.SourceLabel += " · previous run"
+				}
 			}
 			annotateCNPGLogEntry(&entry)
 			send("log", entry)
@@ -584,8 +644,15 @@ func (target *LogTarget) Follow(parent context.Context, query LogQuery, send fun
 			present := map[string]bool{}
 			for _, p := range currentPods {
 				present[p.Name] = true
-				if !known[p.Name] {
-					known[p.Name] = true
+				if previousUID, seen := known[p.Name]; !seen || previousUID != p.UID {
+					if seen {
+						stopPod(p.Name)
+						if unavailable.RemovePod(p.Name) {
+							sendUnavailable()
+						}
+						send("pod_removed", map[string]string{"pod": p.Name, "reason": "replaced"})
+					}
+					known[p.Name] = p.UID
 					send("pod_added", map[string]any{"pods": []podlogs.PodInfo{podlogs.BuildPodInfo(p, time.Now())}})
 				}
 			}
@@ -594,24 +661,7 @@ func (target *LogTarget) Follow(parent context.Context, query LogQuery, send fun
 					continue
 				}
 				delete(known, podName)
-				active.Range(func(key, value any) bool {
-					if strings.HasPrefix(key.(string), podName+"/") {
-						value.(*cnpgStreamHandle).cancel()
-						active.Delete(key)
-					}
-					return true
-				})
-				for key := range cursors {
-					if strings.HasPrefix(key, podName+"/") {
-						delete(cursors, key)
-					}
-				}
-				completed.Range(func(key, _ any) bool {
-					if strings.HasPrefix(key.(string), podName+"/") {
-						completed.Delete(key)
-					}
-					return true
-				})
+				stopPod(podName)
 				if unavailable.RemovePod(podName) {
 					sendUnavailable()
 				}

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -1009,7 +1010,7 @@ func (s *Server) getDashboardResourceCounts(cache *k8s.ResourceCache, namespace 
 				counts.Gateways = len(gateways)
 			}
 		}
-		for _, routeKind := range []string{"HTTPRoute", "GRPCRoute", "TCPRoute", "TLSRoute"} {
+		for _, routeKind := range []string{"HTTPRoute", "GRPCRoute", "TCPRoute", "TLSRoute", "UDPRoute"} {
 			if rGVR, ok := resourceDiscovery.GetGVR(routeKind); ok {
 				routes, err := dynamicCache.List(rGVR, namespace)
 				if err != nil {
@@ -1264,12 +1265,14 @@ func (s *Server) getDashboardHelmSummary(r *http.Request, namespaces []string) D
 		username = user.Username
 		groups = user.Groups
 	}
-	releases, err := helmClient.ListReleasesAcrossNamespaces(namespaces, username, groups)
+	releases, err := helmClient.ListReleasesAcrossNamespaces(r.Context(), namespaces, username, groups)
 	if err != nil {
 		if helm.IsForbiddenError(err) {
 			return DashboardHelmSummary{Releases: []DashboardHelmRelease{}, Restricted: true}
 		}
-		log.Printf("[dashboard] Failed to list Helm releases: %v", err)
+		if !errors.Is(r.Context().Err(), context.Canceled) {
+			log.Printf("[dashboard] Failed to list Helm releases: %v", err)
+		}
 		return DashboardHelmSummary{
 			Releases:  []DashboardHelmRelease{},
 			Error:     err.Error(),

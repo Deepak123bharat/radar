@@ -1,4 +1,3 @@
-import { stripTrailingSlashes } from '@skyhook-io/k8s-ui/utils/url-path'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { flushSync } from 'react-dom'
 import { startViewTransitionSafe } from '@skyhook-io/k8s-ui/utils/view-transition'
@@ -38,7 +37,7 @@ import { CloudFunnelButton } from './components/CloudFunnelButton'
 import { useNavCustomization } from './context/NavCustomization'
 import type { FleetTakeoverTarget } from './context/NavCustomization'
 import { PrimaryNavRail } from './components/nav/PrimaryNavRail'
-import { resourceExpandedPath, resourceKindListTitle, useResourceHostFeatures } from './integrations/resourceHosts'
+import { resourceExpandedPath, resourceKindListTitle } from './integrations/resourceHosts'
 import { workspaceContextSwitchSearch, workspaceForPath, workspaceForView, workspaceLabels } from './integrations/workspaceRoutes'
 import { WorkspaceScreen } from './integrations/workspaceScreens'
 import { currentPageLabel } from './utils/page-links'
@@ -84,7 +83,7 @@ import type { ContextSwitcherHandle } from './components/ContextSwitcher'
 
 // All possible node kinds (core + GitOps)
 const ALL_NODE_KINDS: NodeKind[] = [
-  'Internet', 'Ingress', 'Gateway', 'HTTPRoute', 'GRPCRoute', 'TCPRoute', 'TLSRoute',
+  'Internet', 'Ingress', 'Gateway', 'HTTPRoute', 'GRPCRoute', 'TCPRoute', 'TLSRoute', 'UDPRoute',
   'Service', 'Deployment', 'Rollout', 'DaemonSet', 'StatefulSet',
   'ReplicaSet', 'Pod', 'PodGroup', 'ConfigMap', 'Secret', 'ServiceAccount', 'SealedSecret', 'ServiceMonitor', 'PodMonitor', 'HorizontalPodAutoscaler', 'Job', 'CronJob', 'PersistentVolumeClaim', 'Namespace',
   'Application', 'Kustomization', 'HelmRelease', 'GitRepository',
@@ -129,13 +128,11 @@ const FLEET_MODE_KINDS = new Set<NodeKind>([
 
 // Convert API resource name back to topology node ID prefix
 // Extended MainView type that includes traffic and cost
-const TOPOLOGY_GROUPINGS: readonly GroupingMode[] = ['none', 'namespace', 'app', 'label']
-
 type ExtendedMainView = MainView | 'traffic' | 'cost' | 'capacity' | 'cnpg' | 'workload' | 'checks' | 'gitops' | 'compare' | 'helmCompare' | 'issues' | 'applications' | 'investigations'
 
 // Extract view from URL path
 function getViewFromPath(pathname: string): ExtendedMainView {
-  if (stripTrailingSlashes(pathname) === '/helm/compare') return 'helmCompare'
+  if (pathname.replace(/\/+$/, '') === '/helm/compare') return 'helmCompare'
   const path = pathname.replace(/^\//, '').split('/')[0]
   if (path === '' || path === 'home') return 'home'
   if (path === 'topology') return 'topology'
@@ -348,7 +345,6 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
   const navigationType = useNavigationType()
   const [searchParams, setSearchParams] = useSearchParams()
   const capabilities = useCapabilitiesContext()
-  const hostFeatures = useResourceHostFeatures()
   const openLocalTerminal = useOpenLocalTerminal()
   const navCustomization = useNavCustomization()
   // The AI panel is an absolute slot in the body frame (the column under the header):
@@ -438,7 +434,8 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     return {
       namespaces,
       topologyMode: (searchParams.get('mode') as TopologyMode) || 'resources',
-      grouping: (TOPOLOGY_GROUPINGS.find((g) => g === searchParams.get('group')) ?? (namespaces.length === 0 ? 'namespace' : 'none')) as GroupingMode,
+      // Default to namespace grouping when viewing all namespaces
+      grouping: (searchParams.get('group') as GroupingMode) || (namespaces.length === 0 ? 'namespace' : 'none'),
     }
   }
 
@@ -477,7 +474,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
 
   // Canonical URL — `/resources` is not stable for bookmarks/sharing; normalize to `/resources/pods`.
   useEffect(() => {
-    const path = stripTrailingSlashes(location.pathname) || '/'
+    const path = location.pathname.replace(/\/+$/, '') || '/'
     if (path !== '/resources') return
     navigate(
       { pathname: '/resources/pods', search: location.search, hash: location.hash },
@@ -2390,7 +2387,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
           onNavigate={(res) => navigateToResource(res)}
           canCollapseToDrawer={!isMobile}
           onExpand={(res, opts) => {
-            const detailPath = resourceExpandedPath(res, hostFeatures, connection.context || undefined, opts?.yaml ? 'yaml' : undefined)
+            const detailPath = resourceExpandedPath(res, connection.context || undefined, opts?.yaml ? 'yaml' : undefined)
             if (detailPath) {
               navigate(
                 detailPath,

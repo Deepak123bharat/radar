@@ -20,6 +20,10 @@ func (s *Server) handleCNPGOperatorStatus(w http.ResponseWriter, r *http.Request
 		s.writeJSON(w, resp)
 		return
 	}
-	resp = s.cnpgReader(r).OperatorStatus(r.Context(), wanted)
+	reader, ok := s.requireCNPGReader(w, r)
+	if !ok {
+		return
+	}
+	resp = reader.OperatorStatus(r.Context(), wanted)
 	s.writeJSON(w, resp)
 }

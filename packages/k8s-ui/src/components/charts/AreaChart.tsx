@@ -51,15 +51,17 @@ export function AreaChart({ series, color, fillColor, unit, referenceLines, anno
   selection?: ChartTimeRange | null
   /**
    * Enables range selection: drag across the plot, or click to pick the one
-   * evaluation step under the pointer (needs `stepSeconds`).
+   * step-wide window around the pointer (needs `stepSeconds`; clipped at the domain edges).
    */
   onSelectRange?: (range: ChartTimeRange) => void
 }) {
   const hatchId = `hatch-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
   const [drag, setDrag] = useState<{ from: number; to: number } | null>(null)
+  const dragRef = useRef<{ from: number; to: number } | null>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const wrapperRef = useRef<HTMLDivElement>(null)
   const [hoverX, setHoverX] = useState<number | null>(null)
+  const [keyboardFocus, setKeyboardFocus] = useState(false)
   const [labelsFit, setLabelsFit] = useState(true)
   const [renderedWidth, setRenderedWidth] = useState(0)
   const multiSeries = series.length > 1
@@ -87,6 +89,7 @@ export function AreaChart({ series, color, fillColor, unit, referenceLines, anno
       minTs = domain.start
       maxTs = domain.end
     }
+    if (!Number.isFinite(minTs) || !Number.isFinite(maxTs)) return null
     if (minTs === maxTs) maxTs = minTs + 60
     if (maxVal === 0 && minVal === 0) {
       // Unit-appropriate floor so the Y-axis isn't misleadingly large.
@@ -286,40 +289,69 @@ export function AreaChart({ series, color, fillColor, unit, referenceLines, anno
     return { ts, x: clampedX, points, nearbyAnnotations, shaded }
   }, [hoverX, chartData, placedAnnotations, seriesLabels, marginLeft, plotWidth, marginTop, plotHeight, multiSeries, color, stepSeconds, shadedRanges])
 
-  const pointerX = useCallback((e: React.MouseEvent<SVGRectElement>) => {
+  const pointerX = useCallback((e: { clientX: number }) => {
     const ctm = svgRef.current?.getScreenCTM()
     return ctm ? (e.clientX - ctm.e) / ctm.a : null
   }, [])
 
-  const handleMouseMove = useCallback((e: React.MouseEvent<SVGRectElement>) => {
+  const clampX = (x: number) => Math.max(marginLeft, Math.min(marginLeft + plotWidth, x))
+  const tsAt = (x: number) => {
+    if (!chartData) return 0
+    return chartData.minTs + ((clampX(x) - marginLeft) / plotWidth) * (chartData.maxTs - chartData.minTs)
+  }
+  const selectAt = (from: number, to: number) => {
+    if (!onSelectRange || !chartData) return
+    const a = tsAt(Math.min(from, to))
+    const b = tsAt(Math.max(from, to))
+    if (Math.abs(to - from) >= 6) {
+      onSelectRange({ start: Math.round(a), end: Math.round(b) })
+    } else if (stepSeconds && stepSeconds > 0) {
+      const half = stepSeconds / 2
+      onSelectRange({ start: Math.round(Math.max(chartData.minTs, a - half)), end: Math.round(Math.min(chartData.maxTs, a + half)) })
+    }
+  }
+  const cancelDrag = () => {
+    dragRef.current = null
+    setDrag(null)
+  }
+  const handlePointerMove = (e: React.PointerEvent<SVGRectElement>) => {
     const x = pointerX(e)
     if (x === null) return
     setHoverX(x)
-    setDrag(d => (d ? { ...d, to: x } : d))
-  }, [pointerX])
-
-  const tsAt = (x: number) => {
-    if (!chartData) return 0
-    const clamped = Math.max(marginLeft, Math.min(marginLeft + plotWidth, x))
-    return chartData.minTs + ((clamped - marginLeft) / plotWidth) * (chartData.maxTs - chartData.minTs)
+    if (dragRef.current) {
+      dragRef.current = { ...dragRef.current, to: clampX(x) }
+      setDrag(dragRef.current)
+    }
   }
-
-  const handleMouseDown = (e: React.MouseEvent<SVGRectElement>) => {
-    if (!onSelectRange || e.button !== 0) return
+  const handlePointerDown = (e: React.PointerEvent<SVGRectElement>) => {
+    if (e.button !== 0) return
     const x = pointerX(e)
-    if (x !== null) setDrag({ from: x, to: x })
+    if (x === null) return
+    setHoverX(x)
+    if (!onSelectRange) return
+    e.currentTarget.setPointerCapture(e.pointerId)
+    dragRef.current = { from: clampX(x), to: clampX(x) }
+    setDrag(dragRef.current)
   }
-
-  const handleMouseUp = () => {
-    if (!drag || !onSelectRange || !chartData) return
-    setDrag(null)
-    const a = tsAt(Math.min(drag.from, drag.to))
-    const b = tsAt(Math.max(drag.from, drag.to))
-    if (Math.abs(drag.to - drag.from) >= 6) {
-      onSelectRange({ start: Math.round(a), end: Math.round(b) })
-    } else if (stepSeconds) {
-      const half = stepSeconds / 2
-      onSelectRange({ start: Math.round(Math.max(chartData.minTs, a - half)), end: Math.round(Math.min(chartData.maxTs, a + half)) })
+  const handlePointerUp = (e: React.PointerEvent<SVGRectElement>) => {
+    const current = dragRef.current
+    const x = pointerX(e)
+    cancelDrag()
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+    if (current && x !== null) selectAt(current.from, clampX(x))
+  }
+  const handleKeyDown = (e: React.KeyboardEvent<SVGRectElement>) => {
+    if (!chartData || !onSelectRange) return
+    if (e.key === 'Escape') { cancelDrag(); setHoverX(null); return }
+    if (!stepSeconds || stepSeconds <= 0) return
+    const x = hoverX ?? marginLeft
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault()
+      const step = (stepSeconds / (chartData.maxTs - chartData.minTs)) * plotWidth
+      setHoverX(clampX(x + (e.key === 'ArrowRight' ? step : -step)))
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      selectAt(x, x)
     }
   }
 
@@ -345,32 +377,6 @@ export function AreaChart({ series, color, fillColor, unit, referenceLines, anno
             <line x1="0" y1="0" x2="0" y2="6" stroke="currentColor" strokeWidth="2" className="text-theme-border" />
           </pattern>
         </defs>
-
-        {shadedRanges?.map((r, i) => {
-          const x1 = Math.max(marginLeft, toX(r.start))
-          const x2 = Math.min(marginLeft + plotWidth, toX(r.end))
-          if (x2 <= x1) return null
-          return <rect key={`shade-${i}`} data-chart-gap x={x1} y={marginTop} width={x2 - x1} height={plotHeight} fill={`url(#${hatchId})`} opacity="0.7" />
-        })}
-
-        {selection && (() => {
-          const x1 = Math.max(marginLeft, toX(selection.start))
-          const x2 = Math.min(marginLeft + plotWidth, toX(selection.end))
-          if (x2 < x1) return null
-          return <rect data-chart-selection x={x1} y={marginTop} width={Math.max(2, x2 - x1)} height={plotHeight} fill="currentColor" className="text-accent" opacity="0.15" />
-        })()}
-
-        {drag && Math.abs(drag.to - drag.from) >= 2 && (
-          <rect
-            x={Math.max(marginLeft, Math.min(drag.from, drag.to))}
-            y={marginTop}
-            width={Math.abs(drag.to - drag.from)}
-            height={plotHeight}
-            fill="currentColor"
-            className="text-accent"
-            opacity="0.2"
-          />
-        )}
 
         {/* Grid lines */}
         {yTicks.map((tick, i) => (
@@ -438,6 +444,32 @@ export function AreaChart({ series, color, fillColor, unit, referenceLines, anno
             fill={p.areaFillColor}
           />
         ))}
+
+        {shadedRanges?.map((r, i) => {
+          const x1 = Math.max(marginLeft, toX(r.start))
+          const x2 = Math.min(marginLeft + plotWidth, toX(r.end))
+          if (x2 <= x1) return null
+          return <rect key={`shade-${i}`} data-chart-gap x={x1} y={marginTop} width={x2 - x1} height={plotHeight} fill={`url(#${hatchId})`} opacity="0.7" />
+        })}
+
+        {selection && (() => {
+          const x1 = Math.max(marginLeft, toX(selection.start))
+          const x2 = Math.min(marginLeft + plotWidth, toX(selection.end))
+          if (x2 < x1) return null
+          return <rect data-chart-selection x={x1} y={marginTop} width={Math.max(2, x2 - x1)} height={plotHeight} fill="currentColor" className="text-accent" opacity="0.15" />
+        })()}
+
+        {drag && Math.abs(drag.to - drag.from) >= 2 && (
+          <rect
+            x={Math.max(marginLeft, Math.min(drag.from, drag.to))}
+            y={marginTop}
+            width={Math.abs(drag.to - drag.from)}
+            height={plotHeight}
+            fill="currentColor"
+            className="text-accent"
+            opacity="0.2"
+          />
+        )}
 
         {/* Lines */}
         {paths.map(p => p && (
@@ -590,14 +622,23 @@ export function AreaChart({ series, color, fillColor, unit, referenceLines, anno
           x={marginLeft} y={marginTop}
           width={plotWidth} height={plotHeight}
           fill="transparent"
-          style={{ cursor: onSelectRange ? 'col-resize' : 'crosshair' }}
-          onMouseMove={handleMouseMove}
-          onMouseDown={handleMouseDown}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={() => {
-            setHoverX(null)
-            setDrag(null)
-          }}
+          onPointerMove={handlePointerMove}
+          onPointerDown={handlePointerDown}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={cancelDrag}
+          onLostPointerCapture={cancelDrag}
+          onPointerLeave={(e) => { if (e.pointerType !== 'touch') setHoverX(null) }}
+          onMouseLeave={() => setHoverX(null)}
+          tabIndex={onSelectRange && stepSeconds && stepSeconds > 0 ? 0 : undefined}
+          role={onSelectRange && stepSeconds && stepSeconds > 0 ? 'button' : undefined}
+          aria-label={onSelectRange && stepSeconds && stepSeconds > 0 ? 'Select chart interval: use arrow keys to move, then Enter to select' : undefined}
+          onKeyDown={handleKeyDown}
+          onFocus={() => setKeyboardFocus(true)}
+          onBlur={() => { setKeyboardFocus(false); setHoverX(null); cancelDrag() }}
+          stroke={keyboardFocus ? 'currentColor' : undefined}
+          strokeWidth={keyboardFocus ? 2 : undefined}
+          className={keyboardFocus ? 'text-accent' : undefined}
+          style={{ cursor: onSelectRange ? 'col-resize' : 'crosshair', touchAction: onSelectRange ? 'none' : undefined }}
         />
       </svg>
 
@@ -623,7 +664,7 @@ export function AreaChart({ series, color, fillColor, unit, referenceLines, anno
                 </span>
               </div>
             ))}
-            {hoverData.shaded && hoverData.points.length === 0 && (
+            {hoverData.shaded && (
               <div className="py-0.5 text-theme-text-secondary">{hoverData.shaded.label}</div>
             )}
             {hoverData.points.map((p, i) => (

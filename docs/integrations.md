@@ -321,7 +321,7 @@ Radar has first-class renderers for **AWS (CAPA)**, **GCP (CAPG)**, and **Azure 
 
 ### What Radar Shows
 
-**Topology:** Full network path — GatewayClass → Gateway → HTTPRoute/GRPCRoute/TCPRoute/TLSRoute → Service → Pod. Visualize how traffic flows from the gateway controller through routes to your backend services.
+**Topology:** Full network path — GatewayClass → Gateway → HTTPRoute/GRPCRoute/TCPRoute/TLSRoute/UDPRoute → Service → Pod. Visualize how traffic flows from the gateway controller through routes to your backend services.
 
 <p align="center">
   <img src="screenshots/integrations/gateway-topology.png" alt="Gateway API Topology" width="800">
@@ -346,6 +346,7 @@ Radar has first-class renderers for **AWS (CAPA)**, **GCP (CAPG)**, and **Azure 
 | GRPCRoute | `gateway.networking.k8s.io/v1` | Yes | Yes | Yes |
 | TCPRoute | `gateway.networking.k8s.io/v1alpha2` | Yes | Yes | Yes |
 | TLSRoute | `gateway.networking.k8s.io/v1alpha2` | Yes | Yes | Yes |
+| UDPRoute | `gateway.networking.k8s.io/v1alpha2` | Yes | Yes | Yes |
 
 ---
 
@@ -446,7 +447,7 @@ The legacy `traefik.containo.us` API group (pre-v2.11) is warm-listed alongside 
 
 ### What Radar Shows
 
-**Topology:** Certificate → Issuer/ClusterIssuer edges show which issuer manages each certificate. The full provisioning chain (Certificate → CertificateRequest → Order → Challenge) is connected via owner references.
+**Topology:** Certificate → Issuer/ClusterIssuer edges connect each certificate to its observed built-in issuer, including ownerless issuers. Omitted `issuerRef.kind` and `issuerRef.group` use cert-manager defaults. Only referenced issuers are added; external issuer groups are not inferred. ClusterIssuer visibility uses its exact cluster-scoped read permission. Resource details and MCP context distinguish issuer dependencies from autoscaling. The full provisioning chain (Certificate → CertificateRequest → Order → Challenge) is connected via owner references.
 
 <p align="center">
   <img src="screenshots/integrations/certmanager-topology.png" alt="cert-manager Topology" width="800">
@@ -523,6 +524,23 @@ inspection of the Operator's Kubernetes resources and scrape configuration.
 | PodMonitor | `monitoring.coreos.com/v1` | Pod selection and scrape configuration | Yes | — |
 | PrometheusRule | `monitoring.coreos.com/v1` | — | Yes | — |
 | Alertmanager | `monitoring.coreos.com/v1` | — | Generic | — |
+
+---
+
+## VictoriaMetrics chart reads
+
+The Helm chart grants Radar cluster-wide `get/list/watch` on VMAgent, VMCluster
+and VMSingle (`vmagents`, `vmclusters`, `vmsingles` in
+`operator.victoriametrics.com`) whenever it grants cluster-wide Secrets reads:
+`rbac.secrets: true`, `rbac.helm: true`, auth enabled (`auth.mode != none`), or
+cloud mode. These objects can carry inline credentials, so they share the same
+grant decision as Secrets. There is no separate VictoriaMetrics setting.
+
+This rule excludes VMUser/VMAuth, alerting and scrape/probe resources, and the
+Logs, Traces, Distributed and Anomaly families. The wildcard
+`rbac.crdGroups.all: true` still grants `get/list/watch` on every API group and
+resource, including core Secrets and these excluded kinds. See the
+[chart reference](../deploy/helm/radar/README.md#crd-access).
 
 ---
 
@@ -1034,7 +1052,7 @@ The Helm chart's `rbac.crdGroups.crossplane: true` toggle grants read access to:
 - `crossplane.io`, `pkg.crossplane.io`, `apiextensions.crossplane.io` (Crossplane core)
 - `kubernetes.crossplane.io`, `helm.crossplane.io` (provider-kubernetes + provider-helm — useful in non-cloud installs)
 
-For Upbound provider CRDs (`s3.aws.upbound.io`, `compute.gcp.upbound.io`, etc.), list them in `rbac.additionalCrdGroups` — Kubernetes RBAC has no `apiGroups` wildcards. Alternative: set `rbac.crdGroups.all: true` to grant cluster-wide read on every CRD (simpler, broader).
+For Upbound provider CRDs (`s3.aws.upbound.io`, `compute.gcp.upbound.io`, etc.), list them in `rbac.additionalCrdGroups` — Kubernetes RBAC has no `apiGroups` wildcards. Alternative: set `rbac.crdGroups.all: true`, which grants `get/list/watch` on every API group and resource, core Secrets included (simpler, much broader).
 
 ### Supported CRDs
 

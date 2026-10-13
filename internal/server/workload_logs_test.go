@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/skyhook-io/radar/internal/podlogs"
 	"net/http/httptest"
 	"reflect"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -27,7 +29,6 @@ import (
 	clienttesting "k8s.io/client-go/testing"
 
 	"github.com/skyhook-io/radar/internal/k8s"
-	"github.com/skyhook-io/radar/internal/podlogs"
 	"github.com/skyhook-io/radar/pkg/health"
 	"github.com/skyhook-io/radar/pkg/k8score"
 )

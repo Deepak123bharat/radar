@@ -22,6 +22,7 @@ type cnpgReadAdapter struct {
 	dynamic       dynamic.Interface
 	config        *rest.Config
 	actionContext string
+	captured      bool
 }
 
 func (s *Server) cnpgActionClients(r *http.Request, req integration.ActionRequest) (cnpgsvc.ActionClients, error) {
@@ -35,6 +36,15 @@ func (s *Server) cnpgActionClients(r *http.Request, req integration.ActionReques
 	return cnpgsvc.ActionClients{Dynamic: reader.dynamic, Typed: reader.Clients.Typed, Exec: reader.Clients.Exec}, nil
 }
 
+func (s *Server) requireCNPGReader(w http.ResponseWriter, r *http.Request) (*cnpgReadAdapter, bool) {
+	reader := s.cnpgReader(r)
+	if !reader.captured {
+		s.writeError(w, http.StatusServiceUnavailable, "cluster connection is changing; try again")
+		return nil, false
+	}
+	return reader, true
+}
+
 func (s *Server) cnpgReader(r *http.Request) *cnpgReadAdapter {
 	var promClient *prometheuspkg.Client
 	var cache *k8s.ResourceCache
@@ -44,7 +54,7 @@ func (s *Server) cnpgReader(r *http.Request) *cnpgReadAdapter {
 	var identity, clusterContext, target string
 	var connected, forced bool
 	adapter := &cnpgReadAdapter{Reader: &cnpgsvc.Reader{}}
-	k8s.CaptureClusterReads(func() {
+	adapter.captured = k8s.CaptureClusterReads(func() {
 		operation = k8s.OperationContext()
 		cache, discovery, dynamicCache = k8s.GetResourceCache(), k8s.GetResourceDiscovery(), k8s.GetDynamicResourceCache()
 		connected = k8s.IsConnected()
@@ -53,7 +63,7 @@ func (s *Server) cnpgReader(r *http.Request) *cnpgReadAdapter {
 		promClient = prometheuspkg.GetClient()
 		adapter.dynamic, adapter.actionContext = s.getDynamicClientSnapshotForRequest(r)
 		adapter.config = s.getConfigForRequest(r)
-		adapter.Clients = cnpgsvc.ReadClients{Typed: s.getClientForRequest(r), Proxy: cnpgRuntimeClient(r)}
+		adapter.Clients = cnpgsvc.ReadClients{Typed: s.getClientForRequest(r), Proxy: cnpgRuntimeClient(r), ClusterDone: operation.Done()}
 		adapter.Clients.Exec = cnpgsvc.NewExec(adapter.Clients.Typed, adapter.config)
 	})
 	current := func() bool { return operation != nil && operation.Err() == nil }

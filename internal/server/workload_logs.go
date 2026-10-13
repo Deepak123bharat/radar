@@ -23,10 +23,11 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
-	integration "github.com/skyhook-io/radar/internal/integration"
+	"github.com/skyhook-io/radar/internal/integration"
 	"github.com/skyhook-io/radar/internal/k8s"
 	"github.com/skyhook-io/radar/internal/podlogs"
 	"github.com/skyhook-io/radar/pkg/health"
@@ -376,7 +377,7 @@ func (s *Server) handleWorkloadLogs(w http.ResponseWriter, r *http.Request) {
 	podlogs.Sort(snapshot.Logs)
 
 	s.writeJSON(w, map[string]any{
-		"pods":   buildPodInfos(pods),
+		"pods":   podlogs.BuildPodInfos(pods),
 		"logs":   snapshot.Logs,
 		"notice": snapshot.Notice,
 	})
@@ -428,7 +429,7 @@ func (s *Server) handleWorkloadLogsStream(w http.ResponseWriter, r *http.Request
 
 	// Get initial pods
 	pods := cache.GetPodsForWorkload(namespace, selector)
-	podInfos := buildPodInfos(pods)
+	podInfos := podlogs.BuildPodInfos(pods)
 
 	// Send connected event with pod list
 	connected := map[string]any{
@@ -455,11 +456,11 @@ func (s *Server) handleWorkloadLogsStream(w http.ResponseWriter, r *http.Request
 
 	// Channel for aggregated log lines
 	logCh := make(chan podlogs.Entry, 1000)
-	unavailableCh := make(chan string)
+	unavailableCh := make(chan podLogSourceFailure)
 	unavailable := podlogs.UnavailableSources{}
 
 	// Track active streams
-	var activeStreams sync.Map // podName/containerName -> cancel func
+	var activeStreams sync.Map // podName/containerName -> stream handle
 	var streamWg sync.WaitGroup
 	// A container's follow ends when it exits and the next discovery pass
 	// reopens it, so each container resumes after the last line it sent.
@@ -472,24 +473,30 @@ func (s *Server) handleWorkloadLogsStream(w http.ResponseWriter, r *http.Request
 			containers := k8s.GetContainersForPod(pod, container, true)
 			for _, c := range containers {
 				key := pod.Name + "/" + c
-				if _, exists := activeStreams.Load(key); exists {
-					continue // Already streaming
+				if value, exists := activeStreams.Load(key); exists {
+					handle := value.(*podLogStreamHandle)
+					if handle.uid == pod.UID {
+						continue
+					}
+					handle.cancel()
 				}
 
 				follows++
 				follow := follows
 				opts := podlogs.CursorFor(cursors, key, pod.UID, follow).RestartOptions(c, tailLines, sinceSeconds)
 				streamCtx, streamCancel := context.WithCancel(ctx)
-				activeStreams.Store(key, streamCancel)
+				handle := &podLogStreamHandle{uid: pod.UID, cancel: streamCancel}
+				activeStreams.Store(key, handle)
 
 				streamWg.Add(1)
 				go func(podName, key string, streamCtx context.Context) {
 					defer streamWg.Done()
-					defer activeStreams.Delete(key)
+					defer streamCancel()
+					defer activeStreams.CompareAndDelete(key, handle)
 
 					if err := streamPodLogs(streamCtx, client, namespace, podName, opts, follow, logCh); err != nil {
 						select {
-						case unavailableCh <- key:
+						case unavailableCh <- podLogSourceFailure{key: key, uid: handle.uid}:
 						case <-streamCtx.Done():
 						}
 					}
@@ -506,9 +513,9 @@ func (s *Server) handleWorkloadLogsStream(w http.ResponseWriter, r *http.Request
 	defer discoveryTicker.Stop()
 
 	// Track known pods for detecting changes
-	knownPods := make(map[string]bool)
+	knownPods := make(map[string]types.UID)
 	for _, p := range pods {
-		knownPods[p.Name] = true
+		knownPods[p.Name] = p.UID
 	}
 
 	// Main loop: forward logs and handle pod discovery
@@ -520,18 +527,20 @@ func (s *Server) handleWorkloadLogsStream(w http.ResponseWriter, r *http.Request
 
 		case entry := <-logCh:
 			key := entry.Pod + "/" + entry.Container
-			if unavailable.Remove(key) {
+			cursor := cursors[key]
+			if cursor != nil && cursor.FromCurrentPod(entry) && unavailable.Remove(key) {
 				sendSSEEvent(w, flusher, "notice", map[string]string{"notice": unavailable.Notice()})
 			}
-			if cursor := cursors[key]; cursor != nil && !cursor.Admit(entry) {
+			if cursor != nil && !cursor.Admit(entry) {
 				continue
 			}
 			sendSSEEvent(w, flusher, "log", entry)
 
-		case key := <-unavailableCh:
+		case failure := <-unavailableCh:
+			key := failure.key
 			// A stream canceled during pod removal can still deliver its report.
 			podName, _, _ := strings.Cut(key, "/")
-			if knownPods[podName] && unavailable.Add(key) {
+			if uid, known := knownPods[podName]; known && uid == failure.uid && unavailable.Add(key) {
 				sendSSEEvent(w, flusher, "notice", map[string]string{"notice": unavailable.Notice()})
 			}
 
@@ -552,8 +561,15 @@ func (s *Server) handleWorkloadLogsStream(w http.ResponseWriter, r *http.Request
 
 			// Check for new pods
 			for _, p := range currentPods {
-				if !knownPods[p.Name] {
-					knownPods[p.Name] = true
+				if previousUID, seen := knownPods[p.Name]; !seen || previousUID != p.UID {
+					if seen {
+						stopPodLogStreams(&activeStreams, cursors, p.Name)
+						if unavailable.RemovePod(p.Name) {
+							sendSSEEvent(w, flusher, "notice", map[string]string{"notice": unavailable.Notice()})
+						}
+						sendSSEEvent(w, flusher, "pod_removed", map[string]string{"pod": p.Name, "reason": "replaced"})
+					}
+					knownPods[p.Name] = p.UID
 					// Notify frontend about new pod
 					sendSSEEvent(w, flusher, "pod_added", map[string]any{
 						"pods": []podlogs.PodInfo{podlogs.BuildPodInfo(p, time.Now())},
@@ -565,21 +581,7 @@ func (s *Server) handleWorkloadLogsStream(w http.ResponseWriter, r *http.Request
 			for podName := range knownPods {
 				if !currentPodNames[podName] {
 					delete(knownPods, podName)
-					// Cancel streams for this pod
-					activeStreams.Range(func(key, value any) bool {
-						if strings.HasPrefix(key.(string), podName+"/") {
-							if cancelFn, ok := value.(context.CancelFunc); ok {
-								cancelFn()
-							}
-							activeStreams.Delete(key)
-						}
-						return true
-					})
-					for key := range cursors {
-						if strings.HasPrefix(key, podName+"/") {
-							delete(cursors, key)
-						}
-					}
+					stopPodLogStreams(&activeStreams, cursors, podName)
 					if unavailable.RemovePod(podName) {
 						sendSSEEvent(w, flusher, "notice", map[string]string{"notice": unavailable.Notice()})
 					}
@@ -650,6 +652,23 @@ func streamPodLogs(ctx context.Context, client kubernetes.Interface, namespace, 
 			if k8score.IsLogsUnavailableNotice(line) {
 				return k8score.ErrLogsUnavailable
 			}
+
+			line = strings.TrimSuffix(line, "\n")
+
+			if line != "" && (err == nil || err == io.EOF) {
+				ts, content := podlogs.ParseLine(line)
+				select {
+				case logCh <- podlogs.Entry{
+					Pod:       podName,
+					Container: containerName,
+					Timestamp: ts,
+					Content:   content,
+					Follow:    follow,
+				}:
+				case <-ctx.Done():
+					return nil
+				}
+			}
 			if err != nil {
 				if err == io.EOF || ctx.Err() != nil {
 					return nil
@@ -657,31 +676,8 @@ func streamPodLogs(ctx context.Context, client kubernetes.Interface, namespace, 
 				log.Printf("[workload-logs] Read error for %s/%s: %v", podName, containerName, err)
 				return nil
 			}
-
-			line = strings.TrimSuffix(line, "\n")
-			if line == "" {
-				continue
-			}
-
-			ts, content := podlogs.ParseLine(line)
-			select {
-			case logCh <- podlogs.Entry{
-				Pod:       podName,
-				Container: containerName,
-				Timestamp: ts,
-				Content:   content,
-				Follow:    follow,
-			}:
-			case <-ctx.Done():
-				return nil
-			}
 		}
 	}
-}
-
-// buildPodInfos converts pods to podlogs.PodInfo slice
-func buildPodInfos(pods []*corev1.Pod) []podlogs.PodInfo {
-	return buildPodInfosForRevision(pods, workloadRevisionTarget{})
 }
 
 func buildPodInfosForRevision(pods []*corev1.Pod, target workloadRevisionTarget) []podlogs.PodInfo {
