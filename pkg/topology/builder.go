@@ -1759,6 +1759,14 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 	// 1k. Add Istio VirtualService nodes (CRD - fetched via dynamic cache)
 	// VirtualService edges are created in a second pass after service IDs are populated
+	istioDomain := ""
+	istioDomainLoaded := false
+	loadIstioDomain := func() {
+		if !istioDomainLoaded {
+			istioDomain = b.istioServiceDomain()
+			istioDomainLoaded = true
+		}
+	}
 	var virtualServiceGVR schema.GroupVersionResource
 	hasVirtualServices := false
 	if resourceDiscovery != nil {
@@ -1767,6 +1775,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	virtualServiceIDs := make(map[string]string)             // ns/name -> vsID
 	var virtualServiceResources []*unstructured.Unstructured // Store for second pass
 	if hasVirtualServices && dynamicCache != nil {
+		loadIstioDomain()
 		virtualServices, vsErr := dynamicCache.ListNamespaces(virtualServiceGVR, opts.Namespaces)
 		if vsErr != nil {
 			log.Printf("WARNING [topology] Failed to list Istio VirtualServices: %v", vsErr)
@@ -1803,12 +1812,13 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				Name:   name,
 				Status: nodeStatus,
 				Data: map[string]any{
-					"namespace":  ns,
-					"hosts":      hosts,
-					"gateways":   gateways,
-					"routeCount": routeCount,
-					"labels":     vs.GetLabels(),
-					"apiVersion": vs.GetAPIVersion(),
+					"namespace":          ns,
+					"hosts":              hosts,
+					"gateways":           gateways,
+					"routeCount":         routeCount,
+					"labels":             vs.GetLabels(),
+					"apiVersion":         vs.GetAPIVersion(),
+					"istioServiceDomain": istioDomain,
 				},
 			})
 
@@ -1826,6 +1836,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	destinationRuleIDs := make(map[string]string)             // ns/name -> drID
 	var destinationRuleResources []*unstructured.Unstructured // Store for second pass
 	if hasDestinationRules && dynamicCache != nil {
+		loadIstioDomain()
 		destinationRules, drErr := dynamicCache.ListNamespaces(destinationRuleGVR, opts.Namespaces)
 		if drErr != nil {
 			log.Printf("WARNING [topology] Failed to list Istio DestinationRules: %v", drErr)
@@ -1855,11 +1866,12 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				Name:   name,
 				Status: nodeStatus,
 				Data: map[string]any{
-					"namespace":   ns,
-					"host":        host,
-					"subsetCount": len(subsets),
-					"labels":      dr.GetLabels(),
-					"apiVersion":  dr.GetAPIVersion(),
+					"namespace":          ns,
+					"host":               host,
+					"subsetCount":        len(subsets),
+					"labels":             dr.GetLabels(),
+					"apiVersion":         dr.GetAPIVersion(),
+					"istioServiceDomain": istioDomain,
 				},
 			})
 
@@ -4693,7 +4705,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 
 		// addVSToSvcEdge is a helper that deduplicates VS→Service edges
 		addVSToSvcEdge := func(protocol string, destHost string) {
-			svcName, svcNs := parseIstioHost(destHost, vsNs)
+			svcName, svcNs := parseIstioHost(destHost, vsNs, istioDomain)
 			svcID, ok := serviceIDs[svcNs+"/"+svcName]
 			if !ok {
 				return
@@ -4787,7 +4799,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			continue
 		}
 
-		svcName, svcNs := parseIstioHost(host, drNs)
+		svcName, svcNs := parseIstioHost(host, drNs, istioDomain)
 		if svcID, ok := serviceIDs[svcNs+"/"+svcName]; ok {
 			edges = append(edges, Edge{
 				ID:     fmt.Sprintf("%s-to-%s", drID, svcID),
@@ -6045,6 +6057,11 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 		}
 	}
 
+	istioDomain := "cluster.local"
+	if len(trafficVirtualServices) > 0 {
+		istioDomain = b.istioServiceDomain()
+	}
+
 	// Step 1: Find services referenced by ingresses
 	for _, ing := range ingresses {
 		if !opts.MatchesNamespaceFilter(ing.Namespace) {
@@ -6110,7 +6127,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 					if destHost == "" {
 						continue
 					}
-					svcName, svcNs := parseIstioHost(destHost, vsNs)
+					svcName, svcNs := parseIstioHost(destHost, vsNs, istioDomain)
 					svcKey := svcNs + "/" + svcName
 					servicesFromIstio[svcKey] = true
 				}
@@ -6613,12 +6630,13 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 			Name:   vsName,
 			Status: nodeStatus,
 			Data: map[string]any{
-				"namespace":  vsNs,
-				"hosts":      hosts,
-				"gateways":   gateways,
-				"routeCount": routeCount,
-				"labels":     vs.GetLabels(),
-				"apiVersion": vs.GetAPIVersion(),
+				"namespace":          vsNs,
+				"hosts":              hosts,
+				"gateways":           gateways,
+				"routeCount":         routeCount,
+				"labels":             vs.GetLabels(),
+				"apiVersion":         vs.GetAPIVersion(),
+				"istioServiceDomain": istioDomain,
 			},
 		})
 
@@ -6661,7 +6679,7 @@ func (b *Builder) buildTrafficTopology(opts BuildOptions) (*Topology, error) {
 					if destHost == "" {
 						continue
 					}
-					svcName, svcNs := parseIstioHost(destHost, vsNs)
+					svcName, svcNs := parseIstioHost(destHost, vsNs, istioDomain)
 					svcKey := svcNs + "/" + svcName
 					if _, ok := servicesToInclude[svcKey]; !ok {
 						continue
@@ -8103,18 +8121,6 @@ func matchesHelmRelease(labels map[string]string, hrName, hrNamespace string) bo
 	}
 
 	return false
-}
-
-// parseIstioHost parses an Istio service host reference into service name and namespace.
-// Istio hosts can be: "reviews", "reviews.default", "reviews.default.svc.cluster.local"
-// Returns (serviceName, namespace). If no namespace is found, defaultNs is used.
-func parseIstioHost(host, defaultNs string) (string, string) {
-	parts := strings.Split(host, ".")
-	if len(parts) == 1 {
-		return parts[0], defaultNs
-	}
-	// "reviews.default" or "reviews.default.svc.cluster.local"
-	return parts[0], parts[1]
 }
 
 // resolveKnativeRef resolves a KNative object reference (kind/ns/name) to a topology node ID.
