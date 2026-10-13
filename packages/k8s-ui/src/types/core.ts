@@ -345,6 +345,7 @@ export interface Topology {
   nodes: TopologyNode[]
   edges: TopologyEdge[]
   warnings?: string[] // Warnings about resources that failed to load
+  incompleteInventories?: {resource: string; group?: string; state: "pending" | "failed" | "uncovered" | "unavailable"; namespace?: string; message: string}[]
   largeCluster?: boolean // True if cluster exceeds large cluster threshold
   hiddenKinds?: string[] // Resource kinds auto-hidden for performance
   requiresNamespaceFilter?: boolean // True if cluster is too large for all-namespace topology
@@ -641,6 +642,8 @@ export interface ResourceRef {
 
 // Computed relationships for a resource
 export interface Relationships {
+  incompleteInventories?: Topology["incompleteInventories"]
+  warnings?: string[]
   reflection?: {
     source?: ResourceRef
     sourceResourceVersion?: string

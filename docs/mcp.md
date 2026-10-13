@@ -542,6 +542,34 @@ older VictoriaMetrics operators place such finalizers on managed objects.
 
 For `issues`, read `timing_summary` when present; it explains timing combinations that are easy to misread without schema context. The raw provenance fields remain available for filtering. `first_seen` is an evidence-backed lower bound, `onset_unknown` means no contributing signal has a known onset, and `resource_created_at` is resource-age context rather than issue age. A missing `first_seen` is exposed to CEL as `0`; require `first_seen != 0` for any age filter, and also require `onset_coverage_unknown == 0` when the whole row must have exact timing.
 
+Global topology lists retain observed objects during first paint and report
+incomplete source inventories separately. An incomplete list cannot establish
+absence. Namespace-scoped provider views reject pending, failed, or uncovered
+inventories. `Topology.incompleteInventories` records the source's exact group,
+resource, state and readable message; existing graph warnings also carry those
+messages. Graph-derived relationships preserve relevant typed-source evidence, including
+when no consumer or scaler node could be enrolled. Unrelated inventories do not
+taint a resource; namespace-bounded reads suppress cluster-wide scope warnings
+when that namespace is covered. Dynamic CRD initial-sync coverage is outside
+this typed-provider contract. The Related Resources section shows
+loading, failed-read and partial-coverage messages alongside available links.
+
+Resource context records unavailable `relationships`, `referencedBy`, `scaledBy`
+or `scaledBy.hpaSummary` evidence in `omitted`. Pending relationship inventories
+use `cache_cold`; failed, uncovered, disabled and other unreadable inventories use
+`unavailable`, which does not promise that retrying will help. Visible
+references remain useful, but omissions prevent claiming a complete consumer
+inventory. Initial sync is not continuous watch freshness.
+
+A pending or failed typed neighborhood root returns an inventory error (REST
+503). A ready typed root outside the cache's namespace coverage returns
+`kind_namespace_uncovered`; an absent root in a ready, covered inventory retains
+not-found behavior. Incomplete supporting graph inventories appear in
+`omitted{subgraph.nodes}`. The existing certificate-expiry endpoint reports loading or failed inventories
+instead of an empty expiry map, leaves disabled optional certificate annotations
+empty, and retains
+its map of observed certificates for namespace-limited caches.
+
 Resource context distinguishes observed dependency references (`dependencies` and
 `dependents`) from autoscalers (`scaledBy`). A Certificate depends on its issuer;
 it does not scale it. These references carry API group and namespace identity,
@@ -569,9 +597,10 @@ permission-filtered, with field paths and a bounded visible-only count; they
 describe declarations rather than proving a successful mount or active read.
 Capped results round-robin readable resource kinds, preserving examples of
 workload templates, revision templates and admitted Pods even with many replicas.
-If any consumer inventory fails, `omitted` marks `referencedBy` as `unavailable`.
+If a consumer inventory is still loading, `omitted` marks `referencedBy` as
+`cache_cold`; if it failed or does not cover the namespace, as `unavailable`.
 References from inventories that loaded remain available; an empty result with
-this omission does not establish that no consumers exist.
+either omission does not establish that no consumers exist.
 Only named PodSpec declarations are included: implicit workload defaults and
 template-generated PVC names are not inferred. An absent omission does not by
 itself establish cache freshness or complete namespace coverage.
@@ -623,16 +652,10 @@ sorted deterministically and capped at 20. `total` counts only readable Pods;
 `truncated` marks the item cap. This is observed placement in Radar's cache scope,
 not a cluster-wide workload count or a list of potential scheduling candidates.
 When Relationships already collected placement, context reuses that result.
-Unavailable Pod data, including a missing placement provider, records
-`omitted: [{field: "referencedBy", reason:
-"unavailable"}]`, distinguishing a failed lookup from an observed empty result.
-
-ConfigMap and Secret reverse-reference context uses the same omission when a
-scanned workload or Pod source cannot be read. References from available sources
-remain visible. This projection scans selected built-in workload templates and
-controllerless Pods; absence of an omission does not establish complete consumer
-coverage or prove that a resource is unused. Storage audit uses its own consumer
-inventory and coverage rules.
+Pod data that is still loading keeps the visible Pods and records
+`omitted: [{field: "referencedBy", reason: "cache_cold"}]`; failed or uncovered
+Pod data, including a missing placement provider, records `unavailable`. Either
+omission distinguishes an incomplete lookup from an observed empty result.
 
 ### Pod/template differences in issue context
 
