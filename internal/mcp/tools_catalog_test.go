@@ -245,7 +245,8 @@ func TestToolCatalogContextBudget(t *testing.T) {
 	// These caps guard against description accretion, not against new tools or
 	// load-bearing routing and uncertainty contracts. Raise them deliberately.
 	const (
-		maxCatalogBytes         = 58750
+		// Runtime inspection adds routing and attribution guidance, plus a small margin.
+		maxCatalogBytes         = 60250
 		maxToolDescriptionBytes = 3000
 	)
 
