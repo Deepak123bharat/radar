@@ -294,10 +294,6 @@ const KIND_ICON_MAP: Record<string, LucideIcon> = {
  * that don't have one fall through to the ungrouped map.
  */
 const GROUP_QUALIFIED_KIND_ICONS: Record<string, Record<string, LucideIcon>> = {
-  service: { '': Plug, 'serving.knative.dev': Layers },
-  configuration: { 'serving.knative.dev': KIND_ICON_MAP.knativeconfiguration },
-  revision: { 'serving.knative.dev': KIND_ICON_MAP.knativerevision },
-  route: { 'serving.knative.dev': KIND_ICON_MAP.knativeroute },
   cluster: { 'postgresql.cnpg.io': Database, 'cluster.x-k8s.io': Server },
   backup: { 'postgresql.cnpg.io': DatabaseBackup },
   scheduledbackup: { 'postgresql.cnpg.io': DatabaseBackup },
@@ -326,7 +322,7 @@ const TOPOLOGY_KIND_ICONS: Record<string, LucideIcon> = {
 
 export function getResourceIcon(kind: string, group?: string): LucideIcon {
   const k = kind.toLowerCase()
-  if (group !== undefined) {
+  if (group) {
     const groupMap = GROUP_QUALIFIED_KIND_ICONS[k]
     if (groupMap) return groupMap[group] ?? DEFAULT_RESOURCE_ICON
   }

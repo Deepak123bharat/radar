@@ -1,4 +1,3 @@
-import { canonicalResourceGroup } from '../../../utils/api-resources'
 import type { GitOpsTreeNode } from '../../../types'
 
 export interface GitOpsTreeFilters {
@@ -23,7 +22,7 @@ export function matchesGitOpsTreeFilters(node: GitOpsTreeNode, filters?: GitOpsT
   const health = gitOpsFilterSet(filters.health)
   const roles = gitOpsFilterSet(filters.roles)
 
-  if (kinds && !kinds.has(gitOpsTreeKindLabel(node.ref))) return false
+  if (kinds && !kinds.has(node.ref.kind)) return false
   if (namespaces && !namespaces.has(node.ref.namespace || '(cluster)')) return false
   if (sync && !sync.has(node.sync || 'Unknown')) return false
   if (health && !health.has(node.health || 'Unknown')) return false
@@ -40,9 +39,4 @@ export function hasGitOpsTreeFilters(filters?: GitOpsTreeFilters): boolean {
     gitOpsFilterSet(filters.health) ||
     gitOpsFilterSet(filters.roles),
   )
-}
-
-export function gitOpsTreeKindLabel(ref: GitOpsTreeNode['ref']): string {
-  const group = canonicalResourceGroup(ref.kind, ref.group)
-  return group === undefined ? ref.kind : `${ref.kind} (${group || 'core'})`
 }

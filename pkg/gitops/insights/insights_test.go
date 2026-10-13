@@ -1885,3 +1885,15 @@ func TestFluxUnobservedDependenciesDoNotClaimSync(t *testing.T) {
 		t.Fatalf("unknown source status changes = %+v", changes)
 	}
 }
+
+func TestInlineHelmReleaseSummaryKeepsDeclaredSource(t *testing.T) {
+	root := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "helm.toolkit.fluxcd.io/v2", "kind": "HelmRelease",
+		"metadata": map[string]any{"namespace": "team", "name": "app"},
+		"spec":     map[string]any{"chart": map[string]any{"spec": map[string]any{"sourceRef": map[string]any{"kind": "HelmRepository", "name": "repo"}}}},
+		"status":   map[string]any{"helmChart": "team/team-app"},
+	}}
+	if got := buildSummary(root, "fluxcd").Source; got != "HelmRepository/repo" {
+		t.Fatalf("source summary = %q", got)
+	}
+}

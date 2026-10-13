@@ -2258,13 +2258,23 @@ func TestBuildCrossNamespaceGraphDependenciesAreAuthorized(t *testing.T) {
 		Nodes: []topology.Node{
 			{ID: "helmrelease/team/app", Kind: topology.KindHelmRelease, Name: "app", Data: map[string]any{"namespace": "team", "apiVersion": "helm.toolkit.fluxcd.io/v2"}},
 			{ID: "helmchart/shared/chart/source.toolkit.fluxcd.io", Kind: "HelmChart", Name: "chart", Data: map[string]any{"namespace": "shared", "apiVersion": "source.toolkit.fluxcd.io/v1"}},
+			{ID: "helmrepository/shared/repo/source.toolkit.fluxcd.io", Kind: "HelmRepository", Name: "repo", Data: map[string]any{"namespace": "shared", "apiVersion": "source.toolkit.fluxcd.io/v1"}},
 		},
-		Edges: []topology.Edge{{ID: "source", Source: "helmrelease/team/app", Target: "helmchart/shared/chart/source.toolkit.fluxcd.io", Type: topology.EdgeUses}},
+		Edges: []topology.Edge{
+			{ID: "chart", Source: "helmrelease/team/app", Target: "helmchart/shared/chart/source.toolkit.fluxcd.io", Type: topology.EdgeUses},
+			{ID: "source", Source: "helmchart/shared/chart/source.toolkit.fluxcd.io", Target: "helmrepository/shared/repo/source.toolkit.fluxcd.io", Type: topology.EdgeUses},
+		},
 	}
 	allowed := Build(context.Background(), obj, Options{Topology: topo})
 	if len(allowed.Dependencies) != 1 || allowed.Dependencies[0].Namespace != "shared" || allowed.Dependencies[0].Group != "source.toolkit.fluxcd.io" {
 		t.Fatalf("cross-namespace dependency lost: %+v", allowed)
 	}
+	chart := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "source.toolkit.fluxcd.io/v1", "kind": "HelmChart", "metadata": map[string]any{"namespace": "shared", "name": "chart"}}}
+	chartContext := Build(context.Background(), chart, Options{Topology: topo})
+	if chartContext.Owner != nil || len(chartContext.Dependencies) != 1 || chartContext.Dependencies[0].Kind != "HelmRepository" || chartContext.Dependencies[0].Namespace != "shared" {
+		t.Fatalf("generated chart source context lost or presented as owner: %+v", chartContext)
+	}
+
 	denied := Build(context.Background(), obj, Options{Topology: topo, AccessChecker: denyChecker{group: "source.toolkit.fluxcd.io", kind: "HelmChart", namespace: "shared"}})
 	if len(denied.Dependencies) != 0 {
 		t.Fatalf("denied target leaked: %+v", denied)

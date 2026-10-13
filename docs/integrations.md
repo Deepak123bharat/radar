@@ -616,9 +616,12 @@ not owners: graph walks, REST/MCP context and Related Resources expose both
 directions with exact API group and namespace. Cross-namespace declarations
 stay within Radar's namespace scope; a declared source does not establish that
 the controller permits the reference or has produced an artifact. Source
-parsing is shared with the GitOps resource tree and insight summary. Generated
-`status.helmChart` tracking and native Helm release storage are separate from
-these declared source links.
+parsing is shared with the GitOps resource tree and insight summary. Inline
+HelmReleases follow their controller-recorded `status.helmChart` to the generated
+HelmChart and then its namespace-local source. The inline source declaration
+remains visible alongside that chart, including when the chart is unreadable
+or has not been observed. Native Helm release storage is
+separate from this dependency model.
 
 Flux source dependency targets use the supported warmup catalog, including HelmChart, Bucket and ExternalArtifact. Startup discovery and permission probes can still occur; graph joins do not issue a per-object API GET. The Cloud integration-read baseline withholds these three new source kinds pending full-object credential-field review; explicit customer RBAC can authorize them.
 

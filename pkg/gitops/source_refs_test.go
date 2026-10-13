@@ -50,3 +50,32 @@ func TestFluxSourceReferencesRejectInvalidDeclarations(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestInlineHelmReleaseUsesRecordedChart(t *testing.T) {
+	root := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "helm.toolkit.fluxcd.io/v2", "kind": "HelmRelease",
+		"metadata": map[string]any{"namespace": "team", "name": "app"},
+		"spec":     map[string]any{"chart": map[string]any{"spec": map[string]any{"sourceRef": map[string]any{"kind": "HelmRepository", "name": "repo", "namespace": "shared"}}}},
+		"status":   map[string]any{"helmChart": "shared/team-app"},
+	}}
+	want := []FluxSourceRef{
+		{Ref: resourceid.NewRef("source.toolkit.fluxcd.io", "HelmRepository", "shared", "repo"), Role: "chart source"},
+		{Ref: resourceid.NewRef("source.toolkit.fluxcd.io", "HelmChart", "shared", "team-app"), Role: "chart reference"},
+	}
+	if got := FluxSourceReferences(root); !reflect.DeepEqual(got, want) {
+		t.Fatalf("generated chart = %+v, want %+v", got, want)
+	}
+	for _, recorded := range []string{"", "unqualified", "/chart", "shared/", "shared/chart/extra"} {
+		root.Object["status"] = map[string]any{"helmChart": recorded}
+		got := FluxSourceReferences(root)
+		if len(got) != 1 || got[0].Kind != "HelmRepository" || got[0].Namespace != "shared" {
+			t.Fatalf("unrecorded chart = %+v", got)
+		}
+	}
+	root.Object["status"] = map[string]any{"helmChart": "shared/stale"}
+	root.Object["spec"].(map[string]any)["chartRef"] = map[string]any{"kind": "OCIRepository", "name": "current"}
+	got := FluxSourceReferences(root)
+	if len(got) != 1 || got[0].Kind != "OCIRepository" || got[0].Name != "current" {
+		t.Fatalf("chartRef followed stale generated chart: %+v", got)
+	}
+}

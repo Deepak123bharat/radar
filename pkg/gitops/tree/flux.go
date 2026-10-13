@@ -85,6 +85,12 @@ func fluxHelmReleaseManaged(root *unstructured.Unstructured, topo []topology.Nod
 		return nil
 	}
 
+	chartRefs := map[string]bool{}
+	for _, source := range gitops.FluxSourceReferences(root) {
+		if source.Kind == "HelmChart" {
+			chartRefs[refKey(ResourceRef{Group: source.Group, Kind: source.Kind, Namespace: source.Namespace, Name: source.Name})] = true
+		}
+	}
 	var out []managedResource
 	for _, n := range topo {
 		labels, ok := n.Data["labels"].(map[string]string)
@@ -105,6 +111,11 @@ func fluxHelmReleaseManaged(root *unstructured.Unstructured, topo []topology.Nod
 			continue
 		}
 		ref := refFromTopologyNode(n)
+		// Helm-controller stamps release labels on its artifact producer too;
+		// those labels do not make the chart part of the installed release.
+		if chartRefs[refKey(ref)] {
+			continue
+		}
 		// Don't include the HelmRelease itself if it somehow ended up in the
 		// topology with matching labels (defensive — this shouldn't happen but
 		// would create a self-edge).
