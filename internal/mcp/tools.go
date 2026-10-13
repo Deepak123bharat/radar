@@ -395,7 +395,6 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 			"not a root-cause verdict. Never treat resource age as issue age. " +
 			"When `recent_changes` is present, inspect it before concluding the returned " +
 			"issues explain the symptom. Follow `recent_changes_guidance` when present. " +
-			"`recent_changes_error` means the feed could not be read, not that nothing changed. " +
 			"`recent_changes_reason=" + meaningfulchanges.ChangesReasonNoCriticalIssues +
 			"` means no critical row, not healthy. The `" +
 			meaningfulchanges.ChangesReasonWithAllCreationTimeCriticalIssues +
