@@ -210,7 +210,7 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 	}, logToolCall("get_pod_logs", handleGetPodLogs))
 
 	diagnoseDescription := "Collect a bounded, point-in-time evidence bundle for one narrowed workload, " +
-		"GitOps reconciler, or network entry. It combines signals in one round-trip to support diagnosis; " +
+		"GitOps reconciler, Strimzi connector, or network entry. It combines signals in one round-trip to support diagnosis; " +
 		"it does not run an agent and is not an authoritative root-cause verdict or an exhaustive account. " +
 		"After narrowing, use for CrashLoopBackOff, OOMKilled, image-pull, readiness, scheduling, GitOps sync/health, " +
 		"or traffic not reaching a service, route, or ingress. For Pod, Deployment, StatefulSet, DaemonSet, or Argo Rollout it " +
@@ -224,7 +224,9 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 		"`auditSummary.highestSeverity` uses static-posture critical|high|medium|low (built-ins high|medium), " +
 		"unlike live `issueSummary` critical|warning. `application_configuration_change: true` classifies an edit; " +
 		"it is not a causal or universal relevance verdict. Application, Kustomization, and Flux HelmRelease return reconciler " +
-		"status and parsed issues without logs. Network entry kinds return per-route reachability evidence: trust " +
+		"status and parsed issues without logs. " +
+		"KafkaConnector and KafkaConnect (group=kafka.strimzi.io) return cached curated operator findings, not configuration, logs or application endpoint reads. " +
+		"Network entry kinds return per-route reachability evidence: trust " +
 		"`routes[].outcome` + `confidence` and `headline`/`diagnosis` over coarse `verdict`; `indirect` means only the " +
 		"API-server proxy reached it, not the live path. Point-in-time means the bundle is frozen from this call, " +
 		"not that every source was read atomically; preserve collection limits, errors, timestamps, and confidence. " +
@@ -1256,7 +1258,7 @@ func buildMCPResourceContextWithStaleChecks(ctx context.Context, obj runtime.Obj
 	auditSum := computeMCPAuditSummary(ctx, cache, canonicalGroup, canonicalKind, namespace, name)
 
 	opts := resourcecontext.Options{
-		RelatedApplicationFindings: issues.CachedStrimziEvidence(obj, strimziEvidenceAccess(ctx)),
+		RelatedApplicationFindings: issues.CachedStrimziEvidence(obj, issueRelatedResourceAccess(ctx)),
 		Reflections:                k8s.ReflectionLookup{Cache: cache},
 		Tier:                       tier,
 		AccessChecker:              newMCPRequestScopedChecker(ctx),
