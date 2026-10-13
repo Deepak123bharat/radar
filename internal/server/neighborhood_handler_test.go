@@ -181,7 +181,15 @@ func TestTypedRootsOutsideCacheCoverageDoNotClaimAbsence(t *testing.T) {
 	k8s.SetConnectionStatus(k8s.ConnectionStatus{State: k8s.StateConnected})
 	env := newAuthTestServer(t)
 	env.srv.permCache.Set("bob", nil, &auth.UserPermissions{AllowedNamespaces: []string{"a", "b"}})
-	for _, path := range []string{"/api/ai/neighborhood/Pod/b/known", "/api/resources/pods/b/known"} {
+	for _, path := range []string{
+		"/api/ai/neighborhood/Pod/b/known",
+		"/api/resources/pods/b/known",
+		"/api/ai/resources/Pod/b/known",
+		"/api/ai/resources/pods/b/known?context=none",
+		"/api/ai/resources/pods?namespace=b",
+		"/api/ai/resources/pods?namespaces=a,b",
+		"/api/ai/resources/pods?context=none",
+	} {
 		resp := env.authGet(t, path, "bob", "")
 		var body struct {
 			ErrorCode string `json:"error_code"`
