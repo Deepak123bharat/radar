@@ -705,7 +705,7 @@ func BenchmarkGenericParentClosureOwnerlessInventory(b *testing.B) {
 
 // BenchmarkRelationshipCacheHighReplicaPods is the replica-dense shape the
 // field census lacks: 2,000 Deployments of 25 Pods each, 50,000 Pods in all.
-// Every Pod stays an individual node in the relationship cache.
+// Private ownership evidence keeps detail and delete queries complete while the graph stays grouped.
 func BenchmarkRelationshipCacheHighReplicaPods(b *testing.B) {
 	ctrl := true
 	provider := &mockProvider{}

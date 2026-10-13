@@ -712,3 +712,13 @@ An `ownerAggregation: true` edge describes observed member ancestry;
 a controller, without treating
 the display group as a Kubernetes object or garbage-collection dependent.
 API-backed PodGroups use their own apiVersion, UID and owner references.
+
+Relationship-cache graphs keep Pods grouped. Private member identity and owner
+references support individual Pod lookups, complete Children lists and deletion
+previews at query time; filtering away a display group also removes its members
+from that query. These snapshots are not serialized. Delete previews distinguish
+verified owner-reference dependents, possible dependents with unresolved other
+owners, and GitOps finalizer teardown. Teardown reports a local, remote or unknown
+destination; remote and unknown destinations do not use a local resource list.
+Preview references follow resource-detail read gates, and `withheld` names the
+fields that omitted unreadable resources without exposing names or hidden counts.

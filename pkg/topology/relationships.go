@@ -19,6 +19,8 @@ import (
 // Build once via IndexByResource(topo). Pass to GetRelationshipsWithIndex on
 // each call. Lookups are read-only and goroutine-safe; mutation is not.
 type RelationshipsIndex struct {
+	groupedPods        map[string]*podOwnershipSnapshot
+	groupedPodsByOwner map[string][]string
 	byNodeID           map[string]*nodeEdgeSlots
 	nodesByID          map[string]*Node
 	nodesByResourceKey map[string]*Node
@@ -69,6 +71,7 @@ func IndexByResource(topo *Topology) *RelationshipsIndex {
 			slot.incoming = append(slot.incoming, e)
 		}
 	}
+	idx.indexGroupedPods(topo)
 	return idx
 }
 
@@ -81,6 +84,9 @@ func (r *RelationshipsIndex) ResolveObservedOwner(ref resourceid.Reference) (*No
 		return nil, false
 	}
 	node := r.nodesByResourceKey[resourceid.ResourceKey(ref.Group, ref.Kind, ref.Namespace, ref.Name)]
+	if node == nil && ref.Group == "" && ref.Kind == "Pod" {
+		node = r.nodeForID("pod/" + ref.Namespace + "/" + ref.Name)
+	}
 	if node == nil && ref.Namespace != "" {
 		node = r.nodesByResourceKey[resourceid.ResourceKey(ref.Group, ref.Kind, "", ref.Name)]
 	}
@@ -103,9 +109,9 @@ func (r *RelationshipsIndex) EdgesFor(nodeID string) (incoming, outgoing []Edge)
 	}
 	slot := r.byNodeID[nodeID]
 	if slot == nil {
-		return nil, nil
+		return r.withGroupedPodEdges(nodeID, nil, nil)
 	}
-	return slot.incoming, slot.outgoing
+	return r.withGroupedPodEdges(nodeID, slot.incoming, slot.outgoing)
 }
 
 // edgesForNode returns incoming/outgoing edges for nodeID, preferring the
@@ -132,6 +138,11 @@ func edgesForNode(topo *Topology, idx *RelationshipsIndex, nodeID string) (incom
 // resources Kubernetes garbage-collects with root. Only objects in the
 // topology are visible to it.
 func GetCascadeDeletePreview(root ResourceRef, topo *Topology, dp DynamicProvider) *CascadeDeletePreview {
+	return GetCascadeDeletePreviewWithIndex(root, topo, dp, nil)
+}
+
+// GetCascadeDeletePreviewWithIndex reuses a shared immutable relationship index.
+func GetCascadeDeletePreviewWithIndex(root ResourceRef, topo *Topology, dp DynamicProvider, index *RelationshipsIndex) *CascadeDeletePreview {
 	preview := &CascadeDeletePreview{
 		Root:       root,
 		Dependents: []ResourceRef{},
@@ -155,12 +166,12 @@ func GetCascadeDeletePreview(root ResourceRef, topo *Topology, dp DynamicProvide
 		}
 		rootID = strings.ToLower(KindForGVK(resolvedKind, root.Group)) + "/" + root.Namespace + "/" + root.Name
 	}
-	nodeByID := make(map[string]*Node, len(topo.Nodes))
-	for i := range topo.Nodes {
-		nodeByID[topo.Nodes[i].ID] = &topo.Nodes[i]
+	if index == nil {
+		index = IndexByResource(topo)
 	}
 
-	rootNode, ok := nodeByID[rootID]
+	rootNode := index.nodeForID(rootID)
+	ok := rootNode != nil
 	if root.Group != "" {
 		if ok && !nodeMatchesAPIGroup(rootNode, root.Group) {
 			ok = false
@@ -210,7 +221,9 @@ func GetCascadeDeletePreview(root ResourceRef, topo *Topology, dp DynamicProvide
 			owners[edge.Target] = append(owners[edge.Target], edge.Source)
 		}
 	}
-	index := IndexByResource(topo)
+	for parent, pods := range index.groupedPodsByOwner {
+		owned[parent] = append(owned[parent], pods...)
+	}
 	const (
 		survives = iota
 		possible
@@ -256,7 +269,7 @@ func GetCascadeDeletePreview(root ResourceRef, topo *Topology, dp DynamicProvide
 		queue = queue[1:]
 
 		for _, targetID := range owned[current] {
-			child := nodeByID[targetID]
+			child := index.nodeForID(targetID)
 			if child == nil || deleted[targetID] == certain {
 				continue
 			}
@@ -272,7 +285,7 @@ func GetCascadeDeletePreview(root ResourceRef, topo *Topology, dp DynamicProvide
 		}
 	}
 	for _, id := range order {
-		ref := resourceRefForNode(nodeByID[id], dp)
+		ref := resourceRefForNode(index.nodeForID(id), dp)
 		if ref == nil {
 			continue
 		}
@@ -403,8 +416,8 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 	if lookupIndex == nil {
 		lookupIndex = IndexByResource(topo)
 	}
-	nodeByID := lookupIndex.nodesByID
-	directNode, directExists := nodeByID[nodeID]
+	directNode := lookupIndex.nodeForID(nodeID)
+	directExists := directNode != nil
 	resourceKind := objectKind
 	if resourceKind == "" {
 		resourceKind = normalizeKindWithGroup(kind, objectGroup, dp)
@@ -424,7 +437,7 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 	}
 	incomingEdges, outgoingEdges := edgesForNode(topo, lookupIndex, nodeID)
 	refForNodeID := func(id string) *ResourceRef {
-		return resourceRefForNode(nodeByID[id], dp)
+		return resourceRefForNode(lookupIndex.nodeForID(id), dp)
 	}
 
 	rel := &Relationships{}
@@ -481,7 +494,7 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 			if isConfigurationDependency(refForNodeID(edge.Source)) {
 				rel.Dependents = appendResourceRef(rel.Dependents, *ref)
 			}
-			if reflectionEdge(edge, nodeByID) {
+			if reflectionEdge(edge, lookupIndex.nodesByID) {
 				if rel.Reflection == nil {
 					rel.Reflection = &ReflectionRelationships{}
 				}
@@ -577,12 +590,12 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 			if isConfigurationDependency(ref) {
 				rel.Dependencies = appendResourceRef(rel.Dependencies, *ref)
 			}
-			if reflectionEdge(edge, nodeByID) {
+			if reflectionEdge(edge, lookupIndex.nodesByID) {
 				if rel.Reflection == nil {
 					rel.Reflection = &ReflectionRelationships{}
 				}
 				rel.Reflection.Source = ref
-				rel.Reflection.SourceResourceVersion, _ = nodeByID[edge.Source].Data["resourceVersion"].(string)
+				rel.Reflection.SourceResourceVersion, _ = lookupIndex.nodeForID(edge.Source).Data["resourceVersion"].(string)
 			}
 			switch ref.Kind {
 			case "ServiceAccount":
@@ -832,7 +845,7 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 	if m, ok := queriedObj.(metav1.Object); ok {
 		managedByMeta = m
 	}
-	if mb := synthesizeManagedByFromNode(managedByMeta, nodeID, topo, dp, idx); len(mb) > 0 {
+	if mb := synthesizeManagedByFromNode(managedByMeta, nodeID, topo, dp, lookupIndex); len(mb) > 0 {
 		rel.ManagedBy = mb
 	}
 
@@ -912,6 +925,13 @@ func resourceRefForNodeID(nodeID string, topo *Topology, dp DynamicProvider) *Re
 func resourceRefForNode(node *Node, dp DynamicProvider) *ResourceRef {
 	if node == nil {
 		return nil
+	}
+	if node.Kind == KindPodGroup {
+		if version, _ := node.Data["apiVersion"].(string); version == "" {
+			return nil
+		}
+		namespace, _ := node.Data["namespace"].(string)
+		return &ResourceRef{Kind: "PodGroup", Namespace: namespace, Name: node.Name, Group: nodeGroup(node)}
 	}
 	ref := parseNodeID(node.ID, dp)
 	if ref == nil {

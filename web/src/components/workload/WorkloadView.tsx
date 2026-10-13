@@ -396,6 +396,7 @@ function useActionsBarProps(
     cascadeDetail: cascadePreview
       ? {
           basis: cascadePreview.basis,
+          withheld: cascadePreview.withheld,
           possibleDependents: cascadePreview.possibleDependents,
           controllerTeardown: cascadePreview.controllerTeardown,
         }

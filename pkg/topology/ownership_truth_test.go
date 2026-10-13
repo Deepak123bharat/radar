@@ -65,7 +65,6 @@ func ownershipFixture(t *testing.T) *Topology {
 	opts.ViewMode = ViewModeResources
 	opts.IncludeReplicaSets = true
 	opts.ForRelationshipCache = true
-	opts.IndividualPods = true
 	topo, err := NewBuilder(provider).WithDynamic(dynamic).Build(opts)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -182,7 +181,6 @@ func TestCascadePreviewHoldsBackDependentsWithUnseenOwners(t *testing.T) {
 	opts.ViewMode = ViewModeResources
 	opts.IncludeReplicaSets = true
 	opts.ForRelationshipCache = true
-	opts.IndividualPods = true
 	topo, err := NewBuilder(provider).Build(opts)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -242,7 +240,6 @@ func TestWatchedAnalysisRunKeepsItsRolloutOwnership(t *testing.T) {
 		}
 		opts := DefaultBuildOptions()
 		opts.ForRelationshipCache = true
-		opts.IndividualPods = true
 		topo, err := NewBuilder(&mockProvider{}).WithDynamic(dynamic).Build(opts)
 		if err != nil {
 			t.Fatalf("Build: %v", err)
@@ -392,7 +389,6 @@ func TestCompactNeighborhoodKeepsWorkloadContextAtHighReplicaCounts(t *testing.T
 			t.Fatalf("compact neighborhood lost %s: %+v", kind, neighborhood.Nodes)
 		}
 	}
-	opts.IndividualPods = true
 	individual, err := NewBuilder(provider).Build(opts)
 	if err != nil {
 		t.Fatal(err)
@@ -496,5 +492,50 @@ func TestActualPodGroupCRDKeepsItsMetadataAncestors(t *testing.T) {
 	}
 	if len(topo.Nodes) != 3 {
 		t.Fatalf("actual PodGroup lost metadata ancestors: %+v", topo.Nodes)
+	}
+	rel := GetRelationshipsWithObject("Widget", "team", "root", parent, topo, provider, dynamic, nil)
+	if rel == nil || len(rel.Children) != 1 || rel.Children[0].Kind != "PodGroup" || rel.Children[0].Group != groups.Group {
+		t.Fatalf("actual PodGroup omitted from children: %+v", rel)
+	}
+	preview := GetCascadeDeletePreview(ResourceRef{Kind: "Widget", Group: widgets.Group, Namespace: "team", Name: "root"}, topo, dynamic)
+	if len(preview.Dependents) != 2 {
+		t.Fatalf("actual PodGroup omitted from garbage collection: %+v", preview)
+	}
+
+}
+
+func TestGroupedMembersKeepOnlyCurrentIncarnationAndExplicitAggregation(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "parents.example.io", Version: "v1", Resource: "widgets"}
+	parent := genericIdentityObject(gvr, "Widget", "team", "owner")
+	parent.SetUID("current")
+	dynamic := &genericIdentityDynamic{watched: []schema.GroupVersionResource{gvr}, kinds: map[schema.GroupVersionResource]string{gvr: "Widget"}, resources: map[schema.GroupVersionResource][]*unstructured.Unstructured{gvr: {parent}}, listCalls: make(map[schema.GroupVersionResource]int)}
+	provider := &mockProvider{}
+	for i := 0; i < 7; i++ {
+		uid := types.UID("stale")
+		if i == 6 {
+			uid = "current"
+		}
+		provider.pods = append(provider.pods, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("worker-%d", i), Namespace: "team", UID: types.UID(fmt.Sprintf("pod-%d", i)), Labels: map[string]string{"app": "workers"}, OwnerReferences: []metav1.OwnerReference{ownerRef("parents.example.io/v1", "Widget", "owner", uid, false)}}})
+	}
+	for _, allStale := range []bool{false, true} {
+		if allStale {
+			provider.pods[6].OwnerReferences[0].UID = "stale"
+		}
+		topo, err := NewBuilder(provider).WithDynamic(dynamic).Build(DefaultBuildOptions())
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, edge := range topo.Edges {
+			if edge.OwnerAggregation != nil {
+				found = true
+				if !*edge.OwnerAggregation || edge.OwnerAggregationController == nil || *edge.OwnerAggregationController || edge.OwnerController != nil {
+					t.Fatalf("misclassified aggregate: %+v", edge)
+				}
+			}
+		}
+		if found == allStale {
+			t.Fatalf("matching incarnation found=%v allStale=%v", found, allStale)
+		}
 	}
 }

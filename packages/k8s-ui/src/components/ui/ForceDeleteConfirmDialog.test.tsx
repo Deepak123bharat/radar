@@ -40,7 +40,7 @@ describe('ForceDeleteConfirmDialog', () => {
     const text = await render({
       basis: 'ownerReferences',
       possibleDependents: [{ kind: 'Pod', namespace: 'prod', name: 'shared' }],
-      controllerTeardown: { controller: 'Flux', action: 'prune', resourcesBasis: 'inventory', resources: [{ kind: 'Deployment', namespace: 'prod', name: 'web' }] },
+      controllerTeardown: { controller: 'Flux', action: 'prune', destination: 'local', resourcesBasis: 'inventory', resources: [{ kind: 'Deployment', namespace: 'prod', name: 'web' }] },
     })
     expect(text()).toContain('Will also delete 1 dependent resource')
     expect(text()).toContain('May also delete 1 resource')
@@ -51,7 +51,7 @@ describe('ForceDeleteConfirmDialog', () => {
   })
 
   it('says force delete stops the controller teardown', async () => {
-    const text = await render({ basis: 'ownerReferences', controllerTeardown: { controller: 'Argo CD', action: 'prune', resourcesBasis: 'inventory', resources: [] } })
+    const text = await render({ basis: 'ownerReferences', controllerTeardown: { controller: 'Argo CD', action: 'prune', destination: 'local', resourcesBasis: 'inventory', resources: [] } })
     const checkbox = document.body.querySelector('input[type="checkbox"]') as HTMLInputElement
     await act(async () => checkbox.click())
     expect(text()).toContain("Force delete removes Argo CD's finalizer")
@@ -71,7 +71,7 @@ describe('ForceDeleteConfirmDialog', () => {
   })
 
   it('does not promise force delete stops a teardown already underway', async () => {
-    const text = await render({ basis: 'ownerReferences', controllerTeardown: { controller: 'Flux', action: 'prune', resourcesBasis: 'inventory', terminating: true } })
+    const text = await render({ basis: 'ownerReferences', controllerTeardown: { controller: 'Flux', action: 'prune', destination: 'local', resourcesBasis: 'inventory', terminating: true } })
     const checkbox = document.body.querySelector('input[type="checkbox"]') as HTMLInputElement
     await act(async () => checkbox.click())
     expect(text()).toContain('already being deleted')
@@ -79,14 +79,26 @@ describe('ForceDeleteConfirmDialog', () => {
   })
 
   it('names Helm\'s keep policy for a HelmRelease uninstall', async () => {
-    const text = await render({ basis: 'ownerReferences', controllerTeardown: { controller: 'Flux', action: 'uninstall', resourcesBasis: 'labels', resources: [{ kind: 'Deployment', namespace: 'prod', name: 'web' }] } })
+    const text = await render({ basis: 'ownerReferences', controllerTeardown: { controller: 'Flux', action: 'uninstall', destination: 'local', resourcesBasis: 'labels', resources: [{ kind: 'Deployment', namespace: 'prod', name: 'web' }] } })
     expect(text()).toContain('helm.sh/resource-policy: keep')
     expect(text()).not.toContain('kustomize.toolkit.fluxcd.io/prune')
   })
   it('does not present label matches as verified Helm release membership', async () => {
-    const text = await render({ basis: 'ownerReferences', controllerTeardown: { controller: 'Flux', action: 'uninstall', resourcesBasis: 'labels', resources: [{ kind: 'Deployment', namespace: 'prod', name: 'look-alike' }] } })
+    const text = await render({ basis: 'ownerReferences', controllerTeardown: { controller: 'Flux', action: 'uninstall', destination: 'local', resourcesBasis: 'labels', resources: [{ kind: 'Deployment', namespace: 'prod', name: 'look-alike' }] } })
     expect(text()).toContain('1 label matches')
     expect(text()).toContain('membership in the release is unverified')
   })
 
 })
+
+  it('names the remote destination scope without displaying local inventory', async () => {
+    const text = await render({ basis: 'ownerReferences', controllerTeardown: { controller: 'Argo CD', action: 'prune', destination: 'remote', resourcesBasis: 'inventory', resources: [] } })
+    expect(text()).toContain('another cluster')
+    expect(text()).toContain('destination cluster')
+    expect(text()).toContain('local resources do not inventory it')
+  })
+  it('discloses withheld resources without their names or counts', async () => {
+    const text = await render({ basis: 'ownerReferences', withheld: ['possibleDependents','controllerTeardown.resources'] })
+    expect(text()).toContain('hidden by your permissions')
+    expect(text()).toContain('partial preview')
+  })

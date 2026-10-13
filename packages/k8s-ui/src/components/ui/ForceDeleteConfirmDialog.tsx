@@ -13,6 +13,7 @@ export interface CascadeDependent {
 
 /** What else a delete removes, beyond the dependents garbage collection takes for certain. */
 export interface CascadeDetail {
+  withheld?: string[]
   /** "ownerReferences" when dependents are garbage-collection results; absent from older servers. */
   basis?: string
   /** Deleted unless another owner Radar can't see is still live. */
@@ -21,6 +22,7 @@ export interface CascadeDetail {
   controllerTeardown?: {
     controller: string
     action: 'prune' | 'uninstall' | string
+    destination: 'local' | 'remote' | 'unknown'
     resourcesBasis: 'inventory' | 'labels'
     resources?: CascadeDependent[]
     /** Already being deleted: the teardown may be underway. */
@@ -113,6 +115,9 @@ export function ForceDeleteConfirmDialog({
           />
         )}
 
+        {!cascadeLoading && cascadeDetail?.withheld?.length ? (
+          <p className="text-xs text-theme-text-secondary">Some resources are hidden by your permissions. This is a partial preview.</p>
+        ) : null}
         {!cascadeLoading && cascadeDetail?.controllerTeardown && (
           <ControllerTeardownNotice teardown={cascadeDetail.controllerTeardown} force={forceDelete} />
         )}
@@ -153,27 +158,35 @@ function optOut(teardown: NonNullable<CascadeDetail['controllerTeardown']>): str
 
 function ControllerTeardownNotice({ teardown, force }: { teardown: NonNullable<CascadeDetail['controllerTeardown']>; force: boolean }) {
   const resources = teardown.resources ?? []
+  const destinationNotice = teardown.destination === 'remote'
+    ? 'This controller deploys to another cluster. Teardown affects that destination cluster; local resources do not inventory it.'
+    : teardown.destination === 'unknown'
+      ? 'The destination cluster is unknown. Radar cannot show where controller cleanup will run.'
+      : ''
   const what = teardown.action === 'uninstall' ? 'uninstall the Helm release' : 'delete the resources it manages'
   if (force) {
     return (
       <div className="flex items-start gap-2 rounded border border-theme-border bg-theme-elevated px-3 py-2 text-xs text-theme-text-secondary">
         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <span>
+          {destinationNotice && <>{destinationNotice} </>}
           {teardown.terminating
             ? `This is already being deleted, so ${teardown.controller} may already be working to ${what}. Force delete removes its finalizer but can't undo that.`
-            : `Force delete removes ${teardown.controller}'s finalizer, so ${teardown.controller} won't ${what}. They stay in the cluster.`}
+            : `Force delete removes ${teardown.controller}'s finalizer, so ${teardown.controller} won't ${what}. Resources stay${teardown.destination === 'remote' ? ' in the destination cluster' : ''}.`}
         </span>
       </div>
     )
   }
-  const title = teardown.action === 'uninstall'
+  const title = teardown.destination === 'unknown'
+    ? `${teardown.controller} has a cleanup finalizer`
+    : teardown.action === 'uninstall'
     ? `${teardown.controller} will also uninstall the Helm release`
     : `${teardown.controller} will also delete the resources it manages`
   return (
     <CascadeDependentsList
       dependents={resources}
       title={resources.length > 0 ? `${title} (${resources.length} ${teardown.resourcesBasis === 'labels' ? 'label matches' : 'shown'})` : title}
-      summary={`${teardown.resourcesBasis === 'labels' ? 'Shown resources match Helm-release labels; their membership in the release is unverified. ' : ''}${teardown.action === 'uninstall' ? 'Helm uninstalls resources in its stored release manifest' : `${teardown.controller} deletes what its own inventory records`}, which can include resources Radar doesn't show.${optOut(teardown) ? ` Resources marked ${optOut(teardown)} stay.` : ''}`}
+      summary={`${destinationNotice ? destinationNotice + ' ' : ''}${teardown.resourcesBasis === 'labels' ? 'Shown resources match Helm-release labels; their membership in the release is unverified. ' : ''}${teardown.action === 'uninstall' ? 'Helm uninstalls resources in its stored release manifest' : `${teardown.controller} deletes what its own inventory records`}, which can include resources Radar doesn't show.${optOut(teardown) ? ` Resources marked ${optOut(teardown)} stay.` : ''}`}
     />
   )
 }

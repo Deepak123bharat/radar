@@ -341,6 +341,7 @@ func buildConsumerIndex(refs map[string]map[string]bool, workloadNamespaces map[
 
 // buildResourcesTopology creates a comprehensive resource view
 func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
+	var groupedPods []podOwnershipSnapshot
 	nodes := make([]Node, 0)
 	edges := make([]Edge, 0)
 	warnings := make([]string, 0)
@@ -3299,7 +3300,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		}
 
 		for _, group := range groupingResult.Groups {
-			if opts.IndividualPods || len(group.Pods) <= maxIndividualPods {
+			if len(group.Pods) <= maxIndividualPods {
 				// Small group - add as individual nodes
 				for _, pod := range group.Pods {
 					podID := GetPodID(pod)
@@ -3316,6 +3317,11 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				// Large group - create PodGroup
 				podGroupID := GetPodGroupID(group)
 				podGroupNode := CreatePodGroupNode(group, b.provider)
+				if opts.ForRelationshipCache {
+					for _, pod := range group.Pods {
+						groupedPods = append(groupedPods, podOwnershipSnapshot{id: GetPodID(pod), groupID: podGroupID, namespace: pod.Namespace, name: pod.Name, uid: pod.UID, owners: append([]metav1.OwnerReference(nil), pod.OwnerReferences...)})
+					}
+				}
 
 				// A large group's pods can span more than one owning
 				// ReplicaSet and traffic role at once (a Rollout mid-
@@ -5895,7 +5901,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	// Summary mode: stamp collapsed pod counts onto their workload nodes.
 	stampPodSummaries(nodes, podSummaries)
 
-	topo := &Topology{Nodes: stampAuditKeys(nodes), Edges: edges, Warnings: warnings}
+	topo := &Topology{groupedPods: groupedPods, Nodes: stampAuditKeys(nodes), Edges: edges, Warnings: warnings}
 
 	// Add CRD discovery status
 	if b.dynamic != nil {

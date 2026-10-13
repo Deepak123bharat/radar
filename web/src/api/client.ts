@@ -4312,9 +4312,11 @@ export interface CascadeDeletePreview {
     group?: string;
   }[];
   possibleDependents?: { kind: string; namespace: string; name: string; group?: string }[];
+  withheld?: string[]
   basis?: string;
   controllerTeardown?: {
     controller: string;
+    destination: 'local' | 'remote' | 'unknown'
     resourcesBasis: 'inventory' | 'labels';
     action: string;
     resources?: { kind: string; namespace: string; name: string; group?: string }[];

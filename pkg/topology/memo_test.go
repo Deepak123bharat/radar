@@ -253,11 +253,11 @@ func TestMemoizer_DoesNotCacheErrors(t *testing.T) {
 	}
 }
 
-func TestMemoSeparatesIndividualPodsFromGroupedViews(t *testing.T) {
+func TestMemoSeparatesPodGroupingThresholds(t *testing.T) {
 	grouped := DefaultBuildOptions()
 	individual := grouped
-	individual.IndividualPods = true
+	individual.MaxIndividualPods = 100
 	if memoKey(grouped) == memoKey(individual) {
-		t.Fatal("individual Pod snapshots share the grouped-view cache key")
+		t.Fatal("different Pod grouping thresholds share a cache key")
 	}
 }

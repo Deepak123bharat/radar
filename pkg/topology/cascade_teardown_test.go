@@ -43,6 +43,9 @@ func TestCascadePreviewDisclosesGitOpsTeardownByPolicy(t *testing.T) {
 			k := kinds[tc.kind]
 			obj := genericIdentityObject(k.gvr, k.kind, "gitops", "apps")
 			obj.SetFinalizers(tc.finalizers)
+			if tc.kind == "Application" {
+				obj.Object["spec"] = map[string]any{"destination": map[string]any{"name": "in-cluster"}}
+			}
 			if tc.spec != nil {
 				obj.Object["spec"] = tc.spec
 			}
@@ -78,5 +81,24 @@ func TestCascadePreviewDisclosesGitOpsTeardownByPolicy(t *testing.T) {
 				t.Errorf("teardown = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRemoteTeardownDoesNotHydrateLocalInventory(t *testing.T) {
+	gvr := schema.GroupVersionResource{Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"}
+	app := genericIdentityObject(gvr, "Application", "gitops", "remote")
+	app.SetFinalizers([]string{argoResourcesFinalizer})
+	app.Object["spec"] = map[string]any{"destination": map[string]any{"name": "other-cluster"}}
+	dynamic := &genericIdentityDynamic{watched: []schema.GroupVersionResource{gvr}, kinds: map[schema.GroupVersionResource]string{gvr: "Application"}, resources: map[schema.GroupVersionResource][]*unstructured.Unstructured{gvr: {app}}}
+	root := Node{ID: "application/gitops/remote", Kind: KindApplication, Name: "remote", Data: map[string]any{"namespace": "gitops", "apiVersion": app.GetAPIVersion()}}
+	topo := &Topology{Nodes: []Node{root, {ID: "deployment/team/web", Kind: KindDeployment, Name: "web"}}, Edges: []Edge{{Source: root.ID, Target: "deployment/team/web", Type: EdgeManages}}}
+	for _, dest := range []string{"remote", "unknown"} {
+		if dest == "unknown" {
+			delete(app.Object, "spec")
+		}
+		notice := controllerTeardown(&root, topo, dynamic)
+		if notice == nil || notice.Destination != dest || len(notice.Resources) != 0 {
+			t.Fatalf("destination %s: %+v", dest, notice)
+		}
 	}
 }

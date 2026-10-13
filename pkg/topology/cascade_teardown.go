@@ -1,6 +1,7 @@
 package topology
 
 import (
+	"github.com/skyhook-io/radar/pkg/gitops"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -12,7 +13,8 @@ import (
 // garbage collection: force deletion strips the finalizer, and with it the
 // teardown.
 type ControllerTeardown struct {
-	Controller string `json:"controller"` // "Argo CD" or "Flux"
+	Destination string `json:"destination"`
+	Controller  string `json:"controller"` // "Argo CD" or "Flux"
 	// Action is "prune" (managed resources are deleted) or "uninstall" (the
 	// Helm release is uninstalled).
 	Action string `json:"action"`
@@ -85,10 +87,23 @@ func controllerTeardown(root *Node, topo *Topology, dp DynamicProvider) *Control
 		return nil
 	}
 
-	teardown := &ControllerTeardown{Controller: controller, Action: action, Terminating: obj.GetDeletionTimestamp() != nil}
+	destination := "local"
+	if controller == "Argo CD" {
+		if !gitops.HasArgoDestination(obj) {
+			destination = "unknown"
+		} else if !gitops.IsInClusterDestination(obj) {
+			destination = "remote"
+		}
+	} else if !gitops.FluxTargetsLocalCluster(obj) {
+		destination = "remote"
+	}
+	teardown := &ControllerTeardown{Controller: controller, Action: action, Destination: destination, Terminating: obj.GetDeletionTimestamp() != nil}
 	teardown.ResourcesBasis = "inventory"
 	if root.Kind == KindHelmRelease {
 		teardown.ResourcesBasis = "labels"
+	}
+	if destination != "local" {
+		return teardown
 	}
 	nodeByID := make(map[string]*Node, len(topo.Nodes))
 	for i := range topo.Nodes {

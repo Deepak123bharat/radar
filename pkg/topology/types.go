@@ -187,16 +187,15 @@ type Edge struct {
 	Target        string   `json:"target"`
 	Type          EdgeType `json:"type"`
 	Label         string   `json:"label,omitempty"`
-	// OwnerAggregation classifies ownership of observed members of a synthetic group.
+	// OwnerAggregation is present and true only for member-backed display ancestry.
 	// It never makes the group a Kubernetes resource or a garbage-collection target.
-	OwnerAggregation *bool `json:"ownerAggregation,omitempty"`
+	OwnerAggregation           *bool `json:"ownerAggregation,omitempty"`
+	OwnerAggregationController *bool `json:"ownerAggregationController,omitempty"`
 	// OwnerController is set only for an observed metadata owner reference.
-	OwnerAggregation           *bool  `json:"ownerAggregation,omitempty"` // Present and true only for member-backed display ancestry.
-	OwnerAggregationController *bool  `json:"ownerAggregationController,omitempty"`
-	OwnerController            *bool  `json:"ownerController,omitempty"`
-	Partial                    bool   `json:"partial,omitempty"`
-	SkipIfKindVisible          string `json:"skipIfKindVisible,omitempty"` // Hide this edge if this kind is visible (for shortcut edges)
-	PolicyEffect               string `json:"policyEffect,omitempty"`      // "allowed", "blocked", or "unprotected" — set when ShowPolicyEffect is true
+	OwnerController   *bool  `json:"ownerController,omitempty"`
+	Partial           bool   `json:"partial,omitempty"`
+	SkipIfKindVisible string `json:"skipIfKindVisible,omitempty"` // Hide this edge if this kind is visible (for shortcut edges)
+	PolicyEffect      string `json:"policyEffect,omitempty"`      // "allowed", "blocked", or "unprotected" — set when ShowPolicyEffect is true
 }
 
 // PolicyEffect constants for edge annotation
@@ -208,6 +207,7 @@ const (
 
 // Topology represents the complete graph
 type Topology struct {
+	groupedPods             []podOwnershipSnapshot
 	Nodes                   []Node   `json:"nodes"`
 	Edges                   []Edge   `json:"edges"`
 	Warnings                []string `json:"warnings,omitempty"`                // Warnings about resources that failed to load
@@ -390,7 +390,6 @@ type BuildOptions struct {
 	Namespaces           []string // Filter to specific namespaces (empty = all)
 	ViewMode             ViewMode // How to display topology
 	MaxIndividualPods    int      // Above this, pods are grouped (default: 5)
-	IndividualPods       bool     // Retain every Pod for per-resource relationship lookups
 	IncludeSecrets       bool     // Include Secret nodes
 	IncludeConfigMaps    bool     // Include ConfigMap nodes
 	IncludePVCs          bool     // Include PersistentVolumeClaim nodes
@@ -537,6 +536,7 @@ type SecretCertificateInfo struct {
 // CascadeDeletePreview represents all resources that will be garbage-collected
 // when a parent resource is deleted via Kubernetes owner reference cascade.
 type CascadeDeletePreview struct {
+	Withheld     []string      `json:"withheld,omitempty"`
 	Root         ResourceRef   `json:"root"`
 	RootResolved bool          `json:"rootResolved"`
 	Dependents   []ResourceRef `json:"dependents"`

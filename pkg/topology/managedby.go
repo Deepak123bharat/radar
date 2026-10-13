@@ -180,6 +180,9 @@ func walkTopmostOwnerFromNodeID(startID string, topo *Topology, dp DynamicProvid
 	if topo == nil {
 		return nil
 	}
+	if idx == nil && len(topo.groupedPods) > 0 {
+		idx = IndexByResource(topo)
+	}
 
 	// Metadata ownership and GitOps management are separate: an inventory
 	// manager can own the configuration without owning the Kubernetes object.
@@ -221,7 +224,7 @@ func walkTopmostOwnerFromNodeID(startID string, topo *Topology, dp DynamicProvid
 			}
 			var manager *ResourceRef
 			if idx != nil {
-				manager = resourceRefForNode(idx.nodesByID[edge.Source], dp)
+				manager = resourceRefForNode(idx.nodeForID(edge.Source), dp)
 			} else {
 				manager = resourceRefForNodeID(edge.Source, topo, dp)
 			}
@@ -244,7 +247,7 @@ func walkTopmostOwnerFromNodeID(startID string, topo *Topology, dp DynamicProvid
 		visited[next] = true
 		var ref *ResourceRef
 		if idx != nil {
-			ref = resourceRefForNode(idx.nodesByID[next], dp)
+			ref = resourceRefForNode(idx.nodeForID(next), dp)
 		} else {
 			ref = resourceRefForNodeID(next, topo, dp)
 		}
