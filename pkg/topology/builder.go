@@ -9010,9 +9010,11 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 
 	referencedOwnerUIDs := make(map[types.UID]bool)
 	for _, node := range nodes {
-		for _, owner := range node.ownerReferences {
-			if owner.UID != "" {
-				referencedOwnerUIDs[owner.UID] = true
+		for _, refs := range [][]metav1.OwnerReference{node.ownerReferences, node.memberOwnerReferences} {
+			for _, owner := range refs {
+				if owner.UID != "" {
+					referencedOwnerUIDs[owner.UID] = true
+				}
 			}
 		}
 	}
@@ -9120,11 +9122,15 @@ func (b *Builder) addGenericCRDNodes(nodes []Node, edges []Edge, opts BuildOptio
 	neededParents := make(map[string]bool)
 	var parentQueue []string
 	markParents := func(child Node) {
-		if !child.observed && child.uid == "" {
+		if !child.observed && child.uid == "" && len(child.memberOwnerReferences) == 0 {
 			return
 		}
 		ns, _ := child.Data["namespace"].(string)
-		for _, owner := range child.ownerReferences {
+		refs := child.ownerReferences
+		if child.Kind == KindPodGroup && len(child.memberOwnerReferences) > 0 {
+			refs = child.memberOwnerReferences
+		}
+		for _, owner := range refs {
 			if owner.UID == "" {
 				continue
 			}
