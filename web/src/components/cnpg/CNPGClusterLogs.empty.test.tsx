@@ -4,7 +4,7 @@ import { expect, it, vi } from 'vitest'
 import { CNPGClusterLogs } from './CNPGClusterLogs'
 const state = vi.hoisted(() => ({ props: {} as any, navigate: vi.fn(), problems: [{ job: 'initdb', severity: 'critical', title: 'First instance cannot be scheduled' }] as any[] }))
 vi.mock('@skyhook-io/k8s-ui', async (original) => ({ ...await original<typeof import('@skyhook-io/k8s-ui')>(), WorkloadLogsViewer: (props: any) => { state.props = props; return <div>{props.emptySourceState}</div> } }))
-vi.mock('../../api/client', () => ({ useRadarFeature: () => ({ guard: (fn: () => unknown) => fn(), support: 'supported' }), fetchJSON: vi.fn() }))
+vi.mock('../../api/client', () => ({ useCapabilities: () => ({ isPending: false }), useRadarFeature: () => ({ guard: (fn: () => unknown) => fn(), support: 'supported' }), fetchJSON: vi.fn() }))
 vi.mock('../../hooks/useDesktopDownload', () => ({ useDesktopDownload: () => undefined }))
 vi.mock('../../context/ThemeContext', () => ({ useTheme: () => ({ theme: 'light' }) }))
 vi.mock('./useCNPGNavigate', () => ({ useCNPGNavigate: () => state.navigate }))

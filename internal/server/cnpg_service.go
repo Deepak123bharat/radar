@@ -63,9 +63,10 @@ func (s *Server) cnpgReader(r *http.Request) *cnpgReadAdapter {
 		promClient = prometheuspkg.GetClient()
 		adapter.dynamic, adapter.actionContext = s.getDynamicClientSnapshotForRequest(r)
 		adapter.config = s.getConfigForRequest(r)
-		adapter.Clients = cnpgsvc.ReadClients{Typed: s.getClientForRequest(r), Proxy: cnpgRuntimeClient(r), ClusterDone: operation.Done()}
-		adapter.Clients.Exec = cnpgsvc.NewExec(adapter.Clients.Typed, adapter.config)
+		adapter.Clients = cnpgsvc.ReadClients{Typed: s.getClientForRequest(r), ClusterDone: operation.Done()}
 	})
+	adapter.Clients.Proxy = cnpgRuntimeClient(adapter.config)
+	adapter.Clients.Exec = cnpgsvc.NewExec(adapter.Clients.Typed, adapter.config)
 	current := func() bool { return operation != nil && operation.Err() == nil }
 	boundBudget := func(ctx context.Context) *syncBudget {
 		budget := newSyncBudget(ctx)

@@ -31,8 +31,7 @@ func (s *Server) authorizeCNPGRuntime(w http.ResponseWriter, r *http.Request, na
 // impersonated identity when auth is on (nil when impersonation fails — never
 // Radar's own identity), with redirects refused so a proxied answer cannot
 // steer the request to another path on the Pod.
-func cnpgRuntimeClient(r *http.Request) kubernetes.Interface {
-	cfg := k8s.ConfigFromContext(r.Context())
+func cnpgRuntimeClient(cfg *rest.Config) kubernetes.Interface {
 	if cfg == nil {
 		return nil
 	}

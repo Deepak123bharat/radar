@@ -972,7 +972,7 @@ function declarationsFor(cluster: any, resp: CNPGWorkspaceResponse): CNPGFleetRo
   const labels = { databases: 'Databases', publications: 'Publications', subscriptions: 'Subscriptions', databaseRoles: 'DatabaseRoles' }
   for (const [k, list] of lists) {
     if (!coverageReadable(coverageOf(resp, k), ns)) {
-      if (coverageOf(resp, k).state !== 'notInstalled') unread.push(labels[k as keyof typeof labels])
+      if (coverageOf(resp, k).state !== 'notInstalled') unread.push(`${labels[k as keyof typeof labels]}${resp.coverage[k] ? '' : ' (needs a newer Radar)'}`)
       continue
     }
     for (const o of list) {

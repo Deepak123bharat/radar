@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
 import { useLocation, useSearchParams } from 'react-router-dom'
 import { PaneLoader, WorkloadLogsViewer, type WorkloadLogsFetchParams, type WorkloadLogsResult } from '@skyhook-io/k8s-ui'
-import { fetchJSON, useRadarFeature } from '../../api/client'
+import { fetchJSON, useCapabilities, useRadarFeature } from '../../api/client'
 import { getApiBase, getCredentialsMode } from '../../api/config'
 import { useDesktopDownload } from '../../hooks/useDesktopDownload'
 import { useTheme } from '../../context/ThemeContext'
@@ -57,6 +57,7 @@ export function CNPGClusterLogs({ namespace, name }: { namespace: string; name: 
   const until = interval?.until
 
   const { guard, support } = useRadarFeature('cnpgWorkspace')
+  const capabilities = useCapabilities()
   const allContainersSupported = support === 'supported'
   const fetchAll = useCallback(
     (params: WorkloadLogsFetchParams) =>
@@ -73,7 +74,12 @@ export function CNPGClusterLogs({ namespace, name }: { namespace: string; name: 
     [namespace, name, allContainersSupported],
   )
 
-  if (interval && support === 'unknown') return <PaneLoader label="Checking interval support…" className="flex-1" />
+  if (interval && support === 'unknown') return capabilities.isPending
+    ? <PaneLoader label="Checking interval support…" className="flex-1" />
+    : <div className="space-y-2 p-3">
+        <CNPGIntervalBanner since={interval.since} until={interval.until} note="Radar’s capabilities could not be read. Clear this interval to read ordinary logs." onClear={interval.clear} />
+        <button type="button" className="btn-secondary" onClick={() => void capabilities.refetch()}>Retry capabilities</button>
+      </div>
 
   return (
     <div className="flex h-full flex-col">

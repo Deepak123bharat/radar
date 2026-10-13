@@ -5,9 +5,9 @@ import { CNPGClusterLogs } from './CNPGClusterLogs'
 import { guardRadarFeature, radarFeatureSupport } from '../../api/radarFeatures'
 import { fetchJSON } from '../../api/client'
 
-const state = vi.hoisted(() => ({ props: undefined as any, capabilities: { features: { resourceIssues: true } } as any, interval: null as null | { since: string; until: string; clear: () => void } }))
+const state = vi.hoisted(() => ({ props: undefined as any, capabilities: { features: { resourceIssues: true } } as any, capabilitiesPending: false, interval: null as null | { since: string; until: string; clear: () => void } }))
 vi.mock('@skyhook-io/k8s-ui', async (original) => ({ ...await original<typeof import('@skyhook-io/k8s-ui')>(), WorkloadLogsViewer: (props: any) => { state.props = props; return <div>logs</div> } }))
-vi.mock('../../api/client', () => ({ fetchJSON: vi.fn(async () => ({ pods: [], logs: [] })), useRadarFeature: () => {
+vi.mock('../../api/client', () => ({ fetchJSON: vi.fn(async () => ({ pods: [], logs: [] })), useCapabilities: () => ({ isPending: state.capabilitiesPending, refetch: vi.fn() }), useRadarFeature: () => {
   const support = radarFeatureSupport('cnpgWorkspace', state.capabilities, 'v1.16.0')
   return { support, guard: (fn: () => Promise<unknown>) => guardRadarFeature('cnpgWorkspace', support, {}, fn) }
 } }))
@@ -16,7 +16,7 @@ vi.mock('../../context/ThemeContext', () => ({ useTheme: () => ({ theme: 'light'
 vi.mock('./useCNPGNavigate', () => ({ useCNPGNavigate: () => vi.fn() }))
 vi.mock('./useCNPGSidebarWorkspace', () => ({ useCNPGFleet: () => ({ fleet: null }) }))
 vi.mock('./CNPGTrends', () => ({ useCNPGIntervalParams: () => state.interval, CNPGIntervalBanner: ({ note }: { note: string }) => <div>{note}</div> }))
-beforeEach(() => { state.props = undefined; state.capabilities = { features: { resourceIssues: true } }; state.interval = null; vi.clearAllMocks(); vi.unstubAllGlobals() })
+beforeEach(() => { state.props = undefined; state.capabilities = { features: { resourceIssues: true } }; state.capabilitiesPending = false; state.interval = null; vi.clearAllMocks(); vi.unstubAllGlobals() })
 function mount(search = '') { return renderToStaticMarkup(<MemoryRouter initialEntries={[{ pathname: '/cnpg/clusters/db/pg', search }]}><CNPGClusterLogs namespace="db" name="pg" /></MemoryRouter>) }
 
 it('retains ordinary snapshot selectors and follows on the actual missing-flag capability state', async () => {
@@ -97,10 +97,22 @@ it('uses the advertised interval contract without tailing or streaming', async (
 })
 it('waits for capabilities before offering interval semantics, while ordinary logs remain immediate', () => {
   state.capabilities = undefined
+  state.capabilitiesPending = true
   state.interval = { since: '2026-10-13T00:00:00Z', until: '2026-10-13T01:00:00Z', clear: vi.fn() }
   expect(mount()).toContain('Checking interval support')
   expect(state.props).toBeUndefined()
   state.interval = null
   mount()
   expect(state.props.createStream).toBeTypeOf('function')
+})
+it('settles a failed capabilities read without loading forever or issuing an interval request', () => {
+  state.capabilities = undefined
+  state.interval = { since: '2026-10-13T00:00:00Z', until: '2026-10-13T01:00:00Z', clear: vi.fn() }
+  const html = mount()
+  expect(html).toContain('capabilities could not be read')
+  expect(html).toContain('Clear this interval to read ordinary logs')
+  expect(html).toContain('Retry capabilities')
+  expect(html).not.toContain('Checking interval support')
+  expect(state.props).toBeUndefined()
+  expect(fetchJSON).not.toHaveBeenCalled()
 })
