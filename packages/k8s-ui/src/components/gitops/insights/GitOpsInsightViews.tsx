@@ -1005,7 +1005,7 @@ export function GitOpsChangesView({ insight, error, onOpenResource, onSyncResour
             )}
           </div>
         )}
-        {totalCount > 0 && isArgoRoot && !insight.capabilities?.argoDiffAvailable && onOpenSettings && (
+        {totalCount > 0 && isArgoRoot && !insight.capabilities?.argoDiffAvailable && !insight.capabilities?.argoConnecting && onOpenSettings && (
           <div className="border-b border-theme-border bg-theme-base/40 px-4 py-2 text-[11px] text-theme-text-tertiary">
             {insight.capabilities?.argoConfigured ? (
               <>

@@ -417,6 +417,7 @@ func RegisterCallbacks(cfg AppConfig, timelineStoreCfg timeline.StoreConfig) App
 				}
 			}
 			prometheuspkg.Prewarm()
+			argocd.Prewarm()
 		}
 	})
 	k8s.OnNamespaceRescope(func(_ string) { prometheuspkg.Prewarm() })
