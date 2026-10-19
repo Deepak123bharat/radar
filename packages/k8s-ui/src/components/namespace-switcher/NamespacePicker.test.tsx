@@ -128,8 +128,7 @@ describe('NamespacePicker incomplete-list notice', () => {
     const trigger = document.querySelector<HTMLButtonElement>('button[aria-label="Switch active namespaces"]')!
     await act(async () => { trigger.click() })
 
-    const row = Array.from(document.querySelectorAll('label')).find(l => l.textContent?.includes('team-b'))
-    const checkbox = row?.querySelector<HTMLInputElement>('input[type="checkbox"]')
+    const checkbox = document.querySelector<HTMLInputElement>('input[type="checkbox"][aria-label="Select team-b"]')
     expect(checkbox?.checked).toBe(true)
 
     await act(async () => { checkbox!.click() })
@@ -152,23 +151,24 @@ describe('NamespacePicker select-only', () => {
   }
 
   const nameButton = (ns: string) =>
-    Array.from(document.querySelectorAll<HTMLButtonElement>('li label button')).find(b => b.textContent === ns)!
+    Array.from(document.querySelectorAll<HTMLButtonElement>('li button')).find(b => b.textContent === ns)!
+  const checkbox = (ns: string) =>
+    document.querySelector<HTMLInputElement>(`input[type="checkbox"][aria-label="Select ${ns}"]`)!
+  const isOpen = () => document.querySelector('input[type="checkbox"]') !== null
 
   it('applies only the clicked namespace and closes the dropdown', async () => {
     const onApply = await open()
+    expect(isOpen()).toBe(true)
     await act(async () => { nameButton('team-c').click() })
 
     expect(onApply).toHaveBeenCalledTimes(1)
     expect(onApply).toHaveBeenCalledWith(['team-c'])
-    expect(document.querySelector('li label')).toBeNull()
+    expect(isOpen()).toBe(false)
   })
 
   it('replaces unsaved checkbox toggles with the clicked namespace', async () => {
     const onApply = await open()
-    const checkbox = Array.from(document.querySelectorAll('label'))
-      .find(l => l.textContent?.includes('team-b'))!
-      .querySelector<HTMLInputElement>('input[type="checkbox"]')!
-    await act(async () => { checkbox.click() })
+    await act(async () => { checkbox('team-b').click() })
     await act(async () => { nameButton('team-c').click() })
 
     expect(onApply).toHaveBeenCalledWith(['team-c'])
@@ -179,19 +179,24 @@ describe('NamespacePicker select-only', () => {
     await act(async () => { nameButton('team-a').click() })
 
     expect(onApply).not.toHaveBeenCalled()
-    expect(document.querySelector('li label')).toBeNull()
+    expect(isOpen()).toBe(false)
   })
 
   it('leaves the checkboxes for multi-select', async () => {
     const onApply = await open()
-    const checkbox = Array.from(document.querySelectorAll('label'))
-      .find(l => l.textContent?.includes('team-b'))!
-      .querySelector<HTMLInputElement>('input[type="checkbox"]')!
-    await act(async () => { checkbox.click() })
+    await act(async () => { checkbox('team-b').click() })
     expect(onApply).not.toHaveBeenCalled()
+    expect(isOpen()).toBe(true)
 
     const done = Array.from(document.querySelectorAll('button')).find(b => b.textContent === 'Done')!
     await act(async () => { done.click() })
     expect(onApply).toHaveBeenCalledWith(['team-a', 'team-b'])
+  })
+
+  it('keeps the name button and checkbox as siblings, never nested in one label', async () => {
+    await open()
+    expect(document.querySelector('li label')).toBeNull()
+    expect(document.querySelector('label button')).toBeNull()
+    expect(nameButton('team-b').parentElement).toBe(checkbox('team-b').parentElement)
   })
 })
