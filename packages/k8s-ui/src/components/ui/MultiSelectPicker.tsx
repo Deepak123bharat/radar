@@ -16,6 +16,11 @@ export interface MultiSelectPickerProps {
   onClearAll: () => void
   /** Footer "Done" button. */
   onDone: () => void
+  /**
+   * When set, clicking an item's name (rather than its checkbox) selects only
+   * that item. The host decides whether that also commits and closes.
+   */
+  onSelectOnly?: (item: string) => void
 
   /** Controlled search term (kept in the host so the body stays SSR-testable). */
   search: string
@@ -50,6 +55,7 @@ export function MultiSelectPicker({
   onSelectionChange,
   onClearAll,
   onDone,
+  onSelectOnly,
   search,
   onSearchChange,
   searchPlaceholder,
@@ -145,7 +151,21 @@ export function MultiSelectPicker({
                   onChange={() => toggle(item)}
                   className="shrink-0 accent-current"
                 />
-                <span className="truncate">{item}</span>
+                {onSelectOnly ? (
+                  <button
+                    type="button"
+                    onClick={e => {
+                      e.preventDefault()
+                      onSelectOnly(item)
+                    }}
+                    title={`Show only ${item}`}
+                    className="truncate hover:underline text-left"
+                  >
+                    {item}
+                  </button>
+                ) : (
+                  <span className="truncate">{item}</span>
+                )}
                 {renderItemMeta?.(item)}
               </span>
             </label>
