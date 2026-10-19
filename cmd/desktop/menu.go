@@ -122,8 +122,9 @@ func createMenu(desktopApp *DesktopApp, version, goos string) *menu.Menu {
 	//
 	// Paste: Must use explicit WindowExecJS because WKWebView's native paste:
 	// doesn't work for complex editors like Monaco. On macOS read through Wails
-	// to avoid WKWebView's clipboard confirmation, then dispatch a synthetic
-	// ClipboardEvent. The accelerator is dropped on Windows — see pasteAccelerator.
+	// to avoid WKWebView's clipboard confirmation. Paste text directly into a
+	// focused Monaco editor; other inputs receive a synthetic ClipboardEvent.
+	// The accelerator is dropped on Windows - see pasteAccelerator.
 	//
 	// Undo/Redo/SelectAll: Use WindowExecJS (these work fine via execCommand).
 	editMenu := appMenu.AddSubmenu("Edit")
@@ -148,6 +149,14 @@ func createMenu(desktopApp *DesktopApp, version, goos string) *menu.Menu {
 		runtime.WindowExecJS(desktopApp.ctx, clipboardSource+`
 			.then(function(text) {
 				if (!text) return;
+				// Monaco's DOM paste handler reads the system clipboard again for
+				// rich paste formats. Use its text paste command with the text we
+				// already have so WKWebView does not request clipboard permission.
+				var editor = window.__radarMonacoEditor;
+				if (editor && editor.hasTextFocus()) {
+					editor.trigger('keyboard', 'paste', {text: text});
+					return;
+				}
 				var el = document.activeElement || document.body;
 				try {
 					var dt = new DataTransfer();
