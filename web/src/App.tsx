@@ -45,7 +45,7 @@ import { navigateFromPrimaryRail } from './components/nav/navigation'
 import { useNavRailPinned } from './hooks/useNavRailPinned'
 import { useMediaQuery } from './hooks/useMediaQuery'
 import { ContextSwitchProvider, useContextSwitch } from './context/ContextSwitchContext'
-import { ConnectionProvider, useConnection } from './context/ConnectionContext'
+import { ConnectionProvider, useConnection, refreshQueriesAfterReconnect } from './context/ConnectionContext'
 import { ConnectionErrorView } from './components/ConnectionErrorView'
 import { SyncProgressPanel } from './components/SyncProgressPanel'
 import { NoClusterAccessBanner } from './components/NoClusterAccessBanner'
@@ -1236,11 +1236,8 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
     onContextChanged: (context) => {
       resetNavigationMap()
 
-      // Clear all React Query caches when cluster context changes
-      // This ensures helm releases, resources, etc. are refetched from the new cluster
-      // removeQueries clears cached data, invalidateQueries triggers refetch
-      queryClient.removeQueries()
-      queryClient.invalidateQueries()
+      // Reconnects also emit context_changed. Preserve only this context's drain record.
+      refreshQueriesAfterReconnect(queryClient, connection.context, context)
 
       // Cancel any pending SSE-driven invalidation — old cluster's events are irrelevant
       if (fastInvalidationRef.current.timer !== null) clearTimeout(fastInvalidationRef.current.timer)

@@ -1095,6 +1095,7 @@ export function WorkloadView({
                   {renderOverviewLeadForState({ kind, namespace, name })}
                 </div>
               )}
+              {overviewIntro && <div className="px-4 pt-4">{overviewIntro}</div>}
               <ResourceRendererDispatch
                 resource={selectedResource}
                 data={resource}

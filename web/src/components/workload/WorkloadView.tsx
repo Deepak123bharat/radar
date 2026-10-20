@@ -81,6 +81,7 @@ import {
   useCordonNode,
   useUncordonNode,
   useDrainNode,
+  useNodeDrainActivity,
   useDrainPlan,
   useCascadeDeletePreview,
   useResourceEvents,
@@ -127,6 +128,7 @@ import { cleanYamlForDuplicate } from '../../utils/skeleton-yaml'
 import { useDesktopDownload } from '../../hooks/useDesktopDownload'
 import { useCompareLauncher } from '../compare/useCompareLauncher'
 import { useDiagnoseCustomization } from '../../context/DiagnoseCustomization'
+import { NodeDrainStatus } from './NodeDrainStatus'
 
 type TabType = WorkloadTabType
 const BATCH_EXECUTION_KINDS = new Set([
@@ -289,6 +291,7 @@ function useActionsBarProps(
   name: string,
   group: string | undefined,
   cascadeEnabled: boolean,
+  nodeUID: string,
 ) {
   const { showCopied } = useToast()
   const { features } = useCapabilitiesContext()
@@ -367,7 +370,8 @@ function useActionsBarProps(
   const canNodeWrite = useCanNodeWrite()
   const cordonMutation = useCordonNode()
   const uncordonMutation = useUncordonNode()
-  const drainMutation = useDrainNode()
+  const drainMutation = useDrainNode(nodeUID)
+  const { activity: drainActivity } = useNodeDrainActivity(name, nodeUID)
   const drainPlanMutation = useDrainPlan()
 
   const { renderAction: renderDiagnose } = useDiagnoseCustomization()
@@ -473,7 +477,7 @@ function useActionsBarProps(
     isUncordoningNode: uncordonMutation.isPending,
     onDrainNode: (params: Parameters<typeof drainMutation.mutate>[0]) =>
       drainMutation.mutate(params),
-    isDrainingNode: drainMutation.isPending,
+    isDrainingNode: nodeUID ? drainActivity?.status === 'pending' : drainMutation.isPending,
     onPlanDrain: (params: Parameters<typeof drainPlanMutation.mutate>[0]) =>
       drainPlanMutation.mutate(params),
     onPlanDrainReset: () => drainPlanMutation.reset(),
@@ -786,6 +790,7 @@ export function WorkloadView({
     name,
     effectiveGroup,
     !resourceLoading && Boolean(resource),
+    apiKind === 'nodes' && !effectiveGroup ? resource?.metadata?.uid ?? '' : '',
   )
   const desktopDownload = useDesktopDownload()
 
@@ -1248,6 +1253,9 @@ export function WorkloadView({
         onDownload={desktopDownload}
         actionsBarProps={actionsBarProps}
         rendererOverrides={resourceRendererOverrides}
+        renderOverviewIntro={apiKind === 'nodes' && !effectiveGroup && resource?.metadata?.uid
+          ? () => <NodeDrainStatus name={name} nodeUID={resource.metadata.uid} />
+          : undefined}
         renderOverviewExtra={({ kind: k, namespace: ns, name: n, group: g, context }) => {
           // Network entry kinds (Service/Ingress/Route/Gateway) ARE the diagnosis
           // target: DiagnoseInlineSection renders in the drawer, no hint. Workload

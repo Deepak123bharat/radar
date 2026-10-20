@@ -868,7 +868,7 @@ func isNoisyResource(kind, name, op string) bool {
 	}
 
 	if kind == "Secret" {
-		if strings.HasSuffix(name, "-token") || strings.Contains(name, "leader-election") {
+		if strings.Contains(name, "leader-election") {
 			return true
 		}
 	}
@@ -1009,8 +1009,26 @@ func recordToTimelineStore(clusterContext, kind, namespace, name, uid, op string
 		apiGroup = resourceid.GroupFromAPIVersion(apiVersion)
 	}
 
+	// ServiceAccount token updates are token-controller bookkeeping; they are
+	// not recorded, though their tombstone stays current below.
+	serviceAccountTokenUpdate := false
+	if kind == "Secret" && apiGroup == "" && op == "update" {
+		var secretType string
+		switch secret := obj.(type) {
+		case *corev1.Secret:
+			secretType = string(secret.Type)
+		case *unstructured.Unstructured:
+			secretType, _, _ = unstructured.NestedString(secret.Object, "type")
+		}
+		serviceAccountTokenUpdate = secretType == string(corev1.SecretTypeServiceAccountToken)
+	}
+
 	store := timeline.GetStore()
 	if store == nil {
+		if serviceAccountTokenUpdate {
+			timeline.RecordDrop(kind, namespace, name, timeline.DropReasonNoisyFilter, op, clusterContext)
+			return
+		}
 		if op == "delete" {
 			timeline.NoteDeletedWhileUnavailable(clusterContext, apiGroup, kind, namespace, name)
 		}
@@ -1076,6 +1094,10 @@ func recordToTimelineStore(clusterContext, kind, namespace, name, uid, op string
 	// entry was preserving.
 	if name != "" && extracted {
 		tombstones.Put(uid, apiVersion, kind, namespace, name, entry)
+	}
+	if serviceAccountTokenUpdate {
+		timeline.RecordDrop(kind, namespace, name, timeline.DropReasonNoisyFilter, op, clusterContext)
+		return
 	}
 
 	var diff *timeline.DiffInfo

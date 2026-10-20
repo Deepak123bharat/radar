@@ -98,9 +98,9 @@ export function getWsUrl(path: string): string {
   return `${protocol}//${window.location.host}${base}${path}`;
 }
 
-/** Convenience: `${apiBase}${path}` for fetch call sites. */
-export function apiUrl(path: string): string {
-  return getApiBase() + path;
+/** An explicit base keeps a queued request on its original API host. */
+export function apiUrl(path: string, base = getApiBase()): string {
+  return base + path;
 }
 
 /**
