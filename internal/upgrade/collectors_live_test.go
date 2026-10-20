@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,6 +98,34 @@ func TestReadAPIMetricsEvidenceHandlesBodiesOverSixteenMiB(t *testing.T) {
 	}
 	if len(requests) != 1 {
 		t.Fatalf("requests = %+v, want the one deprecated series", requests)
+	}
+}
+
+func TestReadAPIMetricsEvidenceSkipsLongUnrelatedLines(t *testing.T) {
+	const deprecated = "apiserver_requested_deprecated_apis{group=\"\",removed_release=\"1.25\",resource=\"podsecuritypolicies\",subresource=\"\",version=\"v1beta1\"} 2"
+	body := "unrelated_metric{label=\"" + strings.Repeat("x", 2<<20) + "\"} 1\n" +
+		"# TYPE process_start_time_seconds gauge\nprocess_start_time_seconds 1.721234567e+09\n" +
+		deprecated
+	raw, err := readAPIMetricsEvidence(io.NopCloser(bytes.NewBufferString(body)), 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests, startedAt, err := parseDeprecatedAPIRequests(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 || requests[0].Requests != 2 {
+		t.Fatalf("requests = %+v, want the deprecated series after the long line", requests)
+	}
+	if startedAt.Unix() != 1721234567 {
+		t.Fatalf("process start = %d, want 1721234567", startedAt.Unix())
+	}
+}
+
+func TestReadAPIMetricsEvidenceRejectsLongKeptLine(t *testing.T) {
+	body := "apiserver_requested_deprecated_apis{group=\"" + strings.Repeat("x", 2*upgradeAPIMetricsLineBuffer) + "\"} 1\n"
+	if _, err := readAPIMetricsEvidence(io.NopCloser(bytes.NewBufferString(body)), 1<<30); err == nil {
+		t.Fatal("expected an error for an oversized line the check needs")
 	}
 }
 

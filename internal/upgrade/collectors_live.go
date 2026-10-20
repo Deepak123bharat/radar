@@ -38,7 +38,7 @@ const (
 	upgradeNodeEvidenceResponseLimit     = 8 << 20
 	upgradeAPIMetricsCollectionTimeout   = 10 * time.Second
 	upgradeAPIMetricsResponseLimit       = 256 << 20
-	upgradeAPIMetricsLineLimit           = 1 << 20
+	upgradeAPIMetricsLineBuffer          = 64 << 10
 )
 
 // A busy API server's /metrics exceeds 16 MiB, so the stream is filtered to the
@@ -133,30 +133,47 @@ func collectDeprecatedAPIRequestsWithClient(ctx context.Context, client rest.Int
 }
 
 // readAPIMetricsEvidence keeps only the lines the deprecated-API check parses;
-// limit caps the bytes scanned, not the bytes kept.
+// limit caps the bytes scanned, not the bytes kept. A line longer than the read
+// buffer is skipped unless it is one we keep, which is an error.
 func readAPIMetricsEvidence(stream io.ReadCloser, limit int64) ([]byte, error) {
 	defer stream.Close()
 	limited := &io.LimitedReader{R: stream, N: limit + 1}
-	scanner := bufio.NewScanner(limited)
-	scanner.Buffer(make([]byte, 0, 64<<10), upgradeAPIMetricsLineLimit)
+	reader := bufio.NewReaderSize(limited, upgradeAPIMetricsLineBuffer)
 	var kept bytes.Buffer
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		for _, prefix := range upgradeAPIMetricsLinePrefixes {
-			if bytes.HasPrefix(line, prefix) {
-				kept.Write(line)
-				kept.WriteByte('\n')
-				break
+	for {
+		line, err := reader.ReadSlice('\n')
+		switch {
+		case errors.Is(err, bufio.ErrBufferFull):
+			if isAPIMetricsEvidenceLine(line) {
+				return nil, errors.New("API server metrics line exceeds buffer")
 			}
+			for errors.Is(err, bufio.ErrBufferFull) {
+				_, err = reader.ReadSlice('\n')
+			}
+		case isAPIMetricsEvidenceLine(line):
+			kept.Write(bytes.TrimRight(line, "\r\n"))
+			kept.WriteByte('\n')
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	if limited.N <= 0 {
 		return nil, errors.New("API server metrics response exceeds limit")
 	}
 	return kept.Bytes(), nil
+}
+
+func isAPIMetricsEvidenceLine(line []byte) bool {
+	for _, prefix := range upgradeAPIMetricsLinePrefixes {
+		if bytes.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func readBoundedUpgradeResponse(stream io.ReadCloser, limit int64) ([]byte, error) {
