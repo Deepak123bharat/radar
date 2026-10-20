@@ -48,6 +48,141 @@ func TestReadBoundedUpgradeResponse(t *testing.T) {
 	}
 }
 
+func TestReadAPIMetricsEvidenceKeepsOnlyDeprecatedAPISeries(t *testing.T) {
+	body := `# HELP apiserver_request_duration_seconds Response latency distribution.
+# TYPE apiserver_request_duration_seconds histogram
+apiserver_request_duration_seconds_bucket{verb="GET",le="0.05"} 12
+# HELP apiserver_requested_deprecated_apis_total Not the series we read.
+apiserver_requested_deprecated_apis_total{removed_release="1.25"} 9
+# HELP apiserver_requested_deprecated_apis Gauge of deprecated APIs that have been requested.
+# TYPE apiserver_requested_deprecated_apis gauge
+apiserver_requested_deprecated_apis{group="",removed_release="1.25",resource="podsecuritypolicies",subresource="",version="v1beta1"} 3
+# TYPE process_start_time_seconds gauge
+process_start_time_seconds 1.721234567e+09
+process_start_time_seconds_extra 7
+`
+	raw, err := readAPIMetricsEvidence(io.NopCloser(bytes.NewBufferString(body)), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("request_duration")) || bytes.Contains(raw, []byte("_total")) || bytes.Contains(raw, []byte("_extra")) {
+		t.Fatalf("unrelated series kept:\n%s", raw)
+	}
+	requests, startedAt, err := parseDeprecatedAPIRequests(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 || requests[0].Resource != "podsecuritypolicies" || requests[0].Requests != 3 {
+		t.Fatalf("requests = %+v", requests)
+	}
+	if got := startedAt.Unix(); got != 1721234567 {
+		t.Fatalf("process start = %d, want 1721234567", got)
+	}
+}
+
+func TestReadAPIMetricsEvidenceHandlesBodiesOverSixteenMiB(t *testing.T) {
+	var body bytes.Buffer
+	filler := "apiserver_request_duration_seconds_bucket{verb=\"GET\",resource=\"pods\",le=\"0.05\"} 12\n"
+	for body.Len() < 17<<20 {
+		body.WriteString(filler)
+	}
+	body.WriteString("apiserver_requested_deprecated_apis{group=\"\",removed_release=\"1.25\",resource=\"podsecuritypolicies\",subresource=\"\",version=\"v1beta1\"} 1\n")
+	raw, err := readAPIMetricsEvidence(io.NopCloser(&body), upgradeAPIMetricsResponseLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests, _, err := parseDeprecatedAPIRequests(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 {
+		t.Fatalf("requests = %+v, want the one deprecated series", requests)
+	}
+}
+
+func TestReadAPIMetricsEvidenceBoundsBytesScanned(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{name: "at limit", body: "abcd\nef\n"},
+		{name: "over limit", body: "abcd\nef\ng", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := readAPIMetricsEvidence(io.NopCloser(bytes.NewBufferString(tc.body)), 8)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestReadAPIMetricsEvidenceWithoutDeprecatedSeriesIsObservedEmpty(t *testing.T) {
+	raw, err := readAPIMetricsEvidence(io.NopCloser(bytes.NewBufferString("up 1\n")), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests, _, err := parseDeprecatedAPIRequests(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests == nil || len(requests) != 0 {
+		t.Fatalf("requests = %#v, want observed empty slice", requests)
+	}
+}
+
+func TestCollectDeprecatedAPIRequestsReadsLargeMetricsBody(t *testing.T) {
+	const deprecated = "apiserver_requested_deprecated_apis{group=\"\",removed_release=\"1.25\",resource=\"podsecuritypolicies\",subresource=\"\",version=\"v1beta1\"} 4\n"
+	filler := "apiserver_request_duration_seconds_bucket{verb=\"GET\",resource=\"pods\",le=\"0.05\"} 12\n"
+	for _, tc := range []struct {
+		name         string
+		status       int
+		bodyBytes    int
+		wantRequests int
+		wantWindow   bool
+	}{
+		{name: "body over 16 MiB", status: http.StatusOK, bodyBytes: 17 << 20, wantRequests: 1, wantWindow: true},
+		{name: "body under 16 MiB", status: http.StatusOK, bodyBytes: 1 << 20, wantRequests: 1, wantWindow: true},
+		{name: "forbidden", status: http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var requestedPath string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestedPath = r.URL.Path
+				if tc.status != http.StatusOK {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","reason":"Forbidden","code":403}`))
+					return
+				}
+				w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+				_, _ = io.WriteString(w, "# TYPE process_start_time_seconds gauge\nprocess_start_time_seconds 1.721234567e+09\n")
+				for written := 0; written < tc.bodyBytes; written += len(filler) {
+					_, _ = io.WriteString(w, filler)
+				}
+				_, _ = io.WriteString(w, deprecated)
+			}))
+			t.Cleanup(server.Close)
+
+			client, err := kubernetes.NewForConfig(&rest.Config{Host: server.URL})
+			if err != nil {
+				t.Fatal(err)
+			}
+			requests, window := collectDeprecatedAPIRequestsWithClient(t.Context(), client.Discovery().RESTClient())
+			if requestedPath != "/metrics" {
+				t.Fatalf("request path = %q, want /metrics", requestedPath)
+			}
+			if len(requests) != tc.wantRequests || (window != "") != tc.wantWindow {
+				t.Fatalf("result = requests=%+v window=%q, want %d requests, window=%v", requests, window, tc.wantRequests, tc.wantWindow)
+			}
+			if tc.status != http.StatusOK && requests != nil {
+				t.Fatalf("requests = %#v, want nil so the scan reports the metrics as unavailable", requests)
+			}
+		})
+	}
+}
+
 func TestDiscoverUpgradePrometheusRuleDistinguishesPartialDiscoveryFromAbsentAPI(t *testing.T) {
 	for _, tc := range []struct {
 		name             string

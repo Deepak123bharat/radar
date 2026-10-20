@@ -1,6 +1,7 @@
 package upgrade
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -36,8 +37,20 @@ const (
 	upgradeNodeRuntimeCollectionTimeout  = 20 * time.Second
 	upgradeNodeEvidenceResponseLimit     = 8 << 20
 	upgradeAPIMetricsCollectionTimeout   = 10 * time.Second
-	upgradeAPIMetricsResponseLimit       = 16 << 20
+	upgradeAPIMetricsResponseLimit       = 256 << 20
+	upgradeAPIMetricsLineLimit           = 1 << 20
 )
+
+// A busy API server's /metrics exceeds 16 MiB, so the stream is filtered to the
+// lines the deprecated-API check parses instead of being held whole.
+var upgradeAPIMetricsLinePrefixes = [][]byte{
+	[]byte("# TYPE apiserver_requested_deprecated_apis "),
+	[]byte("apiserver_requested_deprecated_apis{"),
+	[]byte("apiserver_requested_deprecated_apis "),
+	[]byte("# TYPE process_start_time_seconds "),
+	[]byte("process_start_time_seconds{"),
+	[]byte("process_start_time_seconds "),
+}
 
 func sameNamespaceScope(a, b []string) bool {
 	if (a == nil) != (b == nil) {
@@ -89,14 +102,19 @@ func collectDeprecatedAPIRequests(ctx context.Context) ([]upgradereadiness.Depre
 	if client == nil || client.Discovery().RESTClient() == nil {
 		return nil, ""
 	}
+	return collectDeprecatedAPIRequestsWithClient(ctx, client.Discovery().RESTClient())
+}
+
+func collectDeprecatedAPIRequestsWithClient(ctx context.Context, client rest.Interface) ([]upgradereadiness.DeprecatedAPIRequest, string) {
 	metricsCtx, cancel := context.WithTimeout(ctx, upgradeAPIMetricsCollectionTimeout)
 	defer cancel()
-	stream, err := client.Discovery().RESTClient().Get().AbsPath("/metrics").Stream(metricsCtx)
+	stream, err := client.Get().AbsPath("/metrics").Stream(metricsCtx)
 	if err != nil {
 		return nil, ""
 	}
-	raw, err := readBoundedUpgradeResponse(stream, upgradeAPIMetricsResponseLimit)
+	raw, err := readAPIMetricsEvidence(stream, upgradeAPIMetricsResponseLimit)
 	if err != nil {
+		log.Printf("[upgrade-impact] failed to read API server metrics: %v", err)
 		return nil, ""
 	}
 	requests, processStartedAt, err := parseDeprecatedAPIRequests(raw)
@@ -112,6 +130,33 @@ func collectDeprecatedAPIRequests(ctx context.Context) ([]upgradereadiness.Depre
 		}
 	}
 	return requests, window
+}
+
+// readAPIMetricsEvidence keeps only the lines the deprecated-API check parses;
+// limit caps the bytes scanned, not the bytes kept.
+func readAPIMetricsEvidence(stream io.ReadCloser, limit int64) ([]byte, error) {
+	defer stream.Close()
+	limited := &io.LimitedReader{R: stream, N: limit + 1}
+	scanner := bufio.NewScanner(limited)
+	scanner.Buffer(make([]byte, 0, 64<<10), upgradeAPIMetricsLineLimit)
+	var kept bytes.Buffer
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		for _, prefix := range upgradeAPIMetricsLinePrefixes {
+			if bytes.HasPrefix(line, prefix) {
+				kept.Write(line)
+				kept.WriteByte('\n')
+				break
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if limited.N <= 0 {
+		return nil, errors.New("API server metrics response exceeds limit")
+	}
+	return kept.Bytes(), nil
 }
 
 func readBoundedUpgradeResponse(stream io.ReadCloser, limit int64) ([]byte, error) {
