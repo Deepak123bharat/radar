@@ -82,4 +82,29 @@ describe('TrafficSourcePill', () => {
     expect(container.textContent).toContain('Connecting...')
     expect(container.querySelector('button')).toBeNull()
   })
+
+  it('does not reopen the menu after a retry made without a mouse', () => {
+    const p = props({ connection: 'error' })
+    render(p)
+    open()
+    expect(container.querySelector('[role="listbox"]')).not.toBeNull()
+    act(() => button('retry')!.click())
+    render({ ...p, connection: 'connecting' })
+    render({ ...p, connection: 'connected' })
+    const menu = container.querySelector('[role="listbox"]')
+    expect(menu === null || menu.hasAttribute('inert')).toBe(true)
+    expect(button('istio')!.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('makes the menu inert while it animates closed, so its options cannot be activated', () => {
+    const p = props({})
+    render(p)
+    open()
+    expect(container.querySelector('[role="listbox"]')!.hasAttribute('inert')).toBe(false)
+    act(() => {
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    })
+    const closing = container.querySelector('[role="listbox"]')
+    expect(closing === null || closing.hasAttribute('inert')).toBe(true)
+  })
 })

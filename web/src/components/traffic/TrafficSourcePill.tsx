@@ -41,12 +41,19 @@ export function TrafficSourcePill({ sources, active, connection, onSwitch, onRet
     if (name !== active) onSwitch(name)
   }
 
+  // Keyboard activation of retry fires no outside mousedown, so the menu has to
+  // be closed here or it would reappear once the attempt finishes.
+  const retry = () => {
+    setOpen(false)
+    onRetry()
+  }
+
   return (
     <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-theme-surface/90 backdrop-blur border border-theme-border text-[11px]">
       {connection === 'connecting' ? (
         <>
-          <Loader2 className="h-3 w-3 animate-spin text-blue-400" />
-          <span className="text-blue-400">Connecting...</span>
+          <Loader2 className="h-3 w-3 animate-spin text-accent" />
+          <span className="text-accent">Connecting...</span>
         </>
       ) : (
         <>
@@ -65,6 +72,7 @@ export function TrafficSourcePill({ sources, active, connection, onSwitch, onRet
               {shouldRender && (
                 <div
                   role="listbox"
+                  inert={!menuOpen || undefined}
                   className={clsx(
                     'absolute top-full left-0 mt-1 z-50 bg-theme-surface border border-theme-border rounded-md shadow-theme-lg py-1 min-w-[120px] origin-top-left',
                     TRANSITION_MENU,
@@ -80,7 +88,7 @@ export function TrafficSourcePill({ sources, active, connection, onSwitch, onRet
                       role="option"
                       aria-selected={name === active}
                       onClick={() => choose(name)}
-                      className={clsx('w-full text-left px-3 py-1 text-xs hover:bg-theme-hover capitalize', name === active && 'text-blue-400')}
+                      className={clsx('w-full text-left px-3 py-1 text-xs hover:bg-theme-hover capitalize', name === active && 'text-accent')}
                     >
                       {name}
                     </button>
@@ -92,7 +100,7 @@ export function TrafficSourcePill({ sources, active, connection, onSwitch, onRet
             <span className="text-theme-text-secondary">{active}</span>
           )}
           {connection === 'error' && (
-            <button type="button" onClick={onRetry} className={clsx('font-medium hover:underline', toneTextClass('degraded'))}>
+            <button type="button" onClick={retry} className={clsx('font-medium hover:underline', toneTextClass('degraded'))}>
               retry
             </button>
           )}
