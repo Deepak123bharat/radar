@@ -14,6 +14,13 @@ import (
 // infrastructure, so this is checked before the nodes' provider.
 const NKPNamespace = "kommander-flux"
 
+// IsNKP reports whether the cluster has the NKP namespace. A denied or failed
+// read counts as no.
+func IsNKP(ctx context.Context, client kubernetes.Interface) bool {
+	_, err := client.CoreV1().Namespaces().Get(ctx, NKPNamespace, metav1.GetOptions{})
+	return err == nil
+}
+
 // DetectClusterPlatform detects the Kubernetes platform/provider by inspecting nodes.
 // Returns one of: nkp, rke2, gke, gke-autopilot, eks, aks, nutanix, minikube, kind, docker-desktop, openshift, rancher, generic, unknown.
 func DetectClusterPlatform(ctx context.Context, client kubernetes.Interface) (string, error) {
@@ -21,7 +28,7 @@ func DetectClusterPlatform(ctx context.Context, client kubernetes.Interface) (st
 		return "unknown", nil
 	}
 
-	if _, err := client.CoreV1().Namespaces().Get(ctx, NKPNamespace, metav1.GetOptions{}); err == nil {
+	if IsNKP(ctx, client) {
 		return "nkp", nil
 	}
 
