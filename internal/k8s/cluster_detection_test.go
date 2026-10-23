@@ -21,8 +21,24 @@ func TestGetClusterPlatform(t *testing.T) {
 		pods          corev1.PodList
 		denyNodes     bool
 		serverVersion string
+		nkp           bool
 		want          string
 	}{
+		{
+			name: "NKP on AWS infrastructure",
+			nodes: corev1.NodeList{Items: []corev1.Node{{
+				Spec: corev1.NodeSpec{ProviderID: "aws:///us-east-1a/i-0123"},
+			}}},
+			nkp:  true,
+			want: "nkp",
+		},
+		{
+			name: "Nutanix infrastructure without NKP",
+			nodes: corev1.NodeList{Items: []corev1.Node{{
+				Spec: corev1.NodeSpec{ProviderID: "nutanix://99d71c41-e100-4474-601b-5dd604becea6"},
+			}}},
+			want: "nutanix",
+		},
 		{
 			name: "RKE2",
 			nodes: corev1.NodeList{Items: []corev1.Node{{
@@ -61,7 +77,7 @@ func TestGetClusterPlatform(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setClusterDetectionClient(t, tt.nodes, tt.pods, tt.denyNodes, tt.serverVersion)
+			setClusterDetectionClient(t, tt.nodes, tt.pods, tt.denyNodes, tt.serverVersion, tt.nkp)
 
 			got, err := GetClusterPlatform(context.Background())
 			if err != nil {
@@ -74,7 +90,7 @@ func TestGetClusterPlatform(t *testing.T) {
 	}
 }
 
-func setClusterDetectionClient(t *testing.T, nodes corev1.NodeList, pods corev1.PodList, denyNodes bool, serverVersion string) {
+func setClusterDetectionClient(t *testing.T, nodes corev1.NodeList, pods corev1.PodList, denyNodes bool, serverVersion string, nkp bool) {
 	t.Helper()
 
 	nodes.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "NodeList"}
@@ -98,6 +114,15 @@ func setClusterDetectionClient(t *testing.T, nodes corev1.NodeList, pods corev1.
 			_ = json.NewEncoder(w).Encode(nodes)
 		case "/api/v1/namespaces/kube-system/pods":
 			_ = json.NewEncoder(w).Encode(pods)
+		case "/api/v1/namespaces/kommander-flux":
+			if !nkp {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(corev1.Namespace{
+				TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
+				ObjectMeta: metav1.ObjectMeta{Name: "kommander-flux"},
+			})
 		default:
 			http.NotFound(w, r)
 		}
