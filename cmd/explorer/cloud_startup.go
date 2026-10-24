@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"strings"
@@ -45,7 +44,7 @@ type cloudStartupFlags struct {
 type cloudStartup struct {
 	mode      cloudStartupMode
 	hubOrigin string
-	roots     *x509.CertPool
+	ca        *cloud.CAFile
 	names     cloud.NameOptions
 	warnings  []string
 }
@@ -105,11 +104,11 @@ func resolveCloudStartup(f cloudStartupFlags) (cloudStartup, error) {
 	}
 
 	if f.CAFile != "" {
-		roots, err := cloud.LoadCAFile(f.CAFile)
+		ca, err := cloud.NewCAFile(f.CAFile)
 		if err != nil {
 			return out, fmt.Errorf("--cloud-ca-file: %w", err)
 		}
-		out.roots = roots
+		out.ca = ca
 	}
 	return out, nil
 }

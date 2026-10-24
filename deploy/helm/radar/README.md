@@ -154,7 +154,7 @@ helm upgrade --install radar skyhook/radar -n radar \
 | `cloud.tokenSecretName` | The Secret Radar keeps its token in. Default `<fullname>-cloud-token`. |
 | `cloud.clusterName` | The exact name shown in the Hub. When empty, Radar uses the API server host from `kube-public/cluster-info`, or `cluster-<first 8 characters of the kube-system UID>`. |
 | `cloud.clusterNamePrefix` / `clusterNameSuffix` | Text around the name Radar picks. Ignored when `clusterName` is set. |
-| `cloud.caBundle` / `cloud.caBundleConfigMap` | Extra CA certificates (PEM) for a Hub with a private CA. Used for joining and for the tunnel, in token mode too. |
+| `cloud.caBundle` / `cloud.caBundleConfigMap` | Extra CA certificates (PEM) for a Hub with a private CA. Used for joining and for the tunnel, in token mode too. Radar re-reads the file, so a rotated bundle needs no restart. Needs Radar 1.19.0 or later. |
 
 How it behaves:
 

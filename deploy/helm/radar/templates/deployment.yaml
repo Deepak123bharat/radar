@@ -27,12 +27,14 @@
 {{- if .Values.cloud.insecureSkipVerify }}
 {{- fail "cloud.insecureSkipVerify cannot be used with cloud.enrollment: the enrollment key would be sent to an unverified server. Give the Hub's CA with cloud.caBundle or cloud.caBundleConfigMap instead" }}
 {{- end }}
-{{- /* Older images ignore the enrollment flags and would start with no
-       tunnel at all. Only release-style tags are checked; others can't be
-       compared. */}}
+{{- end }}
+{{- /* Older images don't know the enrollment or CA flags and refuse to start.
+       Only release-style tags are checked; others can't be compared. */}}
+{{- if or $enroll $cloudCA }}
+{{- $feature := ternary "cloud.enrollment" "cloud.caBundle / cloud.caBundleConfigMap" $enroll }}
 {{- $tag := toString .Values.image.tag }}
 {{- if and (regexMatch "^v?[0-9]+\\.[0-9]+\\.[0-9]+" $tag) (semverCompare "<1.19.0-0" $tag) }}
-{{- fail (printf "cloud.enrollment requires Radar 1.19.0 or later, but image.tag pins %s. Unset image.tag to use the chart's version, or pin 1.19.0 or later." $tag) }}
+{{- fail (printf "%s requires Radar 1.19.0 or later, but image.tag pins %s. Unset image.tag to use the chart's version, or pin 1.19.0 or later." $feature $tag) }}
 {{- end }}
 {{- end }}
 {{- if and $basePath .Values.cloud.enabled }}

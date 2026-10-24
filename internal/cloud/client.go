@@ -13,7 +13,6 @@ package cloud
 
 import (
 	"context"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"log"
@@ -34,9 +33,9 @@ type Config struct {
 	// false for any hub with a publicly trusted certificate.
 	InsecureSkipVerify bool
 
-	// RootCAs, when set, replaces the system roots for the tunnel's TLS
-	// verification (see LoadCAFile, which keeps the system roots in the pool).
-	RootCAs *x509.CertPool
+	// CA, when set, adds a CA bundle to the system roots for the tunnel's
+	// TLS verification. It is re-read for every dial.
+	CA *CAFile
 
 	// ClusterUID is the kube-system namespace UID, sent as a hint on every
 	// handshake. Ignored unless it is a UUID.

@@ -82,22 +82,35 @@ type EnrollClient struct {
 	HubOrigin string
 	KeyFile   string
 	HTTP      *http.Client
+	// CA, when set, adds a CA bundle to the system roots. It is re-read for
+	// every call, so a rotated bundle needs no restart.
+	CA *CAFile
+
+	caPool *x509.CertPool
 }
 
-// NewEnrollClient builds a client for hubOrigin. roots, when set, replaces the
-// system roots (see LoadCAFile).
-func NewEnrollClient(hubOrigin, keyFile string, roots *x509.CertPool) (*EnrollClient, error) {
+// NewEnrollClient builds a client for hubOrigin. A nil ca means the system
+// roots.
+func NewEnrollClient(hubOrigin, keyFile string, ca *CAFile) (*EnrollClient, error) {
 	origin, err := NormalizeHubOrigin(hubOrigin)
 	if err != nil {
 		return nil, err
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = hubTLSConfig(roots, false)
-	return &EnrollClient{
+	c := &EnrollClient{
 		HubOrigin: origin,
 		KeyFile:   keyFile,
-		HTTP:      &http.Client{Timeout: enrollRequestTimeout, Transport: transport},
-	}, nil
+		HTTP:      &http.Client{Timeout: enrollRequestTimeout},
+		CA:        ca,
+	}
+	c.useRoots(ca.Pool())
+	return c, nil
+}
+
+func (c *EnrollClient) useRoots(pool *x509.CertPool) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = hubTLSConfig(pool, false)
+	c.HTTP.Transport = transport
+	c.caPool = pool
 }
 
 // ReadEnrollmentKey reads and checks the key file. It runs before every
@@ -132,6 +145,11 @@ func (c *EnrollClient) Enroll(ctx context.Context, req EnrollRequest) (*EnrollRe
 	key, err := ReadEnrollmentKey(c.KeyFile)
 	if err != nil {
 		return nil, err
+	}
+	if c.CA != nil {
+		if pool := c.CA.Pool(); pool != c.caPool {
+			c.useRoots(pool)
+		}
 	}
 	body, err := json.Marshal(req)
 	if err != nil {

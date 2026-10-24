@@ -2,9 +2,15 @@ package cloud
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -770,15 +776,15 @@ func TestCAFileTrustsAPrivateHub(t *testing.T) {
 	if err := os.WriteFile(caPath, pemBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	roots, err := LoadCAFile(caPath)
+	ca, err := NewCAFile(caPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	with, _ := NewEnrollClient(hub.URL, keyFile, roots)
+	with, _ := NewEnrollClient(hub.URL, keyFile, ca)
 	if res, err := with.Enroll(context.Background(), EnrollRequest{}); err != nil || res.Token != "rhc_tls" {
 		t.Fatalf("with CA file: %+v %v", res, err)
 	}
-	if tlsCfg := hubTLSConfig(roots, false); tlsCfg == nil || tlsCfg.RootCAs != roots {
+	if tlsCfg := hubTLSConfig(ca.Pool(), false); tlsCfg == nil || tlsCfg.RootCAs != ca.Pool() {
 		t.Fatal("the dialer's TLS config does not carry the CA pool")
 	}
 
@@ -865,4 +871,171 @@ func TestTunnelStopsOnAResetDespiteAFailedRead(t *testing.T) {
 		started := tunnel.started()
 		return len(started) == 2 && started[1].Token == "rhc_two"
 	})
+}
+
+// writeFileNewer writes data and moves its modification time forward, so a
+// rewrite within the same clock tick still reads as a change.
+func writeFileNewer(t *testing.T, path string, data []byte, step int) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Now().Add(time.Duration(step) * time.Minute)
+	if err := os.Chtimes(path, when, when); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCAFileRotationIsPickedUpWithoutARestart(t *testing.T) {
+	hub := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"joined","cluster_id":"c","token":"rhc_tls","wss_url":"wss://hub.example.com/agent"}`))
+	}))
+	defer hub.Close()
+	hubPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: hub.Certificate().Raw})
+
+	caPath := filepath.Join(t.TempDir(), "ca.crt")
+	writeFileNewer(t, caPath, unrelatedCAPEM(t), 0)
+	ca, err := NewCAFile(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, _ := NewEnrollClient(hub.URL, writeKeyFile(t, testKey), ca)
+	if _, err := client.Enroll(context.Background(), EnrollRequest{}); err == nil {
+		t.Fatal("trusted the Hub with the wrong CA")
+	}
+
+	writeFileNewer(t, caPath, hubPEM, 1)
+	if res, err := client.Enroll(context.Background(), EnrollRequest{}); err != nil || res.Token != "rhc_tls" {
+		t.Fatalf("rotated CA not picked up: %+v %v", res, err)
+	}
+	rotated := ca.Pool()
+	if tlsCfg := hubTLSConfig(ca.Pool(), false); tlsCfg.RootCAs != rotated {
+		t.Fatal("the dialer would not use the rotated pool")
+	}
+
+	// A broken rewrite keeps the last good pool.
+	writeFileNewer(t, caPath, []byte("half-written"), 2)
+	if ca.Pool() != rotated {
+		t.Fatal("a broken CA file replaced the last good pool")
+	}
+	if _, err := client.Enroll(context.Background(), EnrollRequest{}); err != nil {
+		t.Fatalf("enroll after a broken rewrite: %v", err)
+	}
+	if _, err := NewCAFile(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("NewCAFile accepted a missing file")
+	}
+}
+
+// failRefusedWrites makes the next n writes that store enroll_status=refused
+// fail with a server error.
+func failRefusedWrites(cs *fake.Clientset) func(n int) {
+	var mu sync.Mutex
+	remaining := 0
+	cs.PrependReactor("update", "secrets", func(a clienttesting.Action) (bool, runtime.Object, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		obj := a.(clienttesting.UpdateAction).GetObject().(*corev1.Secret)
+		if remaining > 0 && string(obj.Data[SecretKeyStatus]) == EnrollStatusRefused {
+			remaining--
+			return true, nil, apierrors.NewInternalError(errors.New("etcdserver: request timed out"))
+		}
+		return false, nil, nil
+	})
+	return func(n int) {
+		mu.Lock()
+		remaining = n
+		mu.Unlock()
+	}
+}
+
+func TestEnrollmentClosedStopsOnlyOnceRefusalIsStored(t *testing.T) {
+	cs := newTokenSecretClient(t, nil)
+	failWrites := failRefusedWrites(cs)
+	failWrites(1)
+	hub := newFakeHub(t, hubReply{status: 409, body: `{"error":"enrollment_closed"}`})
+	tunnel := newFakeTunnel()
+	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
+
+	eventually(t, "the refusal to be stored", func() bool {
+		return string(secretData(t, cs)[SecretKeyStatus]) == EnrollStatusRefused
+	})
+	if !strings.Contains(string(secretData(t, cs)[SecretKeyError]), "reset-enrollment") {
+		t.Fatalf("enroll_error = %q", secretData(t, cs)[SecretKeyError])
+	}
+}
+
+func TestTunnelRejectionIsRecordedDespiteAFailedRead(t *testing.T) {
+	cs := newTokenSecretClient(t, nil)
+	failGets := failNextGets(cs)
+	failWrites := failRefusedWrites(cs)
+	hub := newFakeHub(t, joined("rhc_one"))
+	tunnel := newFakeTunnel()
+	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
+
+	eventually(t, "the tunnel", func() bool { return tunnel.isRunning() })
+	time.Sleep(50 * time.Millisecond)
+	failGets(1)
+	failWrites(1)
+	tunnel.exit <- ErrTokenRejected
+
+	// Read through the tracker: a test read must not use up the injected
+	// failure meant for Radar.
+	eventually(t, "the refusal", func() bool {
+		obj, err := cs.Tracker().Get(secretsGVR, testNamespace, testSecretName)
+		return err == nil && string(obj.(*corev1.Secret).Data[SecretKeyStatus]) == EnrollStatusRefused
+	})
+	time.Sleep(50 * time.Millisecond)
+	if n := len(tunnel.started()); n != 1 {
+		t.Fatalf("the rejected token was used for %d more tunnel(s)", n-1)
+	}
+}
+
+func TestRestartFromStoredTokenSendsTheDerivedName(t *testing.T) {
+	hub := newFakeHub(t, joined("unused"))
+	cs := newTokenSecretClient(t, map[string][]byte{
+		SecretKeyToken:     []byte("rhc_stored"),
+		SecretKeyClusterID: []byte("c-stored"),
+		SecretKeyWSSURL:    []byte("ws://127.0.0.1:1/agent"),
+		SecretKeyStatus:    []byte(EnrollStatusJoined),
+	})
+	s, _ := cs.CoreV1().Secrets(testNamespace).Get(context.Background(), testSecretName, metav1.GetOptions{})
+	s.Data[SecretKeyHubOrigin] = []byte(hub.srv.URL)
+	if _, err := cs.CoreV1().Secrets(testNamespace).Update(context.Background(), s, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	tunnel := newFakeTunnel()
+	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{Prefix: "nkp-"})
+
+	eventually(t, "the tunnel", func() bool { return len(tunnel.started()) == 1 })
+	cfg := tunnel.started()[0]
+	if cfg.ClusterName != "nkp-api.prod-eu.example.com" || cfg.ClusterUID != testClusterUID {
+		t.Fatalf("first handshake after restart: name %q, uid %q", cfg.ClusterName, cfg.ClusterUID)
+	}
+	if len(hub.requests()) != 0 {
+		t.Fatal("restart with a stored token called enroll")
+	}
+}
+
+// unrelatedCAPEM is a self-signed certificate no test server uses.
+func unrelatedCAPEM(t *testing.T) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "unrelated test CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }

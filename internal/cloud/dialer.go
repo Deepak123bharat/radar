@@ -40,7 +40,7 @@ func dial(ctx context.Context, cfg Config, selfUpgrade bool) (*yamux.Session, er
 
 	dialer := *websocket.DefaultDialer
 	dialer.HandshakeTimeout = 10 * time.Second
-	dialer.TLSClientConfig = hubTLSConfig(cfg.RootCAs, cfg.InsecureSkipVerify)
+	dialer.TLSClientConfig = hubTLSConfig(cfg.CA.Pool(), cfg.InsecureSkipVerify)
 	ws, resp, err := dialer.DialContext(ctx, u.String(), headers)
 	if err != nil {
 		if resp != nil {

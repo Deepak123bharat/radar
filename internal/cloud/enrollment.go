@@ -2,7 +2,6 @@ package cloud
 
 import (
 	"context"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"log"
@@ -35,7 +34,7 @@ type ClusterFacts struct {
 type EnrollmentConfig struct {
 	HubOrigin  string
 	KeyFile    string
-	RootCAs    *x509.CertPool
+	CA         *CAFile
 	Client     kubernetes.Interface
 	Namespace  string // where Radar and its token Secret live
 	Release    string
@@ -46,7 +45,7 @@ type EnrollmentConfig struct {
 
 	// Tunnel is the template for the tunnel once joined: Handler,
 	// SelfUpgradeAvailable, APIServerURL and the like. URL, Token, ClusterID,
-	// ClusterName, ClusterUID, RootCAs and Enrolled are filled in here.
+	// ClusterName, ClusterUID, CA and Enrolled are filled in here.
 	Tunnel Config
 }
 
@@ -113,7 +112,7 @@ func newEnroller(cfg EnrollmentConfig) (*enroller, error) {
 	}
 	origin, _ := NormalizeHubOrigin(cfg.HubOrigin)
 	cfg.HubOrigin = origin
-	client, err := NewEnrollClient(origin, cfg.KeyFile, cfg.RootCAs)
+	client, err := NewEnrollClient(origin, cfg.KeyFile, cfg.CA)
 	if err != nil {
 		return nil, err
 	}
@@ -235,15 +234,25 @@ func (e *enroller) attempt(ctx context.Context, st *EnrollmentState) time.Durati
 	}
 
 	status, msg, delay := classifyEnrollError(err)
-	switch {
-	case delay < 0:
+	if delay < 0 {
+		// Stop only once the refusal is stored: an open-ended wait with
+		// nothing recorded would leave the operator no sign of why.
+		next, serr := e.store.SaveStatus(ctx, *st, status, msg)
+		if serr != nil {
+			e.logSecretError(serr)
+			if errors.Is(serr, ErrTokenSecretConflict) {
+				return 0
+			}
+			return secretRetryDelay
+		}
+		*st = next
 		log.Printf("[cloud] stopped joining: %v. To join again, %s", err, "run `radar cloud reset-enrollment`")
-	case delay == 0:
-		delay = e.nextBackoff()
-		log.Printf("[cloud] join failed: %v (retry in %s)", err, delay.Round(time.Second))
-	default:
-		log.Printf("[cloud] join failed: %v (retry in %s)", err, delay.Round(time.Second))
+		return delay
 	}
+	if delay == 0 {
+		delay = e.nextBackoff()
+	}
+	log.Printf("[cloud] join failed: %v (retry in %s)", err, delay.Round(time.Second))
 	*st = e.saveStatus(ctx, *st, status, msg)
 	return delay
 }
@@ -287,9 +296,11 @@ func (e *enroller) serveTunnel(ctx context.Context, st EnrollmentState) {
 	tunnel.URL = st.WSSURL
 	tunnel.Token = st.Token
 	tunnel.ClusterID = st.ClusterID
-	tunnel.ClusterName = e.displayName()
+	// uidHint also resolves the derived name after a restart, so it runs
+	// before the name is read.
 	tunnel.ClusterUID = e.uidHint(ctx)
-	tunnel.RootCAs = e.cfg.RootCAs
+	tunnel.ClusterName = e.displayName()
+	tunnel.CA = e.cfg.CA
 	tunnel.Enrolled = true
 
 	tctx, cancel := context.WithCancel(ctx)
@@ -335,17 +346,36 @@ func (e *enroller) serveTunnel(ctx context.Context, st EnrollmentState) {
 	}
 }
 
+// recordRefusal stores enroll_status=refused for the token in want. A failed
+// read or write is retried: giving up would let the outer loop start the
+// tunnel again with the token the Hub just rejected. It stops once the
+// refusal is stored, the token changed, or the Secret is gone.
 func (e *enroller) recordRefusal(ctx context.Context, want, msg string) {
 	for ctx.Err() == nil {
 		st, err := e.store.Load(ctx)
-		if err != nil || tokenFingerprint(st) != want {
+		switch {
+		case errors.Is(err, ErrTokenSecretNotFound):
+			e.logSecretError(err)
+			return
+		case err != nil:
+			e.logSecretError(err)
+			sleep(ctx, secretRetryDelay)
+			continue
+		case tokenFingerprint(st) != want:
 			return
 		}
-		if _, err := e.store.SaveStatus(ctx, st, EnrollStatusRefused, msg); !errors.Is(err, ErrTokenSecretConflict) {
-			if err != nil {
-				e.logSecretError(err)
-			}
+		_, err = e.store.SaveStatus(ctx, st, EnrollStatusRefused, msg)
+		switch {
+		case err == nil:
 			return
+		case errors.Is(err, ErrTokenSecretConflict):
+			continue
+		case errors.Is(err, ErrTokenSecretNotFound):
+			e.logSecretError(err)
+			return
+		default:
+			e.logSecretError(err)
+			sleep(ctx, secretRetryDelay)
 		}
 	}
 }

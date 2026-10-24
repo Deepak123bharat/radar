@@ -128,7 +128,7 @@ tests:
             - apiGroups: [""]
               resources: ["secrets"]
               resourceNames: ["my-token"]
-              verbs: ["get", "list", "watch", "update", "patch"]
+              verbs: ["get", "list", "watch", "update"]
 
   - it: an existingSecret key is mounted, and no key Secret is rendered
     set:
@@ -215,6 +215,54 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "requires Radar 1.19.0 or later"
+
+  - it: refuses an old image for a CA bundle in token mode too
+    template: deployment.yaml
+    set:
+      image:
+        tag: 1.18.0
+      cloud:
+        enabled: true
+        url: wss://hub.example.com/agent
+        clusterName: prod
+        existingSecret: radar-cloud-config
+        caBundleConfigMap:
+          name: corp-ca
+    asserts:
+      - failedTemplate:
+          errorPattern: "cloud.caBundle / cloud.caBundleConfigMap requires Radar 1.19.0 or later"
+
+  - it: an old image without enrollment or a CA bundle still renders
+    template: deployment.yaml
+    set:
+      image:
+        tag: 1.18.0
+      cloud:
+        enabled: true
+        url: wss://hub.example.com/agent
+        clusterName: prod
+        existingSecret: radar-cloud-config
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: a CA bundle with a current image renders the CA flag in token mode
+    template: deployment.yaml
+    set:
+      image:
+        tag: 1.19.0
+      cloud:
+        enabled: true
+        url: wss://hub.example.com/agent
+        clusterName: prod
+        existingSecret: radar-cloud-config
+        caBundle: |
+          -----BEGIN CERTIFICATE-----
+          MIIB
+          -----END CERTIFICATE-----
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --cloud-ca-file=/etc/radar/cloud-ca/ca.crt
 
   - it: refuses insecureSkipVerify with an enrollment key
     template: deployment.yaml

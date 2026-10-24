@@ -613,7 +613,7 @@ func main() {
 				Release:            helmRelease,
 				APIServerURL:       apiServerURL,
 				InsecureSkipVerify: *cloudInsecureSkipVerify,
-				RootCAs:            cloudStart.roots,
+				CA:                 cloudStart.ca,
 				// Ask the apiserver whether this ServiceAccount may actually
 				// patch its own Deployment. Env presence is NOT the signal:
 				// identity ships on every install for read-only
@@ -633,7 +633,7 @@ func main() {
 				runErr = cloud.RunEnrollment(rootCtx, cloud.EnrollmentConfig{
 					HubOrigin:  cloudStart.hubOrigin,
 					KeyFile:    *cloudEnrollmentKeyFile,
-					RootCAs:    cloudStart.roots,
+					CA:         cloudStart.ca,
 					Client:     kc,
 					Namespace:  namespace,
 					Release:    helmRelease,

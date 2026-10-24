@@ -5,7 +5,10 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log"
 	"os"
+	"sync"
+	"time"
 )
 
 // LoadCAFile returns the system roots plus every PEM certificate in path, for
@@ -47,4 +50,61 @@ func hubTLSConfig(roots *x509.CertPool, insecureSkipVerify bool) *tls.Config {
 		cfg.InsecureSkipVerify = true //nolint:gosec // user-requested via --cloud-insecure-skip-verify for a self-signed hub
 	}
 	return cfg
+}
+
+// CAFile re-reads a CA bundle when the file changes, so a CA mounted from a
+// ConfigMap can be rotated without restarting Radar. Pool is cheap when the
+// file is unchanged: one stat.
+type CAFile struct {
+	path string
+
+	mu      sync.Mutex
+	pool    *x509.CertPool
+	modTime time.Time
+	size    int64
+	warned  bool
+}
+
+// NewCAFile loads path, which must hold at least one certificate now.
+func NewCAFile(path string) (*CAFile, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("read CA file: %w", err)
+	}
+	pool, err := LoadCAFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return &CAFile{path: path, pool: pool, modTime: info.ModTime(), size: info.Size()}, nil
+}
+
+// Pool returns the current CA pool. If the file changed and no longer
+// parses, it keeps the last good pool and logs once until the file is fixed.
+// A nil *CAFile means the system roots.
+func (c *CAFile) Pool() *x509.CertPool {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	info, err := os.Stat(c.path)
+	if err == nil && info.ModTime().Equal(c.modTime) && info.Size() == c.size {
+		return c.pool
+	}
+	var pool *x509.CertPool
+	if err == nil {
+		pool, err = LoadCAFile(c.path)
+	}
+	if err != nil {
+		if !c.warned {
+			log.Printf("[cloud] WARNING: %v; still trusting the CA bundle read earlier", err)
+			c.warned = true
+		}
+		return c.pool
+	}
+	if c.warned {
+		log.Printf("[cloud] CA file %s readable again", c.path)
+	}
+	c.pool, c.modTime, c.size, c.warned = pool, info.ModTime(), info.Size(), false
+	return c.pool
 }
