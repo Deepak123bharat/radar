@@ -226,10 +226,10 @@ func (f *fakeTunnel) isRunning() bool {
 
 func fastEnrollDelays(t *testing.T) {
 	t.Helper()
-	prev := []time.Duration{enrollMinBackoff, enrollMaxBackoff, enrollLongDelay, enrollDefaultRateDelay, secretRetryDelay}
-	enrollMinBackoff, enrollMaxBackoff, enrollLongDelay, enrollDefaultRateDelay, secretRetryDelay = time.Millisecond, 5*time.Millisecond, 5*time.Millisecond, time.Millisecond, 5*time.Millisecond
+	prev := []time.Duration{enrollMinBackoff, enrollMaxBackoff, enrollLongDelay, enrollNotReadyDelay, enrollDefaultRateDelay, secretRetryDelay}
+	enrollMinBackoff, enrollMaxBackoff, enrollLongDelay, enrollNotReadyDelay, enrollDefaultRateDelay, secretRetryDelay = time.Millisecond, 5*time.Millisecond, 5*time.Millisecond, time.Millisecond, time.Millisecond, 5*time.Millisecond
 	t.Cleanup(func() {
-		enrollMinBackoff, enrollMaxBackoff, enrollLongDelay, enrollDefaultRateDelay, secretRetryDelay = prev[0], prev[1], prev[2], prev[3], prev[4]
+		enrollMinBackoff, enrollMaxBackoff, enrollLongDelay, enrollNotReadyDelay, enrollDefaultRateDelay, secretRetryDelay = prev[0], prev[1], prev[2], prev[3], prev[4], prev[5]
 	})
 }
 
@@ -668,7 +668,7 @@ func TestClassifyEnrollError(t *testing.T) {
 		{&EnrollError{StatusCode: 409, Code: "already_connected"}, EnrollStatusWaiting, func(d time.Duration) bool { return d == 0 }},
 		{&EnrollError{StatusCode: 401, Code: "invalid_key"}, EnrollStatusWaiting, func(d time.Duration) bool { return d == 0 }},
 		{&EnrollError{StatusCode: 402}, EnrollStatusWaiting, func(d time.Duration) bool { return d >= enrollLongDelay }},
-		{&EnrollError{StatusCode: 503}, EnrollStatusWaiting, func(d time.Duration) bool { return d >= enrollLongDelay }},
+		{&EnrollError{StatusCode: 503}, EnrollStatusWaiting, func(d time.Duration) bool { return d >= enrollNotReadyDelay && d < enrollLongDelay }},
 		{&EnrollError{StatusCode: 429, RetryAfter: 42 * time.Second, HasRetryAfter: true}, EnrollStatusWaiting, func(d time.Duration) bool { return d == 42*time.Second }},
 		{errors.New("dial tcp: refused"), EnrollStatusWaiting, func(d time.Duration) bool { return d == 0 }},
 	}
@@ -1038,4 +1038,40 @@ func unrelatedCAPEM(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
+func TestEnrollDelaysForHubSideRefusals(t *testing.T) {
+	// Production values. A Hub with no org yet becomes ready the moment its
+	// admin signs in, so clusters installed first must show up within about
+	// half a minute, not ten.
+	for i := 0; i < 50; i++ {
+		_, _, notReady := classifyEnrollError(&EnrollError{StatusCode: 503, Code: "hub_not_ready"})
+		if notReady < 30*time.Second || notReady >= 36*time.Second {
+			t.Fatalf("503 attempt %d waits %s, want 30s plus at most 20%% jitter", i, notReady)
+		}
+		_, _, limit := classifyEnrollError(&EnrollError{StatusCode: 402})
+		if limit < 10*time.Minute || limit >= 12*time.Minute {
+			t.Fatalf("402 waits %s, want 10m plus at most 20%% jitter", limit)
+		}
+	}
+}
+
+func TestHubNotReadyKeepsRetryingWithoutBackingOff(t *testing.T) {
+	cs := newTokenSecretClient(t, nil)
+	hub := newFakeHub(t, hubReply{status: 503, body: `{"error":"hub_not_ready"}`})
+	tunnel := newFakeTunnel()
+	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
+
+	eventually(t, "several 503 retries", func() bool { return len(hub.requests()) >= 5 })
+	if got := string(secretData(t, cs)[SecretKeyError]); got != "the Hub is not ready to add clusters yet" {
+		t.Fatalf("enroll_error = %q", got)
+	}
+	hub.setReplies(joined("rhc_ready"))
+	eventually(t, "a join once the Hub is ready", func() bool { return len(tunnel.started()) == 1 })
+	reqs := hub.requests()
+	for _, r := range reqs[1:] {
+		if r.Nonce != reqs[0].Nonce {
+			t.Fatal("a 503 retry started a new join attempt")
+		}
+	}
 }

@@ -74,9 +74,13 @@ func (c EnrollmentConfig) validate() error {
 var (
 	enrollMinBackoff = 30 * time.Second
 	enrollMaxBackoff = 10 * time.Minute
-	// Hub-side limits (402) and a Hub with no org yet (503) don't clear in
-	// seconds, so these wait the long delay straight away.
-	enrollLongDelay        = 10 * time.Minute
+	// A Hub-side licence or plan limit (402) doesn't clear in seconds, so it
+	// waits the long delay straight away.
+	enrollLongDelay = 10 * time.Minute
+	// A Hub with no org yet (503) is ready the moment its admin first signs
+	// in, so it is retried often and never backs off further: the call is
+	// cheap and well inside the Hub's per-IP rate limit.
+	enrollNotReadyDelay    = 30 * time.Second
 	enrollDefaultRateDelay = time.Minute
 	secretRetryDelay       = 30 * time.Second
 )
@@ -277,7 +281,7 @@ func classifyEnrollError(err error) (status, msg string, delay time.Duration) {
 	case he.StatusCode == http.StatusPaymentRequired:
 		return EnrollStatusWaiting, "the Hub refused to add a cluster: its licence or plan limit is reached", jitter(enrollLongDelay)
 	case he.StatusCode == http.StatusServiceUnavailable:
-		return EnrollStatusWaiting, "the Hub is not ready to add clusters yet", jitter(enrollLongDelay)
+		return EnrollStatusWaiting, "the Hub is not ready to add clusters yet", jitter(enrollNotReadyDelay)
 	case he.StatusCode == http.StatusTooManyRequests:
 		d := enrollDefaultRateDelay
 		if he.HasRetryAfter {
