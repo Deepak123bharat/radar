@@ -56,7 +56,7 @@ export interface PodNetworks {
   rows: NetworkAttachmentRow[]
 }
 
-export type NetworkAttachmentLookup = 'found' | 'missing' | 'forbidden' | 'unavailable'
+export type NetworkAttachmentLookup = 'found' | 'missing' | 'forbidden' | 'unavailable' | 'unchecked'
 
 /** Lookup results by `networkAttachmentKey`. A missing key means the lookup has not finished. */
 export type NetworkAttachmentLookups = Record<string, NetworkAttachmentLookup>
@@ -161,7 +161,7 @@ export function parseNetworkStatus(value: string | undefined): ParsedAnnotation<
   const items: ReportedNetwork[] = []
   for (let index = 0; index < list.entries.length; index++) {
     const entry = list.entries[index]
-    const name = isRecord(entry) ? optionalString(entry.name) : undefined
+    const name = isRecord(entry) ? optionalString(entry.name)?.trim() : undefined
     if (!isRecord(entry) || !name) return invalid(`entry ${index + 1} has no name`)
     items.push({
       name,
@@ -213,8 +213,12 @@ function buildRows(podNamespace: string, requested: RequestedNetwork[], reported
       candidate.interfaceName === network.interfaceName && reportedId(candidate) === requestedId(network))
   })
   // Multus attaches in annotation order, so repeats of one definition line up by position.
+  // A named interface that differs from the reported one is a different attachment.
   requested.forEach((network, index) => {
-    if (!paired[index]) paired[index] = claim(candidate => reportedId(candidate) === requestedId(network))
+    if (paired[index]) return
+    paired[index] = claim(candidate =>
+      reportedId(candidate) === requestedId(network)
+      && !(network.interfaceName && candidate.interfaceName && network.interfaceName !== candidate.interfaceName))
   })
 
   const rows: NetworkAttachmentRow[] = []

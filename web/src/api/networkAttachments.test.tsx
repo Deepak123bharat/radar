@@ -66,10 +66,12 @@ it('makes no request for a Pod that names no definitions', async () => {
   expect(lookups).toEqual({})
 })
 
-it('bounds how many definitions one Pod can make Radar read', async () => {
+it('bounds how many definitions one Pod can make Radar read and marks the rest unchecked', async () => {
   await render(Array.from({ length: 30 }, (_, index) => ref(`net-${index}`)))
-  await vi.waitFor(() => expect(requests).toHaveLength(20))
-  expect(Object.keys(lookups).length).toBeLessThanOrEqual(20)
+  await vi.waitFor(() => expect(Object.keys(lookups)).toHaveLength(30))
+  expect(requests).toHaveLength(20)
+  const unchecked = Object.entries(lookups).filter(([, state]) => state === 'unchecked').map(([key]) => key)
+  expect(unchecked).toEqual(Array.from({ length: 10 }, (_, index) => `apps/net-${index + 20}`))
 })
 
 it('treats anything but a 404 or 403 as unavailable rather than missing', () => {

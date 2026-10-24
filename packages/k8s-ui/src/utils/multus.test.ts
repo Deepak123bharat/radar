@@ -109,6 +109,15 @@ describe('parseNetworkStatus', () => {
     expect(parseNetworkStatus('{}').state).toBe('invalid')
     expect(parseNetworkStatus('[{"interface":"net1"}]').state).toBe('invalid')
   })
+
+  it('does not accept a blank name as an attachment', () => {
+    const result = parseNetworkStatus('[{"name":"   "}]')
+    expect(result.state === 'invalid' && result.reason).toMatch(/entry 1 has no name/)
+    expect(parseNetworkStatus('[{"name":"  cbr0  ","default":true}]')).toEqual({
+      state: 'ok',
+      items: [{ name: 'cbr0', ips: [], isDefault: true }],
+    })
+  })
 })
 
 describe('getPodNetworks', () => {
@@ -137,6 +146,26 @@ describe('getPodNetworks', () => {
       ]),
     }))
     expect(rows.map(row => row.reported?.ips)).toEqual([['10.0.0.2'], ['10.0.0.1']])
+  })
+
+  it('does not pair a request with a report on a different, explicitly named interface', () => {
+    const { rows } = getPodNetworks(pod({
+      [MULTUS_NETWORKS_ANNOTATION]: 'conf@net1',
+      [MULTUS_NETWORK_STATUS_ANNOTATION]: status([{ name: 'apps/conf', interface: 'net2', ips: ['10.0.0.2'] }]),
+    }))
+    expect(rows.map(row => [row.key, row.requested?.interfaceName, row.reported?.interfaceName])).toEqual([
+      ['requested-0', 'net1', undefined],
+      ['reported-0', undefined, 'net2'],
+    ])
+  })
+
+  it('still pairs a named request with a report that names no interface', () => {
+    const { rows } = getPodNetworks(pod({
+      [MULTUS_NETWORKS_ANNOTATION]: 'conf@net1',
+      [MULTUS_NETWORK_STATUS_ANNOTATION]: status([{ name: 'apps/conf', ips: ['10.0.0.2'] }]),
+    }))
+    expect(rows).toHaveLength(1)
+    expect(rows[0].reported?.ips).toEqual(['10.0.0.2'])
   })
 
   it('treats a bare name as the Pod namespace, so only its qualified form is the same definition', () => {

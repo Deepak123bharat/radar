@@ -53,6 +53,7 @@ describe('SecondaryNetworksSection', () => {
       })} />,
       container => {
         const text = container.textContent ?? ''
+        expect(buttons(container).find(button => button.textContent?.startsWith('Secondary Networks'))?.getAttribute('aria-expanded')).toBe('true')
         expect(text).toContain('Secondary Networks (3)')
         expect(text).toContain('Default network')
         expect(text).toContain('net1')
@@ -100,19 +101,20 @@ describe('SecondaryNetworksSection', () => {
     )
   })
 
-  it('keeps a definition unlinked and explains why when it is missing, forbidden or unchecked', async () => {
+  it('keeps a definition unlinked and explains why when it is missing, forbidden, unchecked or unavailable', async () => {
     await render(
       <SecondaryNetworksSection
-        pod={pod({ [MULTUS_NETWORKS_ANNOTATION]: 'gone,hidden,unknown' })}
-        attachmentLookups={{ 'apps/gone': 'missing', 'apps/hidden': 'forbidden', 'apps/unknown': 'unavailable' }}
+        pod={pod({ [MULTUS_NETWORKS_ANNOTATION]: 'gone,hidden,unknown,later' })}
+        attachmentLookups={{ 'apps/gone': 'missing', 'apps/hidden': 'forbidden', 'apps/unknown': 'unavailable', 'apps/later': 'unchecked' }}
         onNavigate={() => undefined}
       />,
       container => {
-        expect(buttons(container).filter(button => ['gone', 'hidden', 'unknown'].includes(button.textContent ?? ''))).toHaveLength(0)
+        expect(buttons(container).filter(button => ['gone', 'hidden', 'unknown', 'later'].includes(button.textContent ?? ''))).toHaveLength(0)
         const text = container.textContent ?? ''
         expect(text).toContain('No NetworkAttachmentDefinition with this name in namespace apps.')
         expect(text).toContain('You don’t have permission to read this NetworkAttachmentDefinition.')
         expect(text).toContain('Could not check whether this NetworkAttachmentDefinition exists.')
+        expect(text).toContain('Not checked: this Pod names more definitions than Radar looks up at once.')
       },
     )
   })

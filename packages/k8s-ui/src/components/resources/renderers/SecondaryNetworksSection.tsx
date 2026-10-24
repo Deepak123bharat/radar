@@ -34,6 +34,8 @@ function lookupNote(lookup: NetworkAttachmentLookup | undefined, namespace: stri
       return 'You don’t have permission to read this NetworkAttachmentDefinition.'
     case 'unavailable':
       return 'Could not check whether this NetworkAttachmentDefinition exists.'
+    case 'unchecked':
+      return 'Not checked: this Pod names more definitions than Radar looks up at once.'
     default:
       return null
   }
@@ -135,7 +137,11 @@ export function SecondaryNetworksSection({ pod, attachmentLookups, onNavigate }:
   const secondaryCount = networks.rows.filter(row => !row.isDefaultNetwork).length
 
   return (
-    <Section title={secondaryCount > 0 ? `Secondary Networks (${secondaryCount})` : 'Secondary Networks'} icon={Network}>
+    <Section
+      title={secondaryCount > 0 ? `Secondary Networks (${secondaryCount})` : 'Secondary Networks'}
+      icon={Network}
+      defaultExpanded
+    >
       <div className="space-y-3">
         {networks.requested.state === 'invalid' && (
           <UnreadableAnnotation

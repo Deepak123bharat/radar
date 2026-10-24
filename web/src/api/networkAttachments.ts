@@ -46,5 +46,6 @@ export function useNetworkAttachmentLookups(refs: NetworkAttachmentRef[]): Netwo
     if (query.isSuccess) lookups[networkAttachmentKey(ref)] = 'found'
     else if (query.isError) lookups[networkAttachmentKey(ref)] = networkAttachmentLookupFromError(query.error)
   })
+  for (const ref of refs.slice(MAX_LOOKUPS)) lookups[networkAttachmentKey(ref)] = 'unchecked'
   return lookups
 }
