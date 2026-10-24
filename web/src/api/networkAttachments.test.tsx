@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from 'react'
+import { act, useEffect } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -13,8 +13,13 @@ let client: QueryClient
 let lookups: NetworkAttachmentLookups
 const requests: string[] = []
 
+const capture = (value: NetworkAttachmentLookups) => {
+  lookups = value
+}
+
 function Lookups({ refs }: { refs: NetworkAttachmentRef[] }) {
-  lookups = useNetworkAttachmentLookups(refs)
+  const result = useNetworkAttachmentLookups(refs)
+  useEffect(() => capture(result), [result])
   return null
 }
 

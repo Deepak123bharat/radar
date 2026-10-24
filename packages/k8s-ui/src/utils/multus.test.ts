@@ -137,6 +137,56 @@ describe('getPodNetworks', () => {
     ])
   })
 
+  it('reads the status Multus v4 wrote on a real Pod with three attachments', () => {
+    const { rows } = getPodNetworks(pod({
+      [MULTUS_NETWORKS_ANNOTATION]: 'ptp-conf,ptp-conf-b@second,shared/ptp-dual@dual0',
+      [MULTUS_NETWORK_STATUS_ANNOTATION]: String.raw`[{
+    "name": "kindnet",
+    "interface": "eth0",
+    "ips": [
+        "10.244.0.35"
+    ],
+    "mac": "7e:df:9a:de:3f:4a",
+    "default": true,
+    "dns": {},
+    "gateway": [
+        "\u003cnil\u003e"
+    ]
+},{
+    "name": "default/ptp-conf",
+    "interface": "net1",
+    "ips": [
+        "10.56.217.50"
+    ],
+    "mac": "aa:a9:b4:04:2e:9e",
+    "dns": {}
+},{
+    "name": "default/ptp-conf-b",
+    "interface": "second",
+    "ips": [
+        "10.58.0.2"
+    ],
+    "mac": "6a:3c:9b:c5:d8:2a",
+    "dns": {}
+},{
+    "name": "shared/ptp-dual",
+    "interface": "dual0",
+    "ips": [
+        "10.57.0.2",
+        "fd00:57::2"
+    ],
+    "mac": "92:a1:d4:8a:02:50",
+    "dns": {}
+}]`,
+    }, 'default'))
+    expect(rows.map(row => [row.key, row.isDefaultNetwork, row.reported?.interfaceName, row.reported?.ips])).toEqual([
+      ['default-0', true, 'eth0', ['10.244.0.35']],
+      ['requested-0', false, 'net1', ['10.56.217.50']],
+      ['requested-1', false, 'second', ['10.58.0.2']],
+      ['requested-2', false, 'dual0', ['10.57.0.2', 'fd00:57::2']],
+    ])
+  })
+
   it('prefers an explicit interface name over position', () => {
     const { rows } = getPodNetworks(pod({
       [MULTUS_NETWORKS_ANNOTATION]: 'conf@second,conf@first',
