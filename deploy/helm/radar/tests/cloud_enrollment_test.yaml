@@ -3,6 +3,7 @@ templates:
   - deployment.yaml
   - cloud-enrollment.yaml
   - clusterrole.yaml
+  - NOTES.txt
 release:
   name: radar
   namespace: radar
@@ -316,3 +317,16 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "cloud.token or cloud.existingSecret must be set"
+
+  - it: NOTES print the kubectl reset command with the real namespace and Secret
+    template: NOTES.txt
+    set:
+      cloud:
+        enabled: true
+        hubURL: https://hub.example.com
+        tokenSecretName: fleet-token
+        enrollment:
+          existingSecret: hub-enrollment
+    asserts:
+      - matchRegexRaw:
+          pattern: "kubectl -n radar patch secret fleet-token --type=json -p '\\[\\{\"op\":\"remove\",\"path\":\"/data\"\\}\\]'"

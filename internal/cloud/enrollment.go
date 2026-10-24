@@ -13,14 +13,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 )
-
-// ResetEnrollmentHint is the instruction stored in enroll_error whenever
-// Radar stops and needs an operator to clear its token Secret.
-const ResetEnrollmentHint = "run radar cloud reset-enrollment to join again"
 
 // ClusterFacts is the best-effort description sent with an enroll request.
 type ClusterFacts struct {
@@ -64,6 +61,8 @@ func (c EnrollmentConfig) validate() error {
 		return errors.New("cloud: the Helm release name is required (RADAR_HELM_RELEASE)")
 	case c.SecretName == "":
 		return errors.New("cloud: token Secret name is required")
+	case len(validation.IsDNS1123Subdomain(c.SecretName)) > 0:
+		return fmt.Errorf("cloud: token Secret name %q is not a valid Secret name", c.SecretName)
 	case c.Tunnel.Handler == nil:
 		return errors.New("cloud: Handler is required")
 	}
@@ -206,6 +205,7 @@ func (e *enroller) attempt(ctx context.Context, st *EnrollmentState) time.Durati
 		Nonce:        st.Nonce,
 		Name:         e.name,
 		NameSource:   e.source,
+		TokenSecret:  e.cfg.SecretName,
 		RadarVersion: truncateRunes(Version, 64),
 	}
 	if apiURL, err := validateAPIServerURL(e.cfg.Tunnel.APIServerURL); err == nil {
@@ -237,7 +237,7 @@ func (e *enroller) attempt(ctx context.Context, st *EnrollmentState) time.Durati
 		return 0
 	}
 
-	status, msg, delay := classifyEnrollError(err)
+	status, msg, delay := classifyEnrollError(err, e.resetHint())
 	if delay < 0 {
 		// Stop only once the refusal is stored: an open-ended wait with
 		// nothing recorded would leave the operator no sign of why.
@@ -250,7 +250,7 @@ func (e *enroller) attempt(ctx context.Context, st *EnrollmentState) time.Durati
 			return secretRetryDelay
 		}
 		*st = next
-		log.Printf("[cloud] stopped joining: %v. To join again, %s", err, "run `radar cloud reset-enrollment`")
+		log.Printf("[cloud] stopped joining: %v; %s", err, e.resetHint())
 		return delay
 	}
 	if delay == 0 {
@@ -264,14 +264,14 @@ func (e *enroller) attempt(ctx context.Context, st *EnrollmentState) time.Durati
 // classifyEnrollError maps an enroll failure to the status Radar records, a
 // short message, and a delay: negative stops until the Secret is reset, 0
 // means the regular backoff.
-func classifyEnrollError(err error) (status, msg string, delay time.Duration) {
+func classifyEnrollError(err error, resetHint string) (status, msg string, delay time.Duration) {
 	var he *EnrollError
 	if !errors.As(err, &he) {
 		return EnrollStatusWaiting, err.Error(), 0
 	}
 	switch {
 	case he.StatusCode == http.StatusConflict && he.Code == "enrollment_closed":
-		return EnrollStatusRefused, "the Hub closed this join attempt; " + ResetEnrollmentHint, -1
+		return EnrollStatusRefused, "the Hub closed this join attempt; " + resetHint, -1
 	case he.StatusCode == http.StatusConflict && he.Code == "already_connected":
 		return EnrollStatusWaiting, "another Radar with this cluster's identity is connected to the Hub", 0
 	case he.StatusCode == http.StatusConflict && he.Code == "no_agent_address":
@@ -305,6 +305,7 @@ func (e *enroller) serveTunnel(ctx context.Context, st EnrollmentState) {
 	tunnel.ClusterUID = e.uidHint(ctx)
 	tunnel.ClusterName = e.displayName()
 	tunnel.CA = e.cfg.CA
+	tunnel.TokenSecret = e.cfg.SecretName
 	tunnel.Enrolled = true
 
 	tctx, cancel := context.WithCancel(ctx)
@@ -321,8 +322,8 @@ func (e *enroller) serveTunnel(ctx context.Context, st EnrollmentState) {
 			return
 		case err := <-done:
 			if errors.Is(err, ErrTokenRejected) {
-				msg := "token rejected; " + ResetEnrollmentHint
-				log.Printf("[cloud] the Hub keeps rejecting this cluster's token. Not joining again on its own: %s", ResetEnrollmentHint)
+				msg := "token rejected; " + e.resetHint()
+				log.Printf("[cloud] the Hub keeps rejecting this cluster's token. Not joining again on its own; %s", e.resetHint())
 				e.recordRefusal(ctx, want, msg)
 				return
 			}
@@ -382,6 +383,12 @@ func (e *enroller) recordRefusal(ctx context.Context, want, msg string) {
 			sleep(ctx, secretRetryDelay)
 		}
 	}
+}
+
+// resetHint is stored in enroll_error and logged whenever Radar stops and
+// needs an operator to clear its token Secret.
+func (e *enroller) resetHint() string {
+	return "to join again, run: " + ResetCommand(e.cfg.Namespace, e.cfg.SecretName)
 }
 
 func (e *enroller) displayName() string {

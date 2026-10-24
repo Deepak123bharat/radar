@@ -38,6 +38,8 @@ const (
 	testKey        = "rhe_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcd"
 )
 
+const testResetCommand = `kubectl -n radar patch secret radar-cloud-token --type=json -p '[{"op":"remove","path":"/data"}]'`
+
 var secretsGVR = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
 
 // newTokenSecretClient returns a fake clientset holding the token Secret and
@@ -78,7 +80,7 @@ func secretData(t *testing.T, cs *fake.Clientset) map[string][]byte {
 	return s.Data
 }
 
-// clearSecret does what `radar cloud reset-enrollment` does.
+// clearSecret does what the reset command (ResetCommand) does.
 func clearSecret(t *testing.T, cs *fake.Clientset) {
 	t.Helper()
 	for {
@@ -291,11 +293,14 @@ func TestEnrollmentPersistsNonceBeforeFirstCallThenJoins(t *testing.T) {
 	if req.AgentUID != testClusterUID || req.Namespace != testNamespace || req.Release != "radar" || len(req.Nonce) != 43 {
 		t.Fatalf("enroll request identity = %+v", req)
 	}
+	if req.TokenSecret != testSecretName {
+		t.Fatalf("token_secret = %q, want %q", req.TokenSecret, testSecretName)
+	}
 	if req.Name != "api.prod-eu.example.com" || req.NameSource != NameSourceAPIServer {
 		t.Fatalf("name = %q (%s)", req.Name, req.NameSource)
 	}
 	cfg := tunnel.started()[0]
-	if cfg.Token != "rhc_first" || cfg.ClusterID != "c-rhc_first" || cfg.URL != "ws://127.0.0.1:1/agent" || cfg.ClusterUID != testClusterUID || !cfg.Enrolled {
+	if cfg.Token != "rhc_first" || cfg.ClusterID != "c-rhc_first" || cfg.URL != "ws://127.0.0.1:1/agent" || cfg.ClusterUID != testClusterUID || !cfg.Enrolled || cfg.TokenSecret != testSecretName {
 		t.Fatalf("tunnel config = %+v", cfg)
 	}
 	if hub.keys[0] != testKey {
@@ -344,8 +349,8 @@ func TestEnrollmentClosedStopsUntilResetThenJoinsAgain(t *testing.T) {
 		return string(secretData(t, cs)[SecretKeyStatus]) == EnrollStatusRefused
 	})
 	data := secretData(t, cs)
-	if !strings.Contains(string(data[SecretKeyError]), "radar cloud reset-enrollment") {
-		t.Fatalf("enroll_error = %q, want the reset instruction", data[SecretKeyError])
+	if got, want := string(data[SecretKeyError]), "the Hub closed this join attempt; to join again, run: "+testResetCommand; got != want {
+		t.Fatalf("enroll_error = %q, want %q", got, want)
 	}
 	if data[SecretKeyAt] == nil {
 		t.Fatal("enroll_at not set")
@@ -401,7 +406,7 @@ func TestEnrollmentDoesNotReenrollOnTunnelRejection(t *testing.T) {
 		return string(secretData(t, cs)[SecretKeyStatus]) == EnrollStatusRefused
 	})
 	data := secretData(t, cs)
-	if got := string(data[SecretKeyError]); got != "token rejected; run radar cloud reset-enrollment to join again" {
+	if got := string(data[SecretKeyError]); got != "token rejected; to join again, run: "+testResetCommand {
 		t.Fatalf("enroll_error = %q", got)
 	}
 	if string(data[SecretKeyToken]) != "rhc_one" {
@@ -500,22 +505,22 @@ func TestEnrollmentRereadsTheKeyFile(t *testing.T) {
 	tunnel := newFakeTunnel()
 	startEnroller(t, cs, hub, keyFile, tunnel, NameOptions{})
 
-	eventually(t, "a rejected key", func() bool { return len(hub.requests()) >= 1 })
-	if !strings.Contains(string(secretData(t, cs)[SecretKeyError]), "enrollment key") {
-		t.Fatalf("enroll_error = %q", secretData(t, cs)[SecretKeyError])
-	}
+	eventually(t, "the rejected key recorded in enroll_error", func() bool {
+		return strings.Contains(string(secretData(t, cs)[SecretKeyError]), "enrollment key")
+	})
 	rotated := "rhe_rotatedrotatedrotatedrotatedrotated12345"
-	hub.setReplies(joined("rhc_k"))
 	if err := os.WriteFile(keyFile, []byte(rotated), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, "a join with the new key", func() bool { return len(tunnel.started()) == 1 })
-	hub.mu.Lock()
-	last := hub.keys[len(hub.keys)-1]
-	hub.mu.Unlock()
-	if last != rotated {
-		t.Fatalf("last key sent = %q, want the rotated key", last)
-	}
+	// A request already in flight may still carry the old key, so wait for
+	// one that carries the new key before the hub starts accepting.
+	eventually(t, "a request with the rotated key", func() bool {
+		hub.mu.Lock()
+		defer hub.mu.Unlock()
+		return len(hub.keys) > 0 && hub.keys[len(hub.keys)-1] == rotated
+	})
+	hub.setReplies(joined("rhc_k"))
+	eventually(t, "a join after the key changed", func() bool { return len(tunnel.started()) == 1 })
 }
 
 func TestTokenSecretStoreConditionalWrites(t *testing.T) {
@@ -673,12 +678,12 @@ func TestClassifyEnrollError(t *testing.T) {
 		{errors.New("dial tcp: refused"), EnrollStatusWaiting, func(d time.Duration) bool { return d == 0 }},
 	}
 	for _, tt := range tests {
-		status, msg, delay := classifyEnrollError(tt.err)
+		status, msg, delay := classifyEnrollError(tt.err, "to join again, run: x")
 		if status != tt.wantStatus || !tt.wantDelay(delay) || msg == "" {
 			t.Errorf("%v: status=%s delay=%s msg=%q", tt.err, status, delay, msg)
 		}
 	}
-	if _, msg, _ := classifyEnrollError(&EnrollError{StatusCode: 409, Code: "enrollment_closed"}); !strings.Contains(msg, "radar cloud reset-enrollment") {
+	if _, msg, _ := classifyEnrollError(&EnrollError{StatusCode: 409, Code: "enrollment_closed"}, "to join again, run: x"); !strings.HasSuffix(msg, "to join again, run: x") {
 		t.Errorf("closed message %q lacks the reset instruction", msg)
 	}
 }
@@ -715,11 +720,12 @@ func TestResolveClusterName(t *testing.T) {
 }
 
 func TestRunStopsOnRepeatedRejectionOnlyWhenEnrolled(t *testing.T) {
-	var gotUID string
+	var gotUID, gotSecret string
 	var mu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		gotUID = r.Header.Get(clusterUIDHeader)
+		gotSecret = r.Header.Get(tokenSecretHeader)
 		mu.Unlock()
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	}))
@@ -731,13 +737,16 @@ func TestRunStopsOnRepeatedRejectionOnlyWhenEnrolled(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/agent"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err := Run(ctx, Config{URL: wsURL, Token: "rhc", ClusterID: "c", Handler: http.NotFoundHandler(), Enrolled: true, ClusterUID: testClusterUID})
+	err := Run(ctx, Config{URL: wsURL, Token: "rhc", ClusterID: "c", Handler: http.NotFoundHandler(), Enrolled: true, ClusterUID: testClusterUID, TokenSecret: testSecretName})
 	if !errors.Is(err, ErrTokenRejected) {
 		t.Fatalf("Run = %v, want ErrTokenRejected", err)
 	}
 	mu.Lock()
 	if gotUID != testClusterUID {
 		t.Fatalf("%s = %q", clusterUIDHeader, gotUID)
+	}
+	if gotSecret != testSecretName {
+		t.Fatalf("%s = %q", tokenSecretHeader, gotSecret)
 	}
 	mu.Unlock()
 
@@ -960,7 +969,7 @@ func TestEnrollmentClosedStopsOnlyOnceRefusalIsStored(t *testing.T) {
 	eventually(t, "the refusal to be stored", func() bool {
 		return string(secretData(t, cs)[SecretKeyStatus]) == EnrollStatusRefused
 	})
-	if !strings.Contains(string(secretData(t, cs)[SecretKeyError]), "reset-enrollment") {
+	if !strings.Contains(string(secretData(t, cs)[SecretKeyError]), testResetCommand) {
 		t.Fatalf("enroll_error = %q", secretData(t, cs)[SecretKeyError])
 	}
 }
@@ -1045,11 +1054,11 @@ func TestEnrollDelaysForHubSideRefusals(t *testing.T) {
 	// admin signs in, so clusters installed first must show up within about
 	// half a minute, not ten.
 	for i := 0; i < 50; i++ {
-		_, _, notReady := classifyEnrollError(&EnrollError{StatusCode: 503, Code: "hub_not_ready"})
+		_, _, notReady := classifyEnrollError(&EnrollError{StatusCode: 503, Code: "hub_not_ready"}, "")
 		if notReady < 30*time.Second || notReady >= 36*time.Second {
 			t.Fatalf("503 attempt %d waits %s, want 30s plus at most 20%% jitter", i, notReady)
 		}
-		_, _, limit := classifyEnrollError(&EnrollError{StatusCode: 402})
+		_, _, limit := classifyEnrollError(&EnrollError{StatusCode: 402}, "")
 		if limit < 10*time.Minute || limit >= 12*time.Minute {
 			t.Fatalf("402 waits %s, want 10m plus at most 20%% jitter", limit)
 		}
@@ -1063,9 +1072,9 @@ func TestHubNotReadyKeepsRetryingWithoutBackingOff(t *testing.T) {
 	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
 
 	eventually(t, "several 503 retries", func() bool { return len(hub.requests()) >= 5 })
-	if got := string(secretData(t, cs)[SecretKeyError]); got != "the Hub is not ready to add clusters yet" {
-		t.Fatalf("enroll_error = %q", got)
-	}
+	eventually(t, "the not-ready reason recorded in enroll_error", func() bool {
+		return string(secretData(t, cs)[SecretKeyError]) == "the Hub is not ready to add clusters yet"
+	})
 	hub.setReplies(joined("rhc_ready"))
 	eventually(t, "a join once the Hub is ready", func() bool { return len(tunnel.started()) == 1 })
 	reqs := hub.requests()
@@ -1073,5 +1082,26 @@ func TestHubNotReadyKeepsRetryingWithoutBackingOff(t *testing.T) {
 		if r.Nonce != reqs[0].Nonce {
 			t.Fatal("a 503 retry started a new join attempt")
 		}
+	}
+}
+
+func TestTokenSecretHeaderOnlyForEnrolledValidNames(t *testing.T) {
+	if got := cloudHandshakeHeaders(Config{Token: "rhc", Enrolled: true, TokenSecret: "edge-radar-cloud-token"}, false).Get(tokenSecretHeader); got != "edge-radar-cloud-token" {
+		t.Fatalf("header = %q", got)
+	}
+	for name, cfg := range map[string]Config{
+		"token mode":   {Token: "rhc", TokenSecret: "radar-cloud-token"},
+		"invalid name": {Token: "rhc", Enrolled: true, TokenSecret: "Bad_Name\r\n"},
+		"no name":      {Token: "rhc", Enrolled: true},
+	} {
+		if _, ok := cloudHandshakeHeaders(cfg, false)[tokenSecretHeader]; ok {
+			t.Errorf("%s: sent %s", name, tokenSecretHeader)
+		}
+	}
+}
+
+func TestResetCommand(t *testing.T) {
+	if got := ResetCommand("radar", "radar-cloud-token"); got != testResetCommand {
+		t.Fatalf("got %s", got)
 	}
 }

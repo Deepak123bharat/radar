@@ -25,12 +25,15 @@ const (
 
 // EnrollRequest is the body of POST /api/agent/enroll.
 type EnrollRequest struct {
-	AgentUID     string `json:"agent_uid"`
-	Namespace    string `json:"namespace"`
-	Release      string `json:"release"`
-	Nonce        string `json:"nonce"`
-	Name         string `json:"name"`
-	NameSource   string `json:"name_source"`
+	AgentUID   string `json:"agent_uid"`
+	Namespace  string `json:"namespace"`
+	Release    string `json:"release"`
+	Nonce      string `json:"nonce"`
+	Name       string `json:"name"`
+	NameSource string `json:"name_source"`
+	// TokenSecret names the Secret Radar keeps its token in, so the Hub can
+	// show the exact reset command.
+	TokenSecret  string `json:"token_secret,omitempty"`
 	RadarVersion string `json:"radar_version,omitempty"`
 	K8sVersion   string `json:"k8s_version,omitempty"`
 	Distro       string `json:"distro,omitempty"`

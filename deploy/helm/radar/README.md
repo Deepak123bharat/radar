@@ -181,15 +181,16 @@ How it behaves:
 stands: `joining`, `waiting` (Radar keeps retrying, for example while the Hub
 is at its cluster limit), `joined`, or `refused`. Radar stops at `refused`
 when the Hub closed its join attempt, or keeps rejecting the stored token.
-It does not join again on its own. To make it join again, clear the Secret;
-Radar notices and joins without a restart:
+It does not join again on its own. To make it join again, remove the
+Secret's data. Radar notices and joins without a restart:
 
 ```bash
-radar cloud reset-enrollment --namespace radar
+kubectl -n radar patch secret radar-cloud-token --type=json -p '[{"op":"remove","path":"/data"}]'
 ```
 
-The command finds Radar's token Secret in that namespace. Add `--release`
-when the namespace has more than one Radar.
+Use your namespace, and the Secret named by `cloud.tokenSecretName` if you
+set it (default `<fullname>-cloud-token`). Radar prints this command with
+the right names in `enroll_error` and in its logs.
 
 `radar cloud status` shows the same state.
 

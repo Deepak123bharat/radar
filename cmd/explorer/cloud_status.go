@@ -752,7 +752,7 @@ func missingEnrollmentConfiguration(runtime cloudinstall.DeploymentRuntime) []st
 func checkEnrolledTunnelStatus(ctx context.Context, kc kubernetes.Interface, target cloudinstall.RadarTarget, roots *x509.CertPool) hubTunnelResult {
 	name := target.Runtime.EnrollmentTokenSecret
 	ref := target.Namespace + "/" + name
-	reset := fmt.Sprintf("run `radar cloud reset-enrollment --namespace %s --secret %s` to make Radar join again, then rerun this status command.", target.Namespace, name)
+	reset := fmt.Sprintf("make Radar join again with `%s`, then rerun this status command.", cloud.ResetCommand(target.Namespace, name))
 	secret, err := kc.CoreV1().Secrets(target.Namespace).Get(ctx, name, metav1.GetOptions{})
 	switch {
 	case apierrors.IsForbidden(err):

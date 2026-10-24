@@ -46,6 +46,10 @@ type Config struct {
 	// retrying forever, so the caller can record the refusal.
 	Enrolled bool
 
+	// TokenSecret is the Secret an enrolled Radar keeps its token in. Sent
+	// on enrolled handshakes so the Hub can show the exact reset command.
+	TokenSecret string
+
 	// Token is the cluster bearer token issued by the Cloud install wizard.
 	// Format: rhc_<random>.
 	Token string

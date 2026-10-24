@@ -23,7 +23,7 @@ Check that it joined:
 
 If the Hub refused it, enroll_error in that Secret says why. To make it join again:
 
-  radar cloud reset-enrollment --namespace {{ $ns }} --secret {{ $tokenSecret }}
+  kubectl -n {{ $ns }} patch secret {{ $tokenSecret }} --type=json -p '[{"op":"remove","path":"/data"}]'
 {{- else if .Values.cloud.enabled }}
 The Radar pod dials the Radar Cloud endpoint (cloud.url) over an outbound WebSocket.
 Once connected, the Radar Cloud install page redirects you into the cluster view.

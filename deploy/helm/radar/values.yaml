@@ -483,8 +483,8 @@ cloud:
     existingSecretKey: key
   # Secret Radar keeps its own token in after joining. The chart creates it
   # empty and never manages its contents; it is kept on uninstall. Empty
-  # means <fullname>-cloud-token. To make Radar join again, clear it with
-  # `radar cloud reset-enrollment`.
+  # means <fullname>-cloud-token. To make Radar join again, remove its data:
+  # kubectl -n <namespace> patch secret <name> --type=json -p '[{"op":"remove","path":"/data"}]'
   tokenSecretName: ""
   # Wrap the cluster name Radar picks when clusterName is empty: the API
   # server host from kube-public/cluster-info, else cluster-<first 8

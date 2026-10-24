@@ -13,7 +13,7 @@ import (
 )
 
 // Data keys of the token Secret. The chart creates the Secret empty; Radar
-// only ever updates it, and `radar cloud reset-enrollment` clears every key.
+// only ever updates it. ResetCommand is how an operator clears it.
 const (
 	SecretKeyToken       = "token"
 	SecretKeyClusterID   = "cluster_id"
@@ -34,7 +34,9 @@ const (
 	EnrollStatusWaiting = "waiting"
 )
 
-const maxEnrollErrorRunes = 200
+// Long enough for the reset command with a 63-character namespace and a
+// 253-character Secret name.
+const maxEnrollErrorRunes = 512
 
 var (
 	// ErrTokenSecretConflict means the Secret changed since it was read; the
@@ -43,6 +45,13 @@ var (
 	// ErrTokenSecretNotFound means the Secret is gone. Radar never creates it.
 	ErrTokenSecretNotFound = errors.New("token Secret not found")
 )
+
+// ResetCommand is the one way to make an enrolled Radar join again: remove
+// its token Secret's data. Radar watches the Secret and joins again without
+// a restart.
+func ResetCommand(namespace, secret string) string {
+	return fmt.Sprintf(`kubectl -n %s patch secret %s --type=json -p '[{"op":"remove","path":"/data"}]'`, namespace, secret)
+}
 
 // EnrollmentState is what the token Secret holds, plus the version it was
 // read at, which every write is conditional on.

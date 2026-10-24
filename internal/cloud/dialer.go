@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/yamux"
 
 	pkgauth "github.com/skyhook-io/radar/pkg/auth"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 const (
@@ -21,6 +22,7 @@ const (
 	// never sends them to an agent that would ignore them and impersonate.
 	kubernetesCredentialsHeader = "X-Radar-Kubernetes-Credentials"
 	clusterUIDHeader            = "X-Radar-Cluster-UID"
+	tokenSecretHeader           = "X-Radar-Token-Secret"
 )
 
 // dial establishes a WebSocket to Radar Cloud, authenticates with the
@@ -81,6 +83,9 @@ func cloudHandshakeHeaders(cfg Config, selfUpgrade bool) http.Header {
 	}
 	if IsClusterUID(cfg.ClusterUID) {
 		headers.Set(clusterUIDHeader, cfg.ClusterUID)
+	}
+	if cfg.Enrolled && cfg.TokenSecret != "" && len(validation.IsDNS1123Subdomain(cfg.TokenSecret)) == 0 {
+		headers.Set(tokenSecretHeader, cfg.TokenSecret)
 	}
 	// Validate before send — the value comes from a ConfigMap on the
 	// cluster, and a corrupted ConfigMap shouldn't be able to inject

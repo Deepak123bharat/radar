@@ -96,66 +96,6 @@ func TestResolveCloudStartup(t *testing.T) {
 	})
 }
 
-func TestResetEnrollmentClearsEveryKey(t *testing.T) {
-	kc := fake.NewClientset(&corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "radar-cloud-token", Namespace: "radar", Annotations: map[string]string{"helm.sh/resource-policy": "keep"}},
-		Data: map[string][]byte{
-			cloud.SecretKeyToken: []byte("rhc_x"), cloud.SecretKeyHubOrigin: []byte("https://hub"), cloud.SecretKeyStatus: []byte("refused"),
-			cloud.SecretKeyError: []byte("token rejected"), cloud.SecretKeyAt: []byte("2026-10-24T00:00:00Z"),
-		},
-	})
-	var out, errOut bytes.Buffer
-	if code := runResetEnrollment(context.Background(), kc, "radar", "radar-cloud-token", &out, &errOut); code != 0 {
-		t.Fatalf("exit %d, stderr %q", code, errOut.String())
-	}
-	s, _ := kc.CoreV1().Secrets("radar").Get(context.Background(), "radar-cloud-token", metav1.GetOptions{})
-	if len(s.Data) != 0 {
-		t.Fatalf("data left after reset: %v", s.Data)
-	}
-	if s.Annotations["helm.sh/resource-policy"] != "keep" {
-		t.Fatal("reset dropped the Secret's annotations")
-	}
-	if !strings.Contains(out.String(), "Cleared Secret radar/radar-cloud-token") {
-		t.Fatalf("stdout = %q", out.String())
-	}
-	for _, a := range kc.Actions() {
-		if a.GetVerb() == "delete" || a.GetVerb() == "create" {
-			t.Fatalf("reset sent %s", a.GetVerb())
-		}
-	}
-
-	out.Reset()
-	if code := runResetEnrollment(context.Background(), kc, "radar", "radar-cloud-token", &out, &errOut); code != 0 || !strings.Contains(out.String(), "already empty") {
-		t.Fatalf("second reset: exit %d, stdout %q", code, out.String())
-	}
-}
-
-func TestResetEnrollmentRefusesOtherSecretsAndReportsMissing(t *testing.T) {
-	kc := fake.NewClientset(&corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "tls", Namespace: "radar"},
-		Data:       map[string][]byte{"tls.crt": []byte("x"), "tls.key": []byte("y")},
-	})
-	var out, errOut bytes.Buffer
-	if code := runResetEnrollment(context.Background(), kc, "radar", "tls", &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "not a Radar token Secret") {
-		t.Fatalf("exit %d, stderr %q", code, errOut.String())
-	}
-	s, _ := kc.CoreV1().Secrets("radar").Get(context.Background(), "tls", metav1.GetOptions{})
-	if len(s.Data) != 2 {
-		t.Fatal("an unrelated Secret was cleared")
-	}
-	errOut.Reset()
-	if code := runResetEnrollment(context.Background(), kc, "radar", "missing", &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "was not found") {
-		t.Fatalf("exit %d, stderr %q", code, errOut.String())
-	}
-}
-
-func TestCloudResetEnrollmentHelp(t *testing.T) {
-	var out, errOut bytes.Buffer
-	if code := cloudResetEnrollment([]string{"--help"}, &out, &errOut); code != 0 || !strings.Contains(out.String(), "radar cloud reset-enrollment") {
-		t.Fatalf("exit %d, stdout %q", code, out.String())
-	}
-}
-
 func enrolledDeployment() *appsv1.Deployment {
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: "radar", Namespace: "radar"},
@@ -228,11 +168,11 @@ func TestEnrolledStatusShowsEnrollStatus(t *testing.T) {
 		}
 	})
 	t.Run("refused shows the error and the reset command", func(t *testing.T) {
-		kc := secret(map[string]string{cloud.SecretKeyToken: "rhc_old", cloud.SecretKeyWSSURL: wss, cloud.SecretKeyStatus: "refused", cloud.SecretKeyError: "token rejected; run radar cloud reset-enrollment to join again"})
+		kc := secret(map[string]string{cloud.SecretKeyToken: "rhc_old", cloud.SecretKeyWSSURL: wss, cloud.SecretKeyStatus: "refused", cloud.SecretKeyError: "token rejected; to join again, run: " + cloud.ResetCommand("radar", "radar-cloud-token")})
 		res := checkHubTunnelStatus(context.Background(), kc, target, "")
 		var out bytes.Buffer
 		printHubTunnelStatus(&out, target, res)
-		if res.verdict != hubTunnelUnhealthy || !strings.Contains(out.String(), "Enrollment error: token rejected") || !strings.Contains(out.String(), "radar cloud reset-enrollment --namespace radar --secret radar-cloud-token") {
+		if res.verdict != hubTunnelUnhealthy || !strings.Contains(out.String(), "Enrollment error: token rejected") || !strings.Contains(out.String(), `Next: make Radar join again with `+"`"+`kubectl -n radar patch secret radar-cloud-token --type=json -p '[{"op":"remove","path":"/data"}]'`+"`") {
 			t.Fatalf("output:\n%s", out.String())
 		}
 		if got := cloudTargetStatusHeadline(target, res); !strings.Contains(got, "needs its enrollment reset") {
@@ -361,78 +301,18 @@ func TestStatusTrustsTheHubCAThatRadarMounts(t *testing.T) {
 
 type runtimeObject = k8sruntime.Object
 
-// enrolledInstall is a Radar Deployment and its token Secret as the chart
-// renders them for one release.
-func enrolledInstall(release, tokenSecret string) []runtimeObject {
-	d := enrolledDeployment()
-	d.Name = release
-	if release != "radar" {
-		d.Name = release + "-radar"
+func TestRefusedStatusNamesTheRealNamespaceAndSecret(t *testing.T) {
+	kc := fake.NewClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "fleet-token", Namespace: "edge-ns"}, Data: map[string][]byte{
+		cloud.SecretKeyStatus: []byte("refused"), cloud.SecretKeyNonce: []byte("n"), cloud.SecretKeyError: []byte("the Hub closed this join attempt"),
+	}})
+	target := cloudinstall.RadarTarget{Namespace: "edge-ns", DeploymentName: "edge-radar"}
+	target.Runtime = cloudinstall.DeploymentRuntime{
+		AlreadyCloud: true, EnrollmentConfigured: true, EnrollmentTokenSecret: "fleet-token",
+		CloudModeConfigured: true, CloudMode: true, HubURLConfigured: true, HubURL: "https://hub.example.com",
 	}
-	d.Labels = map[string]string{"helm.sh/chart": "radar-1.19.0", "app.kubernetes.io/instance": release}
-	d.Spec.Template.Spec.Containers[0].Args = []string{
-		"--cloud-hub-url=https://hub.example.com",
-		"--cloud-enrollment-key-file=/etc/radar/cloud-enrollment/key",
-		"--cloud-token-secret=" + tokenSecret,
-	}
-	s := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: tokenSecret, Namespace: "radar"}, Data: map[string][]byte{
-		cloud.SecretKeyToken: []byte("rhc_" + release), cloud.SecretKeyHubOrigin: []byte("https://hub.example.com"),
-	}}
-	return []runtimeObject{d, s}
-}
-
-func TestResetEnrollmentFindsTheTokenSecret(t *testing.T) {
-	for _, tc := range []struct {
-		name, release, secret, flagRelease string
-	}{
-		{name: "default release", release: "radar", secret: "radar-cloud-token"},
-		{name: "custom release name", release: "edge", secret: "edge-radar-cloud-token"},
-		{name: "custom tokenSecretName", release: "radar", secret: "fleet-token"},
-		{name: "explicit --release", release: "edge", secret: "edge-radar-cloud-token", flagRelease: "edge"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			kc := fake.NewClientset(enrolledInstall(tc.release, tc.secret)...)
-			got, err := findEnrollmentTokenSecret(context.Background(), kc, "radar", tc.flagRelease)
-			if err != nil || got != tc.secret {
-				t.Fatalf("got %q, %v; want %q", got, err, tc.secret)
-			}
-			var out, errOut bytes.Buffer
-			if code := runResetEnrollment(context.Background(), kc, "radar", got, &out, &errOut); code != 0 {
-				t.Fatalf("reset exit %d: %s", code, errOut.String())
-			}
-			s, _ := kc.CoreV1().Secrets("radar").Get(context.Background(), tc.secret, metav1.GetOptions{})
-			if len(s.Data) != 0 {
-				t.Fatalf("Secret %s not cleared", tc.secret)
-			}
-		})
-	}
-}
-
-func TestResetEnrollmentNeedsReleaseWithTwoInstalls(t *testing.T) {
-	objs := append(enrolledInstall("radar", "radar-cloud-token"), enrolledInstall("edge", "edge-radar-cloud-token")...)
-	kc := fake.NewClientset(objs...)
-	_, err := findEnrollmentTokenSecret(context.Background(), kc, "radar", "")
-	if err == nil || !strings.Contains(err.Error(), "choose one with --release") || !strings.Contains(err.Error(), `release "edge"`) || !strings.Contains(err.Error(), `release "radar"`) {
-		t.Fatalf("err = %v", err)
-	}
-	for _, a := range kc.Actions() {
-		if a.GetVerb() == "update" {
-			t.Fatal("a Secret was changed while the target was ambiguous")
-		}
-	}
-	got, err := findEnrollmentTokenSecret(context.Background(), kc, "radar", "edge")
-	if err != nil || got != "edge-radar-cloud-token" {
-		t.Fatalf("with --release: %q, %v", got, err)
-	}
-}
-
-func TestResetEnrollmentWithoutAnEnrolledRadar(t *testing.T) {
-	_, err := findEnrollmentTokenSecret(context.Background(), fake.NewClientset(), "radar", "")
-	if err == nil || !strings.Contains(err.Error(), "no Radar in namespace") || !strings.Contains(err.Error(), "--secret") {
-		t.Fatalf("err = %v", err)
-	}
-	_, err = findEnrollmentTokenSecret(context.Background(), fake.NewClientset(enrolledInstall("radar", "radar-cloud-token")...), "radar", "other")
-	if err == nil || !strings.Contains(err.Error(), `release "other"`) {
-		t.Fatalf("err = %v", err)
+	res := checkHubTunnelStatus(context.Background(), kc, target, "")
+	want := `kubectl -n edge-ns patch secret fleet-token --type=json -p '[{"op":"remove","path":"/data"}]'`
+	if res.verdict != hubTunnelUnhealthy || !strings.Contains(res.next, want) {
+		t.Fatalf("next = %q, want it to contain %q", res.next, want)
 	}
 }
