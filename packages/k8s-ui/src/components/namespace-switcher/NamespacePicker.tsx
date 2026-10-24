@@ -82,8 +82,8 @@ export interface NamespacePickerProps {
  *
  * Selection model: the dropdown keeps a draft Set<string>; toggling rows
  * mutates the draft locally; closing the dropdown applies the draft in a single
- * onApply. "Clear all" applies immediately and closes, as does clicking a
- * namespace's name, which selects only that namespace.
+ * onApply. "Clear all" applies immediately and closes, as does a row's "Only"
+ * button, which switches to that namespace alone.
  */
 export const NamespacePicker = forwardRef<NamespacePickerHandle, NamespacePickerProps>(function NamespacePicker(
   { scope, onApply, loading = false, pending = false, disabled = false, disabledTooltip, className = '', variant = 'chip', label, limitedListHelp },
@@ -96,6 +96,7 @@ export const NamespacePicker = forwardRef<NamespacePickerHandle, NamespacePicker
 
   const triggerRef = useRef<HTMLButtonElement>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
+  const [restoreFocus, setRestoreFocus] = useState(false)
 
   const scopeActives = useMemo(() => scope?.actives ?? [], [scope?.actives])
   const activesKey = useMemo(() => [...scopeActives].sort().join(','), [scopeActives])
@@ -157,6 +158,27 @@ export const NamespacePicker = forwardRef<NamespacePickerHandle, NamespacePicker
     },
   }), [disabled, loading, pending])
 
+  // Disabling the trigger while a switch is pending drops its focus, so this stays armed through that cycle.
+  useEffect(() => {
+    if (!restoreFocus || isOpen || disabled || loading || pending) return
+    const active = document.activeElement
+    if (!active || active === document.body) triggerRef.current?.focus()
+  }, [restoreFocus, isOpen, disabled, loading, pending])
+
+  useEffect(() => {
+    if (!restoreFocus) return
+    const onFocusIn = (e: FocusEvent) => {
+      if (e.target !== triggerRef.current) setRestoreFocus(false)
+    }
+    const onPointerDown = () => setRestoreFocus(false)
+    document.addEventListener('focusin', onFocusIn)
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => {
+      document.removeEventListener('focusin', onFocusIn)
+      document.removeEventListener('pointerdown', onPointerDown)
+    }
+  }, [restoreFocus])
+
   useEffect(() => {
     if (!isOpen) return
     const trigger = triggerRef.current
@@ -201,6 +223,7 @@ export const NamespacePicker = forwardRef<NamespacePickerHandle, NamespacePicker
 
   const selectOnly = (ns: string) => {
     const next = new Set([ns])
+    setRestoreFocus(true)
     setDraft(next)
     setIsOpen(false)
     setSearch('')
