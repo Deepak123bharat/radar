@@ -13,6 +13,7 @@ package cloud
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log"
@@ -32,6 +33,19 @@ type Config struct {
 	// authenticated, so a network attacker could impersonate the hub. Leave
 	// false for any hub with a publicly trusted certificate.
 	InsecureSkipVerify bool
+
+	// RootCAs, when set, replaces the system roots for the tunnel's TLS
+	// verification (see LoadCAFile, which keeps the system roots in the pool).
+	RootCAs *x509.CertPool
+
+	// ClusterUID is the kube-system namespace UID, sent as a hint on every
+	// handshake. Ignored unless it is a UUID.
+	ClusterUID string
+
+	// Enrolled marks a token this Radar obtained by enrolling. A token the
+	// Hub keeps rejecting then ends Run with ErrTokenRejected instead of
+	// retrying forever, so the caller can record the refusal.
+	Enrolled bool
 
 	// Token is the cluster bearer token issued by the Cloud install wizard.
 	// Format: rhc_<random>.
@@ -120,6 +134,7 @@ func Run(ctx context.Context, cfg Config) error {
 	const maxBackoff = 30 * time.Second
 
 	failures := 0
+	rejected := 0
 
 	for {
 		if ctx.Err() != nil {
@@ -131,9 +146,22 @@ func Run(ctx context.Context, cfg Config) error {
 		sess, err := dial(ctx, cfg, advertised)
 		if err != nil {
 			failures++
+			if cfg.Enrolled && errors.Is(err, errEnrolledTokenRejected) {
+				rejected++
+				if rejected >= tokenRejectedThreshold {
+					return ErrTokenRejected
+				}
+			} else {
+				rejected = 0
+			}
 			log.Printf("[cloud] dial failed: %v (retry in %s)", err, backoff)
 			if failures == warnAfterFailures {
-				log.Printf("[cloud] WARN: %s", escalationWarning(failures, err))
+				warning := escalationWarning(failures, err)
+				var answered *handshakeStatusError
+				if cfg.Enrolled && !errors.As(err, &answered) {
+					warning = fmt.Sprintf("%d consecutive failures: %v. Check that this cluster can reach the Hub's agent address %s", failures, err, cfg.URL)
+				}
+				log.Printf("[cloud] WARN: %s", warning)
 			}
 			if !sleep(ctx, backoff) {
 				return ctx.Err()
@@ -142,6 +170,7 @@ func Run(ctx context.Context, cfg Config) error {
 			continue
 		}
 		failures = 0
+		rejected = 0
 
 		log.Printf("[cloud] connected to Radar Cloud; serving streams")
 		connectedAt := time.Now()
@@ -174,6 +203,17 @@ func Run(ctx context.Context, cfg Config) error {
 }
 
 const selfUpgradeRecheckInterval = 3 * time.Minute
+
+// ErrTokenRejected ends Run for an enrolled token the Hub answered 401 to
+// tokenRejectedThreshold times in a row. More than one answer is required so
+// a single bad response from a Hub mid-restart does not take the cluster
+// offline until someone resets its enrollment.
+var ErrTokenRejected = errors.New("the Hub rejected this cluster's token")
+
+var errEnrolledTokenRejected = errors.New("the Hub rejected this cluster's stored token (401)")
+
+// A var so tests can stop on the first rejection.
+var tokenRejectedThreshold = 3
 
 // warnAfterFailures is how many consecutive dial failures escalate to a WARN.
 // A var so a test can reach the escalation without sitting through the
