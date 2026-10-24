@@ -17,8 +17,9 @@ export interface MultiSelectPickerProps {
   /** Footer "Done" button. */
   onDone: () => void
   /**
-   * When set, clicking an item's name (rather than its checkbox) selects only
-   * that item. The host decides whether that also commits and closes.
+   * When set, each row gets an "Only" button that selects just that item. The
+   * name and checkbox still toggle. The host decides whether it also commits
+   * and closes.
    */
   onSelectOnly?: (item: string) => void
 
@@ -142,39 +143,29 @@ export function MultiSelectPicker({
         )}
 
         {filteredItems.map(item => (
-          <li key={item}>
-            {onSelectOnly ? (
-              <div className="w-full flex items-center gap-2 px-3 py-1.5 text-sm hover:bg-theme-hover text-left text-theme-text-primary">
+          <li key={item} className="group/row flex items-center hover:bg-theme-hover">
+            <label className="flex-1 min-w-0 flex items-center px-3 py-1.5 text-sm text-left text-theme-text-primary cursor-pointer">
+              <span className="flex items-center gap-2 min-w-0">
                 <input
                   type="checkbox"
                   checked={selected.has(item)}
                   onChange={() => toggle(item)}
-                  aria-label={`Select ${item}`}
-                  className="shrink-0 accent-current cursor-pointer"
+                  className="shrink-0 accent-current"
                 />
-                <button
-                  type="button"
-                  onClick={() => onSelectOnly(item)}
-                  title={`Show only ${item}`}
-                  className="truncate hover:underline text-left"
-                >
-                  {item}
-                </button>
+                <span className="truncate">{item}</span>
                 {renderItemMeta?.(item)}
-              </div>
-            ) : (
-              <label className="w-full flex items-center justify-between px-3 py-1.5 text-sm hover:bg-theme-hover text-left text-theme-text-primary cursor-pointer">
-                <span className="flex items-center gap-2 min-w-0">
-                  <input
-                    type="checkbox"
-                    checked={selected.has(item)}
-                    onChange={() => toggle(item)}
-                    className="shrink-0 accent-current"
-                  />
-                  <span className="truncate">{item}</span>
-                  {renderItemMeta?.(item)}
-                </span>
-              </label>
+              </span>
+            </label>
+            {onSelectOnly && (
+              // Tailwind's hover: only matches devices that can hover, so touch needs its own rule.
+              <button
+                type="button"
+                onClick={() => onSelectOnly(item)}
+                aria-label={`Show only ${item}`}
+                className="shrink-0 mr-2 px-1.5 py-0.5 rounded border border-theme-border bg-theme-surface text-[11px] text-theme-text-secondary hover:bg-theme-elevated hover:text-theme-text-primary opacity-0 transition-opacity group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                Only
+              </button>
             )}
           </li>
         ))}
