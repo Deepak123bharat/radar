@@ -155,6 +155,20 @@ func (s *session) typedCandidates(q *search, b resourceid.Builtin) {
 }
 
 func (s *session) dynamicCandidates(q *search, kind ownership.CatalogKind) {
+	s.dynamicIndexed(q, kind, k8score.OwnerUIDIndex, []string{q.uid}, func(u *unstructured.Unstructured) {
+		q.add(kind.GroupKind, u, u.GetNamespace(), u.GetName())
+	})
+}
+
+// dynamicIndexed reads the objects index files under any of keys for a
+// dynamic kind across q's scope, each store once for all the keys, handing
+// each object found to found and recording a gap for each part of the scope
+// it can't read. A resource watched at several versions answers from one:
+// the most stable version whose cluster-wide store has loaded, or else,
+// namespace by namespace, the most stable version that answers there. Every
+// version receives the same objects, so the one read can be behind another,
+// for as long as its watch lags or fails, but never contradicts it.
+func (s *session) dynamicIndexed(q *search, kind ownership.CatalogKind, index string, keys []string, found func(*unstructured.Unstructured)) {
 	gk := kind.GroupKind
 	if s.caches.Dynamic == nil {
 		q.gapEverywhere(gk, kind.Namespaced, readreason.RadarKindNotCollected)
@@ -165,15 +179,9 @@ func (s *session) dynamicCandidates(q *search, kind ownership.CatalogKind) {
 		q.gapEverywhere(gk, kind.Namespaced, reason)
 		return
 	}
-	add := func(u *unstructured.Unstructured) { q.add(gk, u, u.GetNamespace(), u.GetName()) }
-	// A resource watched at several versions answers from one: the most
-	// stable version whose cluster-wide store has loaded, or else, namespace
-	// by namespace, the most stable version that answers there. Every version
-	// receives the same objects with the same owner references, so the one
-	// read can be behind another, for as long as its watch lags or fails, but
-	// never contradicts it. A cluster-wide store serves every namespace, so
-	// it is read once and its matches kept by namespace: reading it per
-	// namespace would gather all of them for each.
+	// A cluster-wide store serves every namespace, so it is read once and its
+	// matches kept by namespace: reading it per namespace would gather all of
+	// them for each.
 	var inScope map[string]bool
 	if kind.Namespaced && !q.scope.AllNamespaces {
 		inScope = make(map[string]bool, len(q.namespaces))
@@ -182,13 +190,13 @@ func (s *session) dynamicCandidates(q *search, kind ownership.CatalogKind) {
 		}
 	}
 	for _, gvr := range versions {
-		objs, ok := s.caches.Dynamic.ReadableDependents(gvr, "", q.uid)
+		objs, ok := s.caches.Dynamic.ReadableIndexed(gvr, "", index, keys...)
 		if !ok {
 			continue
 		}
 		for _, u := range objs {
 			if inScope == nil || inScope[u.GetNamespace()] {
-				add(u)
+				found(u)
 			}
 		}
 		return
@@ -219,7 +227,7 @@ func (s *session) dynamicCandidates(q *search, kind ownership.CatalogKind) {
 	// namespace.
 	obs := s.caches.Dynamic.NewObservationView(versions)
 	for _, ns := range namespaces {
-		s.readNamespace(q, gk, versions, ns, obs, add)
+		s.readNamespace(q, gk, versions, ns, index, keys, obs, found)
 	}
 	if q.scope.AllNamespaces {
 		// The namespaces not watched one by one are unread: still loading if
@@ -236,11 +244,11 @@ func (s *session) dynamicCandidates(q *search, kind ownership.CatalogKind) {
 
 // readNamespace reads namespace from the most stable version that answers
 // there, or records why none did.
-func (s *session) readNamespace(q *search, gk resourceid.GroupKind, versions []schema.GroupVersionResource, namespace string, obs observer, add func(*unstructured.Unstructured)) {
+func (s *session) readNamespace(q *search, gk resourceid.GroupKind, versions []schema.GroupVersionResource, namespace, index string, keys []string, obs observer, found func(*unstructured.Unstructured)) {
 	for _, gvr := range versions {
-		if objs, ok := s.caches.Dynamic.ReadableDependents(gvr, namespace, q.uid); ok {
+		if objs, ok := s.caches.Dynamic.ReadableIndexed(gvr, namespace, index, keys...); ok {
 			for _, u := range objs {
-				add(u)
+				found(u)
 			}
 			return
 		}

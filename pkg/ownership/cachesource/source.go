@@ -6,6 +6,7 @@ import (
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -83,6 +84,9 @@ type session struct {
 	// unwatched holds why each resource with no watched version is unread
 	// ("" for a watched one).
 	unwatched map[schema.GroupResource]readreason.Code
+	// recordingManagersRead, set only by tests, runs after RecordingManagers reads a manager
+	// kind, with the keys it read together.
+	recordingManagersRead func(kind resourceid.GroupKind, keys []string)
 }
 
 func (s *session) Catalog() *ownership.Catalog {
@@ -90,6 +94,12 @@ func (s *session) Catalog() *ownership.Catalog {
 }
 
 func (s *session) Object(ref resourceid.Ref) ownership.ObjectRead {
+	return s.readObject(ref, nil)
+}
+
+// readObject is Object, lending the cached object it answered from, when
+// present, to borrow, which must not modify or keep it.
+func (s *session) readObject(ref resourceid.Ref, borrow func(*unstructured.Unstructured)) ownership.ObjectRead {
 	if ref.Kind == "" || ref.Name == "" {
 		return unavailable(ref, readreason.ReadError)
 	}
@@ -99,7 +109,7 @@ func (s *session) Object(ref resourceid.Ref) ownership.ObjectRead {
 	if b, ok := typedKinds[ref.GroupKind()]; ok {
 		return s.typedObject(ref, b)
 	}
-	return s.dynamicObject(ref)
+	return s.dynamicObject(ref, borrow)
 }
 
 func (s *session) typedObject(ref resourceid.Ref, b resourceid.Builtin) ownership.ObjectRead {
@@ -116,7 +126,7 @@ func (s *session) typedObject(ref resourceid.Ref, b resourceid.Builtin) ownershi
 	return observe(ref, obj)
 }
 
-func (s *session) dynamicObject(ref resourceid.Ref) ownership.ObjectRead {
+func (s *session) dynamicObject(ref resourceid.Ref, borrow func(*unstructured.Unstructured)) ownership.ObjectRead {
 	if s.catalog.Ambiguous(ref.GroupKind()) {
 		return unavailable(ref, readreason.ReadError)
 	}
@@ -147,7 +157,11 @@ func (s *session) dynamicObject(ref resourceid.Ref) ownership.ObjectRead {
 		case !found:
 			return ownership.ObjectRead{State: ownership.Absent}
 		}
-		return observe(ref, obj)
+		read := observe(ref, obj)
+		if borrow != nil && read.State == ownership.Present {
+			borrow(obj)
+		}
+		return read
 	}
 	return unavailable(ref, unansweredReason(s.caches.Dynamic, versions, ref.Namespace))
 }
