@@ -151,12 +151,13 @@ export const NamespacePicker = forwardRef<NamespacePickerHandle, NamespacePicker
     applySelection(draft)
   }, [applySelection, draft])
 
-  useImperativeHandle(ref, () => ({
-    open: () => {
-      if (disabled || loading || pending) return
-      setIsOpen(true)
-    },
-  }), [disabled, loading, pending])
+  const openPicker = useCallback(() => {
+    if (isOpen || disabled || loading || pending) return
+    setDraft(new Set(scopeActives))
+    setIsOpen(true)
+  }, [isOpen, disabled, loading, pending, scopeActives])
+
+  useImperativeHandle(ref, () => ({ open: openPicker }), [openPicker])
 
   // Disabling the trigger while a switch is pending drops its focus, so this stays armed through that cycle.
   useEffect(() => {
@@ -287,7 +288,7 @@ export const NamespacePicker = forwardRef<NamespacePickerHandle, NamespacePicker
       >
         <button
           ref={triggerRef}
-          onClick={() => !isDisabled && (isOpen ? closeAndApply() : setIsOpen(true))}
+          onClick={() => !isDisabled && (isOpen ? closeAndApply() : openPicker())}
           disabled={isDisabled}
           className={
             variant === 'segment'

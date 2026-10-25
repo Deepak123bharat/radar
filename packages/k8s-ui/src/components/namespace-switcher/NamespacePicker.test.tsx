@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { act, useState, type ReactNode } from 'react'
+import { act, createRef, useState, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { NamespacePicker, type NamespacePickerProps, type NamespaceScopeView } from './NamespacePicker'
+import { NamespacePicker, type NamespacePickerHandle, type NamespacePickerProps, type NamespaceScopeView } from './NamespacePicker'
 
 vi.mock('../ui/Tooltip', () => ({
   Tooltip: ({ children, content }: { children: ReactNode; content: ReactNode }) => (
@@ -222,6 +222,53 @@ describe('NamespacePicker Only button', () => {
     expect(only.tabIndex).toBe(0)
     only.focus()
     expect(document.activeElement).toBe(only)
+  })
+
+  it.each(['Only', 'Done', 'Clear all'])('reopens from active namespaces after an unacknowledged %s apply', async (action) => {
+    const onApply = await open()
+    if (action === 'Only') {
+      await act(async () => { onlyButton('team-c').click() })
+    } else if (action === 'Done') {
+      await act(async () => { checkbox('team-b').click() })
+      await act(async () => { doneButton().click() })
+    } else {
+      const clear = document.querySelector<HTMLButtonElement>('button[aria-label="Clear namespace selection"]')!
+      await act(async () => { clear.click() })
+    }
+    expect(onApply).toHaveBeenCalledTimes(1)
+    expect(isOpen()).toBe(false)
+
+    await act(async () => { triggerButton().click() })
+    expect(checkbox('team-a').checked).toBe(true)
+    expect(checkbox('team-b').checked).toBe(false)
+    expect(checkbox('team-c').checked).toBe(false)
+    await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+    expect(onApply).toHaveBeenCalledTimes(1)
+  })
+
+  it('also refreshes the draft when the keyboard shortcut opens the picker', async () => {
+    const ref = createRef<NamespacePickerHandle>()
+    const onApply = vi.fn()
+    await act(async () => { root.render(<NamespacePicker ref={ref} scope={scope} onApply={onApply} />) })
+    await act(async () => { ref.current?.open() })
+    await act(async () => { onlyButton('team-c').click() })
+    await act(async () => { ref.current?.open() })
+    expect(checkbox('team-a').checked).toBe(true)
+    expect(checkbox('team-c').checked).toBe(false)
+    await act(async () => { doneButton().click() })
+    expect(onApply).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps current edits if the open shortcut is used while the menu is already open', async () => {
+    const ref = createRef<NamespacePickerHandle>()
+    const onApply = vi.fn()
+    await act(async () => { root.render(<NamespacePicker ref={ref} scope={scope} onApply={onApply} />) })
+    await act(async () => { ref.current?.open() })
+    await act(async () => { checkbox('team-b').click() })
+    await act(async () => { ref.current?.open() })
+    expect(checkbox('team-a').checked).toBe(true)
+    expect(checkbox('team-b').checked).toBe(true)
+    expect(onApply).not.toHaveBeenCalled()
   })
 
   describe('returning focus after the switch', () => {
