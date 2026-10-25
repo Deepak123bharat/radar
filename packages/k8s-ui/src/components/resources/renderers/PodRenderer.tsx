@@ -970,14 +970,16 @@ export function PodRenderer({
         </Section>
       )}
 
-      {/* Conditions. A completed pod's Ready/ContainersReady flip to False with
-          reason "PodCompleted" — that's expected for a finished pod, not a failure,
-          so tone it neutral (gray) instead of red. Gated on the PodCompleted reason
-          so a genuinely not-ready pod (any other reason) still reads red. */}
+      {/* Sandbox teardown and lost serving readiness are expected after success;
+          custom conditions retain their own meaning. */}
       <ConditionsSection
         conditions={data.status?.conditions}
         getConditionTone={(cond) =>
-          cond?.status === 'False' && cond?.reason === 'PodCompleted' ? 'unknown' : undefined
+          data.status?.phase === 'Succeeded'
+            && cond?.status === 'False'
+            && ['Ready', 'ContainersReady', 'PodReadyToStartContainers'].includes(cond?.type)
+            ? 'unknown'
+            : undefined
         }
       />
 
