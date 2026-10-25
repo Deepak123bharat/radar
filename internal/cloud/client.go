@@ -13,6 +13,7 @@ package cloud
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"log"
@@ -33,22 +34,18 @@ type Config struct {
 	// false for any hub with a publicly trusted certificate.
 	InsecureSkipVerify bool
 
-	// CA, when set, adds a CA bundle to the system roots for the tunnel's
-	// TLS verification. It is re-read for every dial.
-	CA *CAFile
-
-	// ClusterUID is the kube-system namespace UID, sent as a hint on every
-	// handshake. Ignored unless it is a UUID.
-	ClusterUID string
+	// CA, when set, is the system roots plus an extra CA bundle, for the
+	// tunnel's TLS verification.
+	CA *x509.CertPool
 
 	// Enrolled marks a token this Radar obtained by enrolling. A token the
 	// Hub keeps rejecting then ends Run with ErrTokenRejected instead of
-	// retrying forever, so the caller can record the refusal.
+	// retrying forever, so the caller can enroll again for a new one.
 	Enrolled bool
 
-	// TokenSecret is the Secret an enrolled Radar keeps its token in. Sent
-	// on enrolled handshakes so the Hub can show the exact reset command.
-	TokenSecret string
+	// OnSession, when set, is called with true when a tunnel session opens
+	// and false when it ends. It runs on Run's goroutine and must not block.
+	OnSession func(connected bool)
 
 	// Token is the cluster bearer token issued by the Cloud install wizard.
 	// Format: rhc_<random>.
@@ -177,6 +174,9 @@ func Run(ctx context.Context, cfg Config) error {
 
 		log.Printf("[cloud] connected to Radar Cloud; serving streams")
 		connectedAt := time.Now()
+		if cfg.OnSession != nil {
+			cfg.OnSession(true)
+		}
 
 		if cfg.SelfUpgradeAvailable != nil {
 			go watchSelfUpgradeAdvertisement(ctx, cfg.SelfUpgradeAvailable, advertised, sess, selfUpgradeRecheckInterval)
@@ -184,6 +184,9 @@ func Run(ctx context.Context, cfg Config) error {
 		err = serve(ctx, sess, cfg.Handler)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("[cloud] session ended: %v", err)
+		}
+		if cfg.OnSession != nil {
+			cfg.OnSession(false)
 		}
 
 		if ctx.Err() != nil {
@@ -209,11 +212,11 @@ const selfUpgradeRecheckInterval = 3 * time.Minute
 
 // ErrTokenRejected ends Run for an enrolled token the Hub answered 401 to
 // tokenRejectedThreshold times in a row. More than one answer is required so
-// a single bad response from a Hub mid-restart does not take the cluster
-// offline until someone resets its enrollment.
+// a single bad response from a Hub mid-restart does not replace a token that
+// still works.
 var ErrTokenRejected = errors.New("the Hub rejected this cluster's token")
 
-var errEnrolledTokenRejected = errors.New("the Hub rejected this cluster's stored token (401)")
+var errEnrolledTokenRejected = errors.New("the Hub rejected this cluster's token (401)")
 
 // A var so tests can stop on the first rejection.
 var tokenRejectedThreshold = 3

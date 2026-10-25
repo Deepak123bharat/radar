@@ -3,9 +3,7 @@ package cloud
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,15 +23,11 @@ const (
 
 // EnrollRequest is the body of POST /api/agent/enroll.
 type EnrollRequest struct {
-	AgentUID   string `json:"agent_uid"`
-	Namespace  string `json:"namespace"`
-	Release    string `json:"release"`
-	Nonce      string `json:"nonce"`
-	Name       string `json:"name"`
-	NameSource string `json:"name_source"`
-	// TokenSecret names the Secret Radar keeps its token in, so the Hub can
-	// show the exact reset command.
-	TokenSecret  string `json:"token_secret,omitempty"`
+	AgentUID     string `json:"agent_uid"`
+	Namespace    string `json:"namespace"`
+	Release      string `json:"release"`
+	Name         string `json:"name"`
+	NameSource   string `json:"name_source"`
 	RadarVersion string `json:"radar_version,omitempty"`
 	K8sVersion   string `json:"k8s_version,omitempty"`
 	Distro       string `json:"distro,omitempty"`
@@ -41,30 +35,29 @@ type EnrollRequest struct {
 	APIServerURL string `json:"api_server_url,omitempty"`
 }
 
-// EnrollResult is a successful join: the cluster's own token and where to
-// open its tunnel.
+// EnrollResult is a successful join: the cluster's token for this run and
+// where to open its tunnel.
 type EnrollResult struct {
 	ClusterID string
 	Token     string
-	WSSURL    string
+	AgentURL  string
 }
 
 type enrollResponse struct {
-	Status    string `json:"status"`
 	ClusterID string `json:"cluster_id"`
 	Token     string `json:"token"`
-	WSSURL    string `json:"wss_url"`
+	AgentURL  string `json:"agent_url"`
 	Error     string `json:"error"`
-	Detail    string `json:"detail"`
+	Message   string `json:"message"`
 }
 
 // EnrollError is the Hub answering an enroll request with anything but a join.
 type EnrollError struct {
 	StatusCode int
-	// Code is the Hub's machine-readable error, e.g. "enrollment_closed".
+	// Code is the Hub's machine-readable error, e.g. "cluster_removed".
 	Code string
-	// Detail is the Hub's detail field, sanitized for logs.
-	Detail        string
+	// Message is the Hub's one-sentence explanation for the log, sanitized.
+	Message       string
 	RetryAfter    time.Duration
 	HasRetryAfter bool
 }
@@ -74,8 +67,8 @@ func (e *EnrollError) Error() string {
 	if e.Code != "" {
 		msg += " " + e.Code
 	}
-	if e.Detail != "" {
-		msg += " (" + e.Detail + ")"
+	if e.Message != "" {
+		msg += ": " + e.Message
 	}
 	return msg
 }
@@ -87,14 +80,12 @@ type EnrollClient struct {
 	HTTP      *http.Client
 	// CA, when set, adds a CA bundle to the system roots. It is re-read for
 	// every call, so a rotated bundle needs no restart.
-	CA *CAFile
-
-	caPool *x509.CertPool
+	CA *x509.CertPool
 }
 
 // NewEnrollClient builds a client for hubOrigin. A nil ca means the system
 // roots.
-func NewEnrollClient(hubOrigin, keyFile string, ca *CAFile) (*EnrollClient, error) {
+func NewEnrollClient(hubOrigin, keyFile string, ca *x509.CertPool) (*EnrollClient, error) {
 	origin, err := NormalizeHubOrigin(hubOrigin)
 	if err != nil {
 		return nil, err
@@ -105,19 +96,14 @@ func NewEnrollClient(hubOrigin, keyFile string, ca *CAFile) (*EnrollClient, erro
 		HTTP:      &http.Client{Timeout: enrollRequestTimeout},
 		CA:        ca,
 	}
-	c.useRoots(ca.Pool())
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = hubTLSConfig(ca, false)
+	c.HTTP.Transport = transport
 	return c, nil
 }
 
-func (c *EnrollClient) useRoots(pool *x509.CertPool) {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = hubTLSConfig(pool, false)
-	c.HTTP.Transport = transport
-	c.caPool = pool
-}
-
 // ReadEnrollmentKey reads and checks the key file. It runs before every
-// enroll call, so a key rotated in its Secret is picked up without a restart.
+// enroll call.
 func ReadEnrollmentKey(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -133,26 +119,13 @@ func ReadEnrollmentKey(path string) (string, error) {
 	return key, nil
 }
 
-// NewEnrollNonce returns 32 random bytes as unpadded base64url (43 chars).
-func NewEnrollNonce() (string, error) {
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
-}
-
-// Enroll asks the Hub to join this cluster. Retrying with the same nonce is
-// safe: while the attempt is unclaimed the Hub answers with the same token.
+// Enroll asks the Hub to join this cluster. The Hub answers a known cluster
+// with its existing entry and a new token, so a retry after a lost response
+// lands on the same entry.
 func (c *EnrollClient) Enroll(ctx context.Context, req EnrollRequest) (*EnrollResult, error) {
 	key, err := ReadEnrollmentKey(c.KeyFile)
 	if err != nil {
 		return nil, err
-	}
-	if c.CA != nil {
-		if pool := c.CA.Pool(); pool != c.caPool {
-			c.useRoots(pool)
-		}
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
@@ -191,27 +164,29 @@ func (c *EnrollClient) Enroll(ctx context.Context, req EnrollRequest) (*EnrollRe
 		retryAfter, hasRetryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		e := &EnrollError{StatusCode: resp.StatusCode, RetryAfter: retryAfter, HasRetryAfter: hasRetryAfter}
 		if jsonErr == nil {
-			e.Code = sanitizeShort(parsed.Error)
-			e.Detail = sanitizeShort(parsed.Detail)
+			e.Code = truncateRunes(sanitizeConnectErrorText(parsed.Error), 64)
+			e.Message = truncateRunes(sanitizeConnectErrorText(parsed.Message), maxEnrollMessageRunes)
 		}
 		return nil, e
 	}
 	if jsonErr != nil {
 		return nil, fmt.Errorf("enroll: decode Hub response: %w", jsonErr)
 	}
-	if parsed.Status != "joined" || parsed.ClusterID == "" || parsed.Token == "" || parsed.WSSURL == "" {
-		return nil, errors.New("enroll: Hub response is missing status, cluster_id, token or wss_url")
+	if parsed.ClusterID == "" || parsed.Token == "" || parsed.AgentURL == "" {
+		return nil, errors.New("enroll: Hub response is missing cluster_id, token or agent_url")
 	}
-	if err := ValidateWebSocketURL(parsed.WSSURL); err != nil {
-		return nil, fmt.Errorf("enroll: Hub returned an unusable wss_url: %w", err)
+	if err := ValidateWebSocketURL(parsed.AgentURL); err != nil {
+		return nil, fmt.Errorf("enroll: Hub returned an unusable agent_url: %w", err)
 	}
-	return &EnrollResult{ClusterID: parsed.ClusterID, Token: parsed.Token, WSSURL: parsed.WSSURL}, nil
+	return &EnrollResult{ClusterID: parsed.ClusterID, Token: parsed.Token, AgentURL: parsed.AgentURL}, nil
 }
 
-func sanitizeShort(s string) string {
-	s = sanitizeConnectErrorText(s)
-	if r := []rune(s); len(r) > 120 {
-		s = string(r[:120])
+// maxEnrollMessageRunes bounds a Hub message kept for logs.
+const maxEnrollMessageRunes = 300
+
+func truncateRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
 	}
 	return s
 }

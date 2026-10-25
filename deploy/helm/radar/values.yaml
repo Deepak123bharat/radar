@@ -471,33 +471,28 @@ cloud:
   # token. Set hubURL and enrollment.key (or enrollment.existingSecret), and
   # leave url, token and existingSecret empty: a configured token always wins.
   # Every Radar installed with the same key shows up in the Hub as its own
-  # cluster. Requires replicaCount: 1.
+  # cluster, and joins again with the key every time it starts. Requires
+  # replicaCount: 1.
   # Hub address, e.g. https://hub.example.com. http:// works only for
   # localhost.
   hubURL: ""
   enrollment:
-    # Enrollment key (rhe_...) from the Hub's install settings. Inline for
-    # trials; prefer existingSecret so the key stays out of the Helm release.
+    # Enrollment key (rhe_...). An owner creates one in Radar Hub under
+    # Settings > Enrollment keys; a self-hosted Hub's install key works too.
+    # Inline for trials; prefer existingSecret so the key stays out of the
+    # Helm release.
     key: ""
     existingSecret: ""
     existingSecretKey: key
-  # Secret Radar keeps its own token in after joining. The chart creates it
-  # empty and never manages its contents; it is kept on uninstall. Empty
-  # means <fullname>-cloud-token. To make Radar join again, remove its data:
-  # kubectl -n <namespace> patch secret <name> --type=json -p '[{"op":"remove","path":"/data"}]'
-  tokenSecretName: ""
   # Wrap the cluster name Radar picks when clusterName is empty: the API
   # server host from kube-public/cluster-info, else cluster-<first 8
   # characters of the kube-system namespace UID>. With clusterName set, that
   # exact name is used and these are ignored.
   clusterNamePrefix: ""
   clusterNameSuffix: ""
-  # Extra CA certificates (PEM) to trust for the Hub, for a Hub with a
-  # private CA. Inline here, or from an existing ConfigMap below; not both.
+  # With an enrollment key: extra CA certificates (PEM) to trust for a Hub
+  # with a self-signed or private certificate. Radar reads them at startup.
   caBundle: ""
-  caBundleConfigMap:
-    name: ""
-    key: ca.crt
   # Default ClusterRoleBindings for Radar Cloud identity groups.
   #
   # How it works: Cloud injects X-Forwarded-Groups: radar:<role>,

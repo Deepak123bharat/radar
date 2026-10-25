@@ -86,7 +86,7 @@ func cloudUsage(w *os.File) {
 
 Usage:
   radar cloud install [--context NAME] [-y|--yes] [--namespace NS] [--release NAME] [--adopt-existing] [--hub-url URL] [--name NAME] [--dry-run]
-  radar cloud status [--context NAME] [--namespace NS --release NAME] [--ca-file FILE]
+  radar cloud status [--context NAME] [--namespace NS --release NAME]
 
 install  Connect one kubeconfig cluster to Radar. Installs Radar when absent,
          or offers a safe native-Helm adoption / GitOps handoff when detected.
@@ -119,8 +119,6 @@ Flags (status):
   --context NAME   Kubernetes context to inspect (default: current context)
   --namespace NS   Exact namespace (requires --release)
   --release NAME   Exact Helm release (requires --namespace)
-  --ca-file FILE   CA certificates (PEM) to trust for the Hub (default: the
-                   bundle the Radar Deployment mounts)
 `)
 }
 

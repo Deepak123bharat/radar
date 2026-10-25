@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,7 +10,6 @@ import (
 
 	"github.com/skyhook-io/radar/internal/cloud"
 	"github.com/skyhook-io/radar/internal/k8s"
-	k8svalidation "k8s.io/apimachinery/pkg/api/validation"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
@@ -20,8 +20,8 @@ const (
 	// cloudTokenMode: a token configured by hand, with --cluster-name used
 	// as the cluster ID.
 	cloudTokenMode
-	// cloudEnrollMode: join the Hub with a shared enrollment key and keep
-	// the cluster's own token in a Secret.
+	// cloudEnrollMode: join the Hub with a shared enrollment key on every
+	// start, holding the token it returns in memory.
 	cloudEnrollMode
 )
 
@@ -32,7 +32,6 @@ type cloudStartupFlags struct {
 	InsecureSkipVerify bool
 	HubURL             string
 	EnrollmentKeyFile  string
-	TokenSecret        string
 	CAFile             string
 	NamePrefix         string
 	NameSuffix         string
@@ -44,7 +43,7 @@ type cloudStartupFlags struct {
 type cloudStartup struct {
 	mode      cloudStartupMode
 	hubOrigin string
-	ca        *cloud.CAFile
+	ca        *x509.CertPool
 	names     cloud.NameOptions
 	warnings  []string
 }
@@ -79,12 +78,6 @@ func resolveCloudStartup(f cloudStartupFlags) (cloudStartup, error) {
 		if f.InsecureSkipVerify {
 			return out, errors.New("--cloud-insecure-skip-verify cannot be used with an enrollment key: the key would be sent to an unverified server. Pass the Hub's CA with --cloud-ca-file instead")
 		}
-		if f.TokenSecret == "" {
-			return out, errors.New("--cloud-enrollment-key-file needs --cloud-token-secret, the Secret Radar keeps its token in")
-		}
-		if errs := k8svalidation.NameIsDNSSubdomain(f.TokenSecret, false); len(errs) > 0 {
-			return out, fmt.Errorf("--cloud-token-secret %q is not a valid Secret name: %s", f.TokenSecret, strings.Join(errs, "; "))
-		}
 		if f.PodNamespace == "" || f.HelmRelease == "" {
 			return out, errors.New("joining with an enrollment key needs MY_POD_NAMESPACE and RADAR_HELM_RELEASE, which the Radar Helm chart sets")
 		}
@@ -103,8 +96,8 @@ func resolveCloudStartup(f cloudStartupFlags) (cloudStartup, error) {
 		return out, nil
 	}
 
-	if f.CAFile != "" {
-		ca, err := cloud.NewCAFile(f.CAFile)
+	if out.mode == cloudEnrollMode && f.CAFile != "" {
+		ca, err := cloud.LoadCAFile(f.CAFile)
 		if err != nil {
 			return out, fmt.Errorf("--cloud-ca-file: %w", err)
 		}

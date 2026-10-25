@@ -6,35 +6,47 @@
 {{- end }}
 {{- $basePath := include "radar.basePath" . -}}
 {{- $enroll := include "radar.cloudEnrollmentMode" . | eq "true" -}}
-{{- $cloudCA := "" -}}
-{{- if .Values.cloud.enabled }}
-{{- $cloudCA = include "radar.cloudCAConfigMap" . -}}
-{{- end }}
-{{- if and .Values.cloud.caBundle (dig "name" "" (.Values.cloud.caBundleConfigMap | default dict)) }}
-{{- fail "cloud.caBundle and cloud.caBundleConfigMap.name are mutually exclusive: set only one" }}
-{{- end }}
+{{- $cloudCA := and $enroll (not (empty .Values.cloud.caBundle)) -}}
 {{- if $enroll }}
 {{- $e := .Values.cloud.enrollment }}
+{{- /* The same rules Radar applies to --cloud-hub-url at startup, so a bad
+       address fails here instead of crash looping the pod. */}}
+{{- $hub := urlParse (toString .Values.cloud.hubURL) }}
+{{- $hubHost := regexReplaceAll ":[0-9]*$" $hub.host "" | trimPrefix "[" | trimSuffix "]" | lower }}
+{{- if or (not (has $hub.scheme (list "http" "https"))) (not $hubHost) }}
+{{- fail "cloud.hubURL must be the Hub's address, like https://hub.example.com" }}
+{{- end }}
+{{- if $hub.userinfo }}
+{{- fail "cloud.hubURL must not include credentials" }}
+{{- end }}
+{{- if not (has $hub.path (list "" "/")) }}
+{{- fail "cloud.hubURL must not include a path: use the Hub's address only, like https://hub.example.com" }}
+{{- end }}
+{{- if or $hub.query $hub.fragment (contains "#" (toString .Values.cloud.hubURL)) }}
+{{- fail "cloud.hubURL must not include a query string or fragment" }}
+{{- end }}
+{{- if and (eq $hub.scheme "http") (not (or (eq $hubHost "localhost") (hasPrefix "127." $hubHost) (eq $hubHost "::1"))) }}
+{{- fail "cloud.hubURL must use https:// unless the host is localhost or a loopback address" }}
+{{- end }}
 {{- if and $e.key $e.existingSecret }}
 {{- fail "cloud.enrollment.key and cloud.enrollment.existingSecret are mutually exclusive: set only one (prefer existingSecret so the key stays out of the Helm release)" }}
 {{- end }}
 {{- if and $e.key (not (hasPrefix "rhe_" (toString $e.key))) }}
-{{- fail "cloud.enrollment.key must be an enrollment key from your Radar Hub (it starts with rhe_)" }}
+{{- fail "cloud.enrollment.key must be a Radar Hub enrollment key, which starts with rhe_. An owner creates one in Radar Hub under Settings > Enrollment keys. On a self-hosted Hub, the install key from the Hub's config works too." }}
 {{- end }}
 {{- if ne (int .Values.replicaCount) 1 }}
-{{- fail "replicaCount must be 1 when Radar joins with cloud.enrollment: replicas would share one token, and the Hub keeps only one connection per token" }}
+{{- fail "replicaCount must be 1 when Radar joins with cloud.enrollment: the Hub keeps one connection per cluster, so any other replica would only wait for it" }}
 {{- end }}
 {{- if .Values.cloud.insecureSkipVerify }}
-{{- fail "cloud.insecureSkipVerify cannot be used with cloud.enrollment: the enrollment key would be sent to an unverified server. Give the Hub's CA with cloud.caBundle or cloud.caBundleConfigMap instead" }}
+{{- fail "cloud.insecureSkipVerify cannot be used with cloud.enrollment: the enrollment key would be sent to an unverified server. Give the Hub's CA with cloud.caBundle instead" }}
 {{- end }}
 {{- end }}
-{{- /* Older images don't know the enrollment or CA flags and refuse to start.
+{{- /* Older images don't know the enrollment flags and refuse to start.
        Only release-style tags are checked; others can't be compared. */}}
-{{- if or $enroll $cloudCA }}
-{{- $feature := ternary "cloud.enrollment" "cloud.caBundle / cloud.caBundleConfigMap" $enroll }}
+{{- if $enroll }}
 {{- $tag := toString .Values.image.tag }}
 {{- if and (regexMatch "^v?[0-9]+\\.[0-9]+\\.[0-9]+" $tag) (semverCompare "<1.19.0-0" $tag) }}
-{{- fail (printf "%s requires Radar 1.19.0 or later, but image.tag pins %s. Unset image.tag to use the chart's version, or pin 1.19.0 or later." $feature $tag) }}
+{{- fail (printf "cloud.enrollment requires Radar 1.19.0 or later, but image.tag pins %s. Unset image.tag to use the chart's version, or pin 1.19.0 or later." $tag) }}
 {{- end }}
 {{- end }}
 {{- if and $basePath .Values.cloud.enabled }}
@@ -65,8 +77,9 @@ metadata:
     {{- include "radar.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
-  {{- /* Enrollment: a rolling update would run two pods sharing one token,
-         and the Hub keeps only the newest session per token. */}}
+  {{- /* Enrollment: the Hub keeps one connection per cluster. In a rolling
+         update the new pod would wait until the old one is gone and the Hub
+         sees its connection drop. */}}
   {{- if or $enroll (and .Values.persistence.enabled (eq .Values.timeline.storage "sqlite")) }}
   strategy:
     type: Recreate
@@ -88,7 +101,7 @@ spec:
         {{- if not .Values.cloud.enabled }}
         checksum/operator-settings: {{ include "radar.operatorSettings" . | sha256sum }}
         {{- end }}
-        {{- if and .Values.cloud.enabled .Values.cloud.caBundle }}
+        {{- if $cloudCA }}
         {{- /* Radar reads the CA bundle once at startup. */}}
         checksum/cloud-ca: {{ .Values.cloud.caBundle | sha256sum }}
         {{- end }}
@@ -242,7 +255,6 @@ spec:
             {{- if $enroll }}
             - {{ printf "--cloud-hub-url=%s" .Values.cloud.hubURL | quote }}
             - --cloud-enrollment-key-file=/etc/radar/cloud-enrollment/key
-            - {{ printf "--cloud-token-secret=%s" (include "radar.cloudTokenSecretName" .) | quote }}
             {{- with .Values.cloud.clusterName }}
             - {{ printf "--cluster-name=%s" . | quote }}
             {{- end }}
@@ -493,9 +505,9 @@ spec:
         {{- if $cloudCA }}
         - name: cloud-ca
           configMap:
-            name: {{ $cloudCA }}
+            name: {{ include "radar.fullname" . }}-cloud-ca
             items:
-              - key: {{ ternary "ca.crt" (dig "key" "ca.crt" (.Values.cloud.caBundleConfigMap | default dict)) (not (empty .Values.cloud.caBundle)) }}
+              - key: ca.crt
                 path: ca.crt
         {{- end }}
         {{- with .Values.extraVolumes }}

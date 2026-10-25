@@ -55,9 +55,6 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --cloud-enrollment-key-file=/etc/radar/cloud-enrollment/key
-      - contains:
-          path: spec.template.spec.containers[0].args
-          content: --cloud-token-secret=radar-cloud-token
       - notContains:
           path: spec.template.spec.containers[0].env
           content:
@@ -84,7 +81,7 @@ tests:
             name: RADAR_CLOUD_MODE
             value: "true"
 
-  - it: the token Secret has no data and survives uninstall and pruning
+  - it: renders nothing extra when the key comes from an existingSecret
     template: cloud-enrollment.yaml
     set:
       cloud:
@@ -92,44 +89,39 @@ tests:
         hubURL: https://hub.example.com
         enrollment:
           existingSecret: hub-enrollment
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: enrollment needs no namespaced Role
+    template: cloud-enrollment.yaml
+    set:
+      cloud:
+        enabled: true
+        hubURL: https://hub.example.com
+        enrollment:
+          key: rhe_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcd
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: Secret
+
+  - it: an inline key renders only the key Secret, never a token Secret
+    template: cloud-enrollment.yaml
+    set:
+      cloud:
+        enabled: true
+        hubURL: https://hub.example.com
+        enrollment:
+          key: rhe_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcd
     documentSelector:
       path: kind
       value: Secret
     asserts:
       - equal:
           path: metadata.name
-          value: radar-cloud-token
-      - notExists:
-          path: data
-      - notExists:
-          path: stringData
-      - equal:
-          path: metadata.annotations["helm.sh/resource-policy"]
-          value: keep
-      - equal:
-          path: metadata.annotations["argocd.argoproj.io/sync-options"]
-          value: Prune=false,Delete=false
-
-  - it: the Role reaches only the token Secret and cannot create or delete
-    template: cloud-enrollment.yaml
-    set:
-      cloud:
-        enabled: true
-        hubURL: https://hub.example.com
-        tokenSecretName: my-token
-        enrollment:
-          existingSecret: hub-enrollment
-    documentSelector:
-      path: kind
-      value: Role
-    asserts:
-      - equal:
-          path: rules
-          value:
-            - apiGroups: [""]
-              resources: ["secrets"]
-              resourceNames: ["my-token"]
-              verbs: ["get", "list", "watch", "update"]
+          value: radar-cloud-enrollment-key
 
   - it: an existingSecret key is mounted, and no key Secret is rendered
     set:
@@ -162,7 +154,7 @@ tests:
           content: --cluster-name-prefix=nkp-
       - template: cloud-enrollment.yaml
         hasDocuments:
-          count: 3
+          count: 0
 
   - it: a CA bundle is mounted and passed to Radar
     set:
@@ -171,9 +163,10 @@ tests:
         hubURL: https://hub.example.com
         enrollment:
           existingSecret: hub-enrollment
-        caBundleConfigMap:
-          name: corp-ca
-          key: bundle.pem
+        caBundle: |
+          -----BEGIN CERTIFICATE-----
+          MIIB
+          -----END CERTIFICATE-----
     asserts:
       - template: deployment.yaml
         contains:
@@ -185,10 +178,15 @@ tests:
           content:
             name: cloud-ca
             configMap:
-              name: corp-ca
+              name: radar-cloud-ca
               items:
-                - key: bundle.pem
+                - key: ca.crt
                   path: ca.crt
+      - template: cloud-enrollment.yaml
+        containsDocument:
+          kind: ConfigMap
+          apiVersion: v1
+          name: radar-cloud-ca
 
   - it: refuses more than one replica
     template: deployment.yaml
@@ -217,23 +215,7 @@ tests:
       - failedTemplate:
           errorPattern: "requires Radar 1.19.0 or later"
 
-  - it: refuses an old image for a CA bundle in token mode too
-    template: deployment.yaml
-    set:
-      image:
-        tag: 1.18.0
-      cloud:
-        enabled: true
-        url: wss://hub.example.com/agent
-        clusterName: prod
-        existingSecret: radar-cloud-config
-        caBundleConfigMap:
-          name: corp-ca
-    asserts:
-      - failedTemplate:
-          errorPattern: "cloud.caBundle / cloud.caBundleConfigMap requires Radar 1.19.0 or later"
-
-  - it: an old image without enrollment or a CA bundle still renders
+  - it: an old image without enrollment still renders
     template: deployment.yaml
     set:
       image:
@@ -246,11 +228,8 @@ tests:
     asserts:
       - notFailedTemplate: {}
 
-  - it: a CA bundle with a current image renders the CA flag in token mode
-    template: deployment.yaml
+  - it: a CA bundle is not used in token mode
     set:
-      image:
-        tag: 1.19.0
       cloud:
         enabled: true
         url: wss://hub.example.com/agent
@@ -261,10 +240,13 @@ tests:
           MIIB
           -----END CERTIFICATE-----
     asserts:
-      - contains:
+      - template: deployment.yaml
+        notContains:
           path: spec.template.spec.containers[0].args
           content: --cloud-ca-file=/etc/radar/cloud-ca/ca.crt
-
+      - template: cloud-enrollment.yaml
+        hasDocuments:
+          count: 0
   - it: refuses insecureSkipVerify with an enrollment key
     template: deployment.yaml
     set:
@@ -298,7 +280,7 @@ tests:
         kubernetesCredentials: user-token
       cloud:
         enabled: true
-        hubURL: http://hub.example.com
+        hubURL: http://localhost:8080
         defaultRbac:
           create: false
         enrollment:
@@ -318,15 +300,120 @@ tests:
       - failedTemplate:
           errorPattern: "cloud.token or cloud.existingSecret must be set"
 
-  - it: NOTES print the kubectl reset command with the real namespace and Secret
+  - it: NOTES point at the Radar log, not a reset command
     template: NOTES.txt
     set:
       cloud:
         enabled: true
         hubURL: https://hub.example.com
-        tokenSecretName: fleet-token
         enrollment:
           existingSecret: hub-enrollment
     asserts:
       - matchRegexRaw:
-          pattern: "kubectl -n radar patch secret fleet-token --type=json -p '\\[\\{\"op\":\"remove\",\"path\":\"/data\"\\}\\]'"
+          pattern: "kubectl -n radar logs deploy/radar"
+      - notMatchRegexRaw:
+          pattern: "patch secret"
+
+  - it: a key that is not an enrollment key says where keys come from
+    template: deployment.yaml
+    set:
+      cloud:
+        enabled: true
+        hubURL: https://hub.example.com
+        enrollment:
+          key: not-a-key
+    asserts:
+      - failedTemplate:
+          errorPattern: "An owner creates one in Radar Hub under Settings > Enrollment keys"
+
+  - it: refuses cloud.hubURL https://hub.example.com/api
+    template: deployment.yaml
+    set:
+      cloud:
+        enabled: true
+        hubURL: "https://hub.example.com/api"
+        enrollment:
+          existingSecret: hub-enrollment
+    asserts:
+      - failedTemplate:
+          errorPattern: "must not include a path"
+
+  - it: refuses cloud.hubURL http://hub.example.com
+    template: deployment.yaml
+    set:
+      cloud:
+        enabled: true
+        hubURL: "http://hub.example.com"
+        enrollment:
+          existingSecret: hub-enrollment
+    asserts:
+      - failedTemplate:
+          errorPattern: "must use https:// unless the host is localhost or a loopback address"
+
+  - it: refuses cloud.hubURL https://hub.example.com?x=1
+    template: deployment.yaml
+    set:
+      cloud:
+        enabled: true
+        hubURL: "https://hub.example.com?x=1"
+        enrollment:
+          existingSecret: hub-enrollment
+    asserts:
+      - failedTemplate:
+          errorPattern: "must not include a query string or fragment"
+
+  - it: refuses cloud.hubURL https://
+    template: deployment.yaml
+    set:
+      cloud:
+        enabled: true
+        hubURL: "https://"
+        enrollment:
+          existingSecret: hub-enrollment
+    asserts:
+      - failedTemplate:
+          errorPattern: "must be the Hub's address"
+
+  - it: accepts cloud.hubURL http://localhost:8080
+    template: deployment.yaml
+    set:
+      cloud:
+        enabled: true
+        hubURL: "http://localhost:8080"
+        enrollment:
+          existingSecret: hub-enrollment
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: accepts cloud.hubURL http://127.0.0.1:8080
+    template: deployment.yaml
+    set:
+      cloud:
+        enabled: true
+        hubURL: "http://127.0.0.1:8080"
+        enrollment:
+          existingSecret: hub-enrollment
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: accepts cloud.hubURL https://hub.example.com/
+    template: deployment.yaml
+    set:
+      cloud:
+        enabled: true
+        hubURL: "https://hub.example.com/"
+        enrollment:
+          existingSecret: hub-enrollment
+    asserts:
+      - notFailedTemplate: {}
+
+  - it: accepts cloud.hubURL https://hub.example.com:8443
+    template: deployment.yaml
+    set:
+      cloud:
+        enabled: true
+        hubURL: "https://hub.example.com:8443"
+        enrollment:
+          existingSecret: hub-enrollment
+    asserts:
+      - notFailedTemplate: {}

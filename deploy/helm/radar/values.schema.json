@@ -353,18 +353,9 @@
             "existingSecretKey": { "type": "string" }
           }
         },
-        "tokenSecretName": { "type": "string" },
         "clusterNamePrefix": { "type": "string" },
         "clusterNameSuffix": { "type": "string" },
-        "caBundle": { "type": "string" },
-        "caBundleConfigMap": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "name": { "type": "string" },
-            "key": { "type": "string" }
-          }
-        }
+        "caBundle": { "type": "string" }
       }
     },
     "usageReporting": {

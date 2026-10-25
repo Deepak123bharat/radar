@@ -182,9 +182,8 @@ func main() {
 	cloudToken := flag.String("cloud-token", os.Getenv("RADAR_CLOUD_TOKEN"), "Connection token from the Radar install flow (rhc_<random>). Env: RADAR_CLOUD_TOKEN")
 	cloudClusterName := flag.String("cluster-name", os.Getenv("RADAR_CLOUD_CLUSTER_NAME"), "Human-readable cluster name shown in Radar (required with --cloud-url). With an enrollment key it is the exact name, and Radar picks one when it is empty. Env: RADAR_CLOUD_CLUSTER_NAME")
 	cloudHubURL := flag.String("cloud-hub-url", os.Getenv("RADAR_CLOUD_HUB_URL"), "Radar Hub https:// address to join with an enrollment key. Replaces --cloud-url when --cloud-enrollment-key-file is set. Env: RADAR_CLOUD_HUB_URL")
-	cloudEnrollmentKeyFile := flag.String("cloud-enrollment-key-file", os.Getenv("RADAR_CLOUD_ENROLLMENT_KEY_FILE"), "File holding a Radar Hub enrollment key (rhe_...). Radar joins the Hub with it and keeps its own token in --cloud-token-secret. Ignored when --cloud-token is set. Env: RADAR_CLOUD_ENROLLMENT_KEY_FILE")
-	cloudTokenSecret := flag.String("cloud-token-secret", os.Getenv("RADAR_CLOUD_TOKEN_SECRET"), "Secret in Radar's namespace where Radar keeps the token it gets by joining with an enrollment key. Radar updates it but never creates it. Env: RADAR_CLOUD_TOKEN_SECRET")
-	cloudCAFile := flag.String("cloud-ca-file", os.Getenv("RADAR_CLOUD_CA_FILE"), "PEM file of extra CA certificates to trust for the Radar Hub (enrollment calls and the tunnel). Env: RADAR_CLOUD_CA_FILE")
+	cloudEnrollmentKeyFile := flag.String("cloud-enrollment-key-file", os.Getenv("RADAR_CLOUD_ENROLLMENT_KEY_FILE"), "File holding a Radar Hub enrollment key (rhe_...). Radar joins the Hub with it on every start. Ignored when --cloud-token is set. Env: RADAR_CLOUD_ENROLLMENT_KEY_FILE")
+	cloudCAFile := flag.String("cloud-ca-file", os.Getenv("RADAR_CLOUD_CA_FILE"), "With an enrollment key: PEM file of extra CA certificates to trust for the Radar Hub, read once at startup. Env: RADAR_CLOUD_CA_FILE")
 	clusterNamePrefix := flag.String("cluster-name-prefix", os.Getenv("RADAR_CLUSTER_NAME_PREFIX"), "With an enrollment key: text put before the cluster name Radar picks. Ignored when --cluster-name is set. Env: RADAR_CLUSTER_NAME_PREFIX")
 	clusterNameSuffix := flag.String("cluster-name-suffix", os.Getenv("RADAR_CLUSTER_NAME_SUFFIX"), "With an enrollment key: text put after the cluster name Radar picks. Ignored when --cluster-name is set. Env: RADAR_CLUSTER_NAME_SUFFIX")
 	cloudInsecureSkipVerify := flag.Bool("cloud-insecure-skip-verify", os.Getenv("RADAR_CLOUD_INSECURE_SKIP_VERIFY") == "true", "Skip TLS verification on the Radar Hub tunnel — for trials against a Radar Cloud Self-Managed control plane with a self-signed cert (insecure: encrypted but not authenticated). Env: RADAR_CLOUD_INSECURE_SKIP_VERIFY")
@@ -237,7 +236,6 @@ func main() {
 		InsecureSkipVerify: *cloudInsecureSkipVerify,
 		HubURL:             *cloudHubURL,
 		EnrollmentKeyFile:  *cloudEnrollmentKeyFile,
-		TokenSecret:        *cloudTokenSecret,
 		CAFile:             *cloudCAFile,
 		NamePrefix:         *clusterNamePrefix,
 		NameSuffix:         *clusterNameSuffix,
@@ -613,7 +611,6 @@ func main() {
 				Release:            helmRelease,
 				APIServerURL:       apiServerURL,
 				InsecureSkipVerify: *cloudInsecureSkipVerify,
-				CA:                 cloudStart.ca,
 				// Ask the apiserver whether this ServiceAccount may actually
 				// patch its own Deployment. Env presence is NOT the signal:
 				// identity ships on every install for read-only
@@ -627,27 +624,21 @@ func main() {
 			if cloudStart.mode == cloudEnrollMode {
 				kc := k8s.GetClient()
 				if kc == nil {
-					log.Printf("[cloud] cannot join the Hub: no Kubernetes client, so the token Secret cannot be read")
+					log.Printf("[cloud] cannot join the Hub: no Kubernetes client, so this cluster's identity cannot be read")
 					return
 				}
 				runErr = cloud.RunEnrollment(rootCtx, cloud.EnrollmentConfig{
-					HubOrigin:  cloudStart.hubOrigin,
-					KeyFile:    *cloudEnrollmentKeyFile,
-					CA:         cloudStart.ca,
-					Client:     kc,
-					Namespace:  namespace,
-					Release:    helmRelease,
-					SecretName: *cloudTokenSecret,
-					Names:      cloudStart.names,
-					Facts:      enrollmentFacts,
-					Tunnel:     tunnel,
+					HubOrigin: cloudStart.hubOrigin,
+					KeyFile:   *cloudEnrollmentKeyFile,
+					CA:        cloudStart.ca,
+					Client:    kc,
+					Namespace: namespace,
+					Release:   helmRelease,
+					Names:     cloudStart.names,
+					Facts:     enrollmentFacts,
+					Tunnel:    tunnel,
 				})
 			} else {
-				uidCtx, cancelUID := context.WithTimeout(rootCtx, 3*time.Second)
-				if uid, err := cloud.DiscoverClusterUID(uidCtx, k8s.GetClient()); err == nil {
-					tunnel.ClusterUID = uid
-				}
-				cancelUID()
 				tunnel.URL = *cloudURL
 				tunnel.Token = *cloudToken
 				tunnel.ClusterID = *cloudClusterName

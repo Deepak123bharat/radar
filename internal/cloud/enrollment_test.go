@@ -1,100 +1,37 @@
 package cloud
 
 import (
+	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"math/big"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
-	clienttesting "k8s.io/client-go/testing"
 )
 
 const (
 	testNamespace  = "radar"
-	testSecretName = "radar-cloud-token"
 	testClusterUID = "0b6c7c43-6f0e-4a8e-9d6c-5d2f4f6b7a10"
 	testKey        = "rhe_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcd"
 )
 
-const testResetCommand = `kubectl -n radar patch secret radar-cloud-token --type=json -p '[{"op":"remove","path":"/data"}]'`
-
-var secretsGVR = schema.GroupVersionResource{Version: "v1", Resource: "secrets"}
-
-// newTokenSecretClient returns a fake clientset holding the token Secret and
-// kube-system, whose Secret updates are refused unless they carry the stored
-// resourceVersion, as the real apiserver does.
-func newTokenSecretClient(t *testing.T, data map[string][]byte) *fake.Clientset {
-	t.Helper()
-	cs := fake.NewClientset(
-		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: testSecretName, Namespace: testNamespace, ResourceVersion: "1"}, Data: data},
-		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: types.UID(testClusterUID)}},
-	)
-	var mu sync.Mutex
-	next := 1
-	cs.PrependReactor("update", "secrets", func(a clienttesting.Action) (bool, runtime.Object, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		obj := a.(clienttesting.UpdateAction).GetObject().(*corev1.Secret)
-		cur, err := cs.Tracker().Get(secretsGVR, obj.Namespace, obj.Name)
-		if err != nil {
-			return true, nil, err
-		}
-		if obj.ResourceVersion != cur.(*corev1.Secret).ResourceVersion {
-			return true, nil, apierrors.NewConflict(secretsGVR.GroupResource(), obj.Name, errors.New("resourceVersion mismatch"))
-		}
-		next++
-		obj.ResourceVersion = strconv.Itoa(next)
-		return false, nil, nil
-	})
-	return cs
-}
-
-func secretData(t *testing.T, cs *fake.Clientset) map[string][]byte {
-	t.Helper()
-	s, err := cs.CoreV1().Secrets(testNamespace).Get(context.Background(), testSecretName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get Secret: %v", err)
-	}
-	return s.Data
-}
-
-// clearSecret does what the reset command (ResetCommand) does.
-func clearSecret(t *testing.T, cs *fake.Clientset) {
-	t.Helper()
-	for {
-		s, err := cs.CoreV1().Secrets(testNamespace).Get(context.Background(), testSecretName, metav1.GetOptions{})
-		if err != nil {
-			t.Fatalf("get Secret: %v", err)
-		}
-		s.Data = nil
-		if _, err := cs.CoreV1().Secrets(testNamespace).Update(context.Background(), s, metav1.UpdateOptions{}); err == nil {
-			return
-		} else if !apierrors.IsConflict(err) {
-			t.Fatalf("clear Secret: %v", err)
-		}
-	}
+// newEnrollClientset holds the kube-system namespace Radar reads its
+// cluster identity from.
+func newEnrollClientset() *fake.Clientset {
+	return fake.NewClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: types.UID(testClusterUID)}})
 }
 
 func eventually(t *testing.T, what string, cond func() bool) {
@@ -182,11 +119,17 @@ func (h *fakeHub) requests() []EnrollRequest {
 }
 
 func joined(token string) hubReply {
-	return hubReply{status: 200, body: `{"status":"joined","cluster_id":"c-` + token + `","token":"` + token + `","wss_url":"ws://127.0.0.1:1/agent"}`}
+	return hubReply{status: 200, body: `{"cluster_id":"c-` + token + `","token":"` + token + `","agent_url":"ws://127.0.0.1:1/agent","name":"hub-name-` + token + `"}`}
 }
 
-// fakeTunnel records each tunnel the enroller starts. A tunnel runs until its
-// context ends, or returns what the test pushes into exit.
+func refusal(status int, code, message string) hubReply {
+	body, _ := json.Marshal(map[string]string{"error": code, "message": message})
+	return hubReply{status: status, body: string(body)}
+}
+
+// fakeTunnel records each tunnel the enroller starts. A tunnel reports an
+// open session, then runs until its context ends or returns what the test
+// pushes into exit.
 type fakeTunnel struct {
 	mu      sync.Mutex
 	configs []Config
@@ -206,6 +149,9 @@ func (f *fakeTunnel) run(ctx context.Context, cfg Config) error {
 		f.running--
 		f.mu.Unlock()
 	}()
+	if cfg.OnSession != nil {
+		cfg.OnSession(true)
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -228,378 +174,210 @@ func (f *fakeTunnel) isRunning() bool {
 
 func fastEnrollDelays(t *testing.T) {
 	t.Helper()
-	prev := []time.Duration{enrollMinBackoff, enrollMaxBackoff, enrollLongDelay, enrollNotReadyDelay, enrollDefaultRateDelay, secretRetryDelay}
-	enrollMinBackoff, enrollMaxBackoff, enrollLongDelay, enrollNotReadyDelay, enrollDefaultRateDelay, secretRetryDelay = time.Millisecond, 5*time.Millisecond, 5*time.Millisecond, time.Millisecond, time.Millisecond, 5*time.Millisecond
+	prev := []time.Duration{enrollMinBackoff, enrollMaxBackoff, enrollLongDelay, enrollNotReadyDelay, enrollConnectedDelay, enrollDefaultRateDelay}
+	enrollMinBackoff, enrollMaxBackoff, enrollLongDelay, enrollNotReadyDelay, enrollConnectedDelay, enrollDefaultRateDelay = time.Millisecond, 5*time.Millisecond, 5*time.Millisecond, time.Millisecond, time.Millisecond, time.Millisecond
 	t.Cleanup(func() {
-		enrollMinBackoff, enrollMaxBackoff, enrollLongDelay, enrollNotReadyDelay, enrollDefaultRateDelay, secretRetryDelay = prev[0], prev[1], prev[2], prev[3], prev[4], prev[5]
+		enrollMinBackoff, enrollMaxBackoff, enrollLongDelay, enrollNotReadyDelay, enrollConnectedDelay, enrollDefaultRateDelay = prev[0], prev[1], prev[2], prev[3], prev[4], prev[5]
 	})
 }
 
 // startEnroller runs the enroller until the test ends.
 func startEnroller(t *testing.T, cs *fake.Clientset, hub *fakeHub, keyFile string, tunnel *fakeTunnel, names NameOptions) {
 	t.Helper()
-	fastEnrollDelays(t)
 	e, err := newEnroller(EnrollmentConfig{
-		HubOrigin:  hub.srv.URL,
-		KeyFile:    keyFile,
-		Client:     cs,
-		Namespace:  testNamespace,
-		Release:    "radar",
-		SecretName: testSecretName,
-		Names:      names,
-		Tunnel:     Config{Handler: http.NotFoundHandler(), APIServerURL: "https://api.prod-eu.example.com:6443"},
+		HubOrigin: hub.srv.URL,
+		KeyFile:   keyFile,
+		Client:    cs,
+		Namespace: testNamespace,
+		Release:   "radar",
+		Names:     names,
+		Tunnel:    Config{Handler: http.NotFoundHandler(), APIServerURL: "https://api.prod-eu.example.com:6443"},
 	})
 	if err != nil {
 		t.Fatalf("newEnroller: %v", err)
 	}
 	e.runTunnel = tunnel.run
 	ctx, cancel := context.WithCancel(context.Background())
-	watchTokenSecret(ctx, cs, testNamespace, testSecretName, e.changes)
 	done := make(chan struct{})
-	go func() {
-		_ = e.run(ctx)
-		close(done)
-	}()
+	go func() { _ = e.run(ctx); close(done) }()
 	t.Cleanup(func() {
 		cancel()
 		<-done
 	})
 }
 
-func TestEnrollmentPersistsNonceBeforeFirstCallThenJoins(t *testing.T) {
-	cs := newTokenSecretClient(t, nil)
-	hub := newFakeHub(t, joined("rhc_first"))
-	hub.onCall = func(req EnrollRequest) {
-		stored := secretData(t, cs)
-		if string(stored[SecretKeyNonce]) != req.Nonce || string(stored[SecretKeyNonceOrigin]) != hub.srv.URL {
-			t.Errorf("enroll sent nonce %q before persisting it; Secret holds nonce %q for %q", req.Nonce, stored[SecretKeyNonce], stored[SecretKeyNonceOrigin])
-		}
+// captureLog collects what the package logs until the test ends.
+func captureLog(t *testing.T) func() string {
+	t.Helper()
+	var mu sync.Mutex
+	var buf bytes.Buffer
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.Write(p)
+	}))
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(prevOut)
+		log.SetFlags(prevFlags)
+	})
+	return func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return buf.String()
 	}
-	tunnel := newFakeTunnel()
-	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
+}
 
-	eventually(t, "the tunnel to start", func() bool { return len(tunnel.started()) == 1 })
-	data := secretData(t, cs)
-	if got := string(data[SecretKeyToken]); got != "rhc_first" {
-		t.Fatalf("token = %q", got)
-	}
-	if string(data[SecretKeyHubOrigin]) != hub.srv.URL || string(data[SecretKeyStatus]) != EnrollStatusJoined || string(data[SecretKeyClusterID]) != "c-rhc_first" {
-		t.Fatalf("joined Secret = %v", stringMap(data))
-	}
-	if _, ok := data[SecretKeyNonce]; ok {
-		t.Fatal("nonce kept after joining")
-	}
-	req := hub.requests()[0]
-	if req.AgentUID != testClusterUID || req.Namespace != testNamespace || req.Release != "radar" || len(req.Nonce) != 43 {
-		t.Fatalf("enroll request identity = %+v", req)
-	}
-	if req.TokenSecret != testSecretName {
-		t.Fatalf("token_secret = %q, want %q", req.TokenSecret, testSecretName)
-	}
-	if req.Name != "api.prod-eu.example.com" || req.NameSource != NameSourceAPIServer {
-		t.Fatalf("name = %q (%s)", req.Name, req.NameSource)
-	}
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+func TestEnrollmentJoinsAndServesTheTunnelWithTheTokenInMemory(t *testing.T) {
+	fastEnrollDelays(t)
+	cs := newEnrollClientset()
+	hub := newFakeHub(t, joined("rhc_one"))
+	tunnel := newFakeTunnel()
+	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{Prefix: "nkp-"})
+
+	eventually(t, "the tunnel", func() bool { return len(tunnel.started()) == 1 })
 	cfg := tunnel.started()[0]
-	if cfg.Token != "rhc_first" || cfg.ClusterID != "c-rhc_first" || cfg.URL != "ws://127.0.0.1:1/agent" || cfg.ClusterUID != testClusterUID || !cfg.Enrolled || cfg.TokenSecret != testSecretName {
+	if cfg.Token != "rhc_one" || cfg.ClusterID != "c-rhc_one" || cfg.URL != "ws://127.0.0.1:1/agent" || !cfg.Enrolled {
 		t.Fatalf("tunnel config = %+v", cfg)
 	}
-	if hub.keys[0] != testKey {
-		t.Fatalf("key sent = %q", hub.keys[0])
+	if cfg.ClusterName != "nkp-api.prod-eu.example.com" {
+		t.Fatalf("tunnel name %q, want the name Radar picked", cfg.ClusterName)
+	}
+	req := hub.requests()[0]
+	if req.AgentUID != testClusterUID || req.Namespace != testNamespace || req.Release != "radar" || req.Name != "nkp-api.prod-eu.example.com" || req.NameSource != NameSourceAPIServer {
+		t.Fatalf("enroll request = %+v", req)
 	}
 }
 
-func TestEnrollmentRetriesTheStoredNonce(t *testing.T) {
-	// A restart mid-join: the Secret already holds this attempt.
-	cs := newTokenSecretClient(t, map[string][]byte{
-		SecretKeyNonce:  []byte("stored-nonce-stored-nonce-stored-nonce-abcde"),
-		SecretKeyStatus: []byte(EnrollStatusJoining),
-	})
-	hub := newFakeHub(t, hubReply{status: 500, body: `{}`}, joined("rhc_same"))
-	// NonceOrigin must match the hub; set it now that the URL is known.
-	s, _ := cs.CoreV1().Secrets(testNamespace).Get(context.Background(), testSecretName, metav1.GetOptions{})
-	s.Data[SecretKeyNonceOrigin] = []byte(hub.srv.URL)
-	if _, err := cs.CoreV1().Secrets(testNamespace).Update(context.Background(), s, metav1.UpdateOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	tunnel := newFakeTunnel()
-	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{Exact: "prod"})
-
-	eventually(t, "the tunnel to start", func() bool { return len(tunnel.started()) == 1 })
-	reqs := hub.requests()
-	if len(reqs) != 2 {
-		t.Fatalf("enroll calls = %d, want 2", len(reqs))
-	}
-	for _, r := range reqs {
-		if r.Nonce != "stored-nonce-stored-nonce-stored-nonce-abcde" {
-			t.Fatalf("retry used nonce %q, not the stored one", r.Nonce)
-		}
-		if r.Name != "prod" || r.NameSource != NameSourceValues {
-			t.Fatalf("name = %q (%s)", r.Name, r.NameSource)
-		}
-	}
-}
-
-func TestEnrollmentClosedStopsUntilResetThenJoinsAgain(t *testing.T) {
-	cs := newTokenSecretClient(t, nil)
-	hub := newFakeHub(t, hubReply{status: 409, body: `{"error":"enrollment_closed"}`})
-	tunnel := newFakeTunnel()
-	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
-
-	eventually(t, "the refusal to be recorded", func() bool {
-		return string(secretData(t, cs)[SecretKeyStatus]) == EnrollStatusRefused
-	})
-	data := secretData(t, cs)
-	if got, want := string(data[SecretKeyError]), "the Hub closed this join attempt; to join again, run: "+testResetCommand; got != want {
-		t.Fatalf("enroll_error = %q, want %q", got, want)
-	}
-	if data[SecretKeyAt] == nil {
-		t.Fatal("enroll_at not set")
-	}
-	firstNonce := hub.requests()[0].Nonce
-	time.Sleep(50 * time.Millisecond)
-	if n := len(hub.requests()); n != 1 {
-		t.Fatalf("enroll calls after enrollment_closed = %d, want 1", n)
-	}
-
-	hub.setReplies(joined("rhc_after_reset"))
-	clearSecret(t, cs)
-	eventually(t, "a join after reset", func() bool { return len(tunnel.started()) == 1 })
-	reqs := hub.requests()
-	if reqs[len(reqs)-1].Nonce == firstNonce {
-		t.Fatal("re-join after reset reused the closed nonce")
-	}
-}
-
-func TestEnrollmentReenrollsWhenDataClearedWhileConnected(t *testing.T) {
-	cs := newTokenSecretClient(t, nil)
-	hub := newFakeHub(t, joined("rhc_one"))
+func TestEnrollmentNeverWritesToKubernetes(t *testing.T) {
+	fastEnrollDelays(t)
+	cs := newEnrollClientset()
+	hub := newFakeHub(t, joined("rhc_one"), refusal(409, "already_connected", ""), joined("rhc_two"))
 	tunnel := newFakeTunnel()
 	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
 
 	eventually(t, "the first tunnel", func() bool { return tunnel.isRunning() })
-	hub.setReplies(joined("rhc_two"))
-	clearSecret(t, cs)
+	tunnel.exit <- ErrTokenRejected
+	eventually(t, "a second tunnel", func() bool { return len(tunnel.started()) == 2 && tunnel.isRunning() })
+	for _, a := range cs.Actions() {
+		if a.GetResource().Resource == "secrets" || (a.GetVerb() != "get" && a.GetVerb() != "list" && a.GetVerb() != "watch") {
+			t.Fatalf("enrollment made a %s call on %s", a.GetVerb(), a.GetResource())
+		}
+	}
+}
 
-	eventually(t, "a second tunnel with the new token", func() bool {
+func TestTokenRejectedEnrollsAgain(t *testing.T) {
+	fastEnrollDelays(t)
+	cs := newEnrollClientset()
+	hub := newFakeHub(t, joined("rhc_one"), joined("rhc_two"))
+	tunnel := newFakeTunnel()
+	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
+
+	eventually(t, "the first tunnel", func() bool { return tunnel.isRunning() })
+	tunnel.exit <- ErrTokenRejected
+	eventually(t, "a tunnel with the new token", func() bool {
 		started := tunnel.started()
 		return len(started) == 2 && started[1].Token == "rhc_two"
 	})
-	if string(secretData(t, cs)[SecretKeyToken]) != "rhc_two" {
-		t.Fatal("new token not stored")
-	}
-	reqs := hub.requests()
-	if len(reqs) != 2 || reqs[0].Nonce == reqs[1].Nonce {
-		t.Fatalf("expected two enroll calls with different nonces, got %+v", reqs)
+	if n := len(hub.requests()); n != 2 {
+		t.Fatalf("enroll calls = %d, want 2", n)
 	}
 }
 
-func TestEnrollmentDoesNotReenrollOnTunnelRejection(t *testing.T) {
-	cs := newTokenSecretClient(t, nil)
-	hub := newFakeHub(t, joined("rhc_one"))
-	tunnel := newFakeTunnel()
-	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
-
-	eventually(t, "the tunnel", func() bool { return tunnel.isRunning() })
-	tunnel.exit <- ErrTokenRejected
-
-	eventually(t, "the refusal", func() bool {
-		return string(secretData(t, cs)[SecretKeyStatus]) == EnrollStatusRefused
-	})
-	data := secretData(t, cs)
-	if got := string(data[SecretKeyError]); got != "token rejected; to join again, run: "+testResetCommand {
-		t.Fatalf("enroll_error = %q", got)
+func TestEnrollRefusalsWaitAndExplain(t *testing.T) {
+	// Production delays: these are the retry promises the log lines make.
+	within := func(d, base time.Duration) bool { return d >= base && d < base+base/5+time.Millisecond }
+	tests := []struct {
+		name   string
+		err    *EnrollError
+		reason string
+		delay  func(time.Duration) bool
+		long   bool
+	}{
+		{"bad request", &EnrollError{StatusCode: 400, Code: "bad_request"}, "could not read the join request", func(d time.Duration) bool { return d == 0 }, false},
+		{"key unknown", &EnrollError{StatusCode: 401, Code: "key_unknown"}, "The Hub rejected the enrollment key.", func(d time.Duration) bool { return d == 0 }, false},
+		{"key deleted", &EnrollError{StatusCode: 401, Code: "key_deleted"}, "rejected the enrollment key", func(d time.Duration) bool { return d == 0 }, false},
+		{"key replaced", &EnrollError{StatusCode: 401, Code: "key_replaced"}, "rejected the enrollment key", func(d time.Duration) bool { return d == 0 }, false},
+		{"plan limit", &EnrollError{StatusCode: 402}, "license or plan limit", func(d time.Duration) bool { return within(d, 10*time.Minute) }, true},
+		{"removed", &EnrollError{StatusCode: 403, Code: "cluster_removed"}, "This cluster was removed in Radar Hub. An owner can let it back in under Settings > Enrollment keys.", func(d time.Duration) bool { return within(d, 10*time.Minute) }, true},
+		{"key full", &EnrollError{StatusCode: 409, Code: "key_full"}, "An owner can raise it on the Enrollment keys page in Radar Hub.", func(d time.Duration) bool { return within(d, 10*time.Minute) }, true},
+		{"already connected", &EnrollError{StatusCode: 409, Code: "already_connected"}, "Another Radar with this cluster's identity is connected", func(d time.Duration) bool { return within(d, 15*time.Second) }, false},
+		{"no agent address", &EnrollError{StatusCode: 409, Code: "no_agent_address"}, "no agent address", func(d time.Duration) bool { return d == 0 }, false},
+		{"rate limited", &EnrollError{StatusCode: 429, RetryAfter: 42 * time.Second, HasRetryAfter: true}, "rate limiting", func(d time.Duration) bool { return d == 42*time.Second }, false},
+		{"rate limited, Retry-After capped", &EnrollError{StatusCode: 429, RetryAfter: 24 * time.Hour, HasRetryAfter: true}, "rate limiting", func(d time.Duration) bool { return d == 10*time.Minute }, false},
+		{"rate limited, no Retry-After", &EnrollError{StatusCode: 429}, "rate limiting", func(d time.Duration) bool { return d == time.Minute }, false},
+		{"not ready", &EnrollError{StatusCode: 503, Code: "hub_not_ready"}, "not ready", func(d time.Duration) bool { return within(d, 30*time.Second) }, false},
 	}
-	if string(data[SecretKeyToken]) != "rhc_one" {
-		t.Fatal("token was dropped on rejection")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for i := 0; i < 20; i++ {
+				out := classifyEnrollError(tt.err)
+				if !strings.Contains(out.reason, tt.reason) || !tt.delay(out.delay) || out.long != tt.long {
+					t.Fatalf("got %+v", out)
+				}
+			}
+			withMsg := *tt.err
+			withMsg.Message = "The Hub's own sentence."
+			if got := classifyEnrollError(&withMsg).reason; got != "The Hub's own sentence." {
+				t.Fatalf("reason with a Hub message = %q", got)
+			}
+		})
 	}
-	time.Sleep(50 * time.Millisecond)
-	if n := len(hub.requests()); n != 1 {
-		t.Fatalf("enroll calls after a tunnel 401 = %d, want 1", n)
-	}
-	if n := len(tunnel.started()); n != 1 {
-		t.Fatalf("tunnel restarted %d times after the token was rejected", n-1)
-	}
-}
-
-func TestEnrollmentReplacesAnotherHubsCredentials(t *testing.T) {
-	// The fleet's values now point at a new Hub. The old Hub's token and join
-	// attempt must never be sent; Radar drops them and joins the new Hub.
-	cs := newTokenSecretClient(t, map[string][]byte{
-		SecretKeyToken:       []byte("rhc_other"),
-		SecretKeyHubOrigin:   []byte("https://other-hub.example.com"),
-		SecretKeyWSSURL:      []byte("wss://other-hub.example.com/agent"),
-		SecretKeyClusterID:   []byte("c-other"),
-		SecretKeyNonce:       []byte("other-hub-nonce-other-hub-nonce-other-hub-n"),
-		SecretKeyNonceOrigin: []byte("https://other-hub.example.com"),
-		SecretKeyStatus:      []byte(EnrollStatusRefused),
-		SecretKeyError:       []byte("old hub refused"),
-	})
-	hub := newFakeHub(t, joined("rhc_new"))
-	tunnel := newFakeTunnel()
-	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
-
-	eventually(t, "a tunnel to the new Hub", func() bool { return len(tunnel.started()) == 1 })
-	for _, cfg := range tunnel.started() {
-		if cfg.Token == "rhc_other" || strings.Contains(cfg.URL, "other-hub") {
-			t.Fatalf("the old Hub's credentials were used: %+v", cfg)
-		}
-	}
-	reqs := hub.requests()
-	if len(reqs) != 1 || reqs[0].Nonce == "other-hub-nonce-other-hub-nonce-other-hub-n" {
-		t.Fatalf("enroll requests = %+v, want one with a fresh nonce", reqs)
-	}
-	data := secretData(t, cs)
-	if string(data[SecretKeyToken]) != "rhc_new" || string(data[SecretKeyHubOrigin]) != hub.srv.URL || string(data[SecretKeyStatus]) != EnrollStatusJoined {
-		t.Fatalf("Secret = %v", stringMap(data))
-	}
-	for _, a := range cs.Actions() {
-		if a.GetResource().Resource == "secrets" && (a.GetVerb() == "create" || a.GetVerb() == "delete") {
-			t.Fatalf("Radar sent %s on the token Secret", a.GetVerb())
-		}
+	if out := classifyEnrollError(errors.New("dial tcp: connection refused")); out.delay != 0 || !strings.Contains(out.reason, "connection refused") {
+		t.Fatalf("network error: %+v", out)
 	}
 }
 
-func TestTokenSecretStoreClearForeignKeepsOwnFields(t *testing.T) {
-	cs := newTokenSecretClient(t, map[string][]byte{
-		SecretKeyToken:       []byte("rhc_mine"),
-		SecretKeyHubOrigin:   []byte("https://b.example.com"),
-		SecretKeyNonce:       []byte("n-a"),
-		SecretKeyNonceOrigin: []byte("https://a.example.com"),
-	})
-	store := &TokenSecretStore{Client: cs, Namespace: testNamespace, Name: testSecretName, HubOrigin: "https://b.example.com"}
-	st, _ := store.Load(context.Background())
-	stale := st
-	got, err := store.ClearForeign(context.Background(), st)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Token != "rhc_mine" || got.Nonce != "" {
-		t.Fatalf("after clear: %+v", got)
-	}
-	if _, err := store.ClearForeign(context.Background(), stale); !errors.Is(err, ErrTokenSecretConflict) {
-		t.Fatalf("stale clear err = %v, want conflict", err)
-	}
-}
-
-func TestEnrollmentNeverCreatesOrDeletesTheSecret(t *testing.T) {
+func TestRemovedClusterLogsAndChecksAgainWithoutARestart(t *testing.T) {
 	fastEnrollDelays(t)
-	cs := fake.NewClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: types.UID(testClusterUID)}})
-	hub := newFakeHub(t, joined("rhc_x"))
+	logs := captureLog(t)
+	cs := newEnrollClientset()
+	hub := newFakeHub(t, refusal(403, "cluster_removed", ""))
 	tunnel := newFakeTunnel()
 	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
-	time.Sleep(50 * time.Millisecond)
-	for _, a := range cs.Actions() {
-		if a.GetResource().Resource == "secrets" && (a.GetVerb() == "create" || a.GetVerb() == "delete") {
-			t.Fatalf("Radar sent %s on the token Secret", a.GetVerb())
-		}
+
+	const want = "This cluster was removed in Radar Hub. An owner can let it back in under Settings > Enrollment keys. Checking again every 10 minutes."
+	eventually(t, "the removed message in the log", func() bool { return strings.Contains(logs(), want) })
+	eventually(t, "several retries", func() bool { return len(hub.requests()) >= 3 })
+	if n := strings.Count(logs(), want); n != 1 {
+		t.Fatalf("the unchanged refusal was logged %d times, want once", n)
 	}
-	if len(hub.requests()) != 0 {
-		t.Fatal("enrolled without a place to keep the nonce")
-	}
+	// Let back in: the next retry joins.
+	hub.setReplies(joined("rhc_back"))
+	eventually(t, "a join after the owner let it back in", func() bool { return len(tunnel.started()) == 1 })
 }
 
-func TestEnrollmentRereadsTheKeyFile(t *testing.T) {
-	cs := newTokenSecretClient(t, nil)
-	hub := newFakeHub(t, hubReply{status: 401, body: `{"error":"invalid_key"}`})
-	keyFile := writeKeyFile(t, testKey)
-	tunnel := newFakeTunnel()
-	startEnroller(t, cs, hub, keyFile, tunnel, NameOptions{})
+func TestHubMessageIsLoggedForARefusal(t *testing.T) {
+	fastEnrollDelays(t)
+	logs := captureLog(t)
+	cs := newEnrollClientset()
+	hub := newFakeHub(t, refusal(409, "key_full", "This key has reached its limit of 50 clusters. An owner can raise it on the Enrollment keys page in Radar Hub."))
+	startEnroller(t, cs, hub, writeKeyFile(t, testKey), newFakeTunnel(), NameOptions{})
 
-	eventually(t, "the rejected key recorded in enroll_error", func() bool {
-		return strings.Contains(string(secretData(t, cs)[SecretKeyError]), "enrollment key")
+	eventually(t, "the Hub's message in the log", func() bool {
+		return strings.Contains(logs(), "This key has reached its limit of 50 clusters. An owner can raise it on the Enrollment keys page in Radar Hub. Checking again every 10 minutes.")
 	})
-	rotated := "rhe_rotatedrotatedrotatedrotatedrotated12345"
-	if err := os.WriteFile(keyFile, []byte(rotated), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// A request already in flight may still carry the old key, so wait for
-	// one that carries the new key before the hub starts accepting.
-	eventually(t, "a request with the rotated key", func() bool {
-		hub.mu.Lock()
-		defer hub.mu.Unlock()
-		return len(hub.keys) > 0 && hub.keys[len(hub.keys)-1] == rotated
-	})
-	hub.setReplies(joined("rhc_k"))
-	eventually(t, "a join after the key changed", func() bool { return len(tunnel.started()) == 1 })
-}
-
-func TestTokenSecretStoreConditionalWrites(t *testing.T) {
-	cs := newTokenSecretClient(t, nil)
-	store := &TokenSecretStore{Client: cs, Namespace: testNamespace, Name: testSecretName, HubOrigin: "https://hub.example.com"}
-	ctx := context.Background()
-	st, err := store.Load(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SaveNonce(ctx, st, "n1"); err != nil {
-		t.Fatalf("first write: %v", err)
-	}
-	// st is now stale: a write based on it must not land.
-	if _, err := store.SaveStatus(ctx, st, EnrollStatusWaiting, "x"); !errors.Is(err, ErrTokenSecretConflict) {
-		t.Fatalf("stale write err = %v, want conflict", err)
-	}
-	if _, err := store.SaveNonce(ctx, st, "n2"); !errors.Is(err, ErrTokenSecretConflict) {
-		t.Fatalf("stale nonce write err = %v, want conflict", err)
-	}
-	fresh, err := store.Load(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fresh.Nonce != "n1" || fresh.NonceOrigin != "https://hub.example.com" || fresh.Status != EnrollStatusJoining {
-		t.Fatalf("stored state = %+v", fresh)
-	}
-	joinedState, err := store.SaveJoined(ctx, fresh, &EnrollResult{ClusterID: "c1", Token: "rhc_1", WSSURL: "wss://hub.example.com/agent"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if joinedState.HubOrigin != "https://hub.example.com" || joinedState.Nonce != "" {
-		t.Fatalf("joined state = %+v", joinedState)
-	}
-	// An unchanged status is not rewritten.
-	again, err := store.SaveStatus(ctx, joinedState, EnrollStatusJoined, "")
-	if err != nil || again.secret.ResourceVersion != joinedState.secret.ResourceVersion {
-		t.Fatalf("no-op status write changed the Secret (err=%v)", err)
-	}
-}
-
-func TestTokenSecretStoreBindsWritesToItsOrigin(t *testing.T) {
-	cs := newTokenSecretClient(t, nil)
-	ctx := context.Background()
-	other := &TokenSecretStore{Client: cs, Namespace: testNamespace, Name: testSecretName, HubOrigin: "https://a.example.com"}
-	st, _ := other.Load(ctx)
-	st, err := other.SaveNonce(ctx, st, "nonce-for-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	mine := &TokenSecretStore{Client: cs, Namespace: testNamespace, Name: testSecretName, HubOrigin: "https://b.example.com"}
-	if _, err := mine.SaveJoined(ctx, st, &EnrollResult{ClusterID: "c", Token: "rhc_b", WSSURL: "wss://b.example.com/agent"}); err == nil {
-		t.Fatal("stored a token for b against a join attempt made with a")
-	}
-	noOrigin := &TokenSecretStore{Client: cs, Namespace: testNamespace, Name: testSecretName}
-	if _, err := noOrigin.SaveStatus(ctx, st, EnrollStatusWaiting, "x"); err == nil {
-		t.Fatal("a store with no Hub origin wrote the Secret")
-	}
-	if err := checkOrigins(map[string][]byte{SecretKeyToken: []byte("rhc")}); err == nil {
-		t.Fatal("accepted a token with no origin")
-	}
-	if err := checkOrigins(map[string][]byte{SecretKeyNonce: []byte("n")}); err == nil {
-		t.Fatal("accepted a nonce with no origin")
-	}
 }
 
 func TestEnrollClientStatusHandling(t *testing.T) {
 	tests := []struct {
-		name       string
-		reply      hubReply
-		wantStatus int
-		wantCode   string
-		wantRetry  time.Duration
+		name        string
+		reply       hubReply
+		wantStatus  int
+		wantCode    string
+		wantMessage string
+		wantRetry   time.Duration
 	}{
-		{name: "closed", reply: hubReply{status: 409, body: `{"error":"enrollment_closed"}`}, wantStatus: 409, wantCode: "enrollment_closed"},
+		{name: "removed", reply: refusal(403, "cluster_removed", "This cluster was removed in Radar Hub."), wantStatus: 403, wantCode: "cluster_removed", wantMessage: "This cluster was removed in Radar Hub."},
 		{name: "already connected", reply: hubReply{status: 409, body: `{"error":"already_connected","cluster_id":"c1"}`}, wantStatus: 409, wantCode: "already_connected"},
 		{name: "rate limited", reply: hubReply{status: 429, body: `{}`, retryAfter: "17"}, wantStatus: 429, wantRetry: 17 * time.Second},
-		{name: "licence limit", reply: hubReply{status: 402, body: `{"error":"license_limit","limit":3}`}, wantStatus: 402, wantCode: "license_limit"},
-		{name: "invalid key", reply: hubReply{status: 401, body: `{"error":"invalid_key"}`}, wantStatus: 401, wantCode: "invalid_key"},
+		{name: "license limit", reply: hubReply{status: 402, body: `{"error":"license_limit","limit":3}`}, wantStatus: 402, wantCode: "license_limit"},
+		{name: "message with control characters", reply: refusal(401, "key_unknown", "bad\r\nkey"), wantStatus: 401, wantCode: "key_unknown", wantMessage: "bad  key"},
 		{name: "not ready", reply: hubReply{status: 503, body: `{"error":"hub_not_ready"}`}, wantStatus: 503, wantCode: "hub_not_ready"},
 	}
 	for _, tt := range tests {
@@ -609,30 +387,54 @@ func TestEnrollClientStatusHandling(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = c.Enroll(context.Background(), EnrollRequest{Nonce: "n"})
+			_, err = c.Enroll(context.Background(), EnrollRequest{})
 			var he *EnrollError
 			if !errors.As(err, &he) {
 				t.Fatalf("err = %v, want *EnrollError", err)
 			}
-			if he.StatusCode != tt.wantStatus || he.Code != tt.wantCode || he.RetryAfter != tt.wantRetry {
+			if he.StatusCode != tt.wantStatus || he.Code != tt.wantCode || he.Message != tt.wantMessage || he.RetryAfter != tt.wantRetry {
 				t.Fatalf("got %+v", he)
 			}
 		})
 	}
 
-	t.Run("joined, and the same answer for a retried nonce", func(t *testing.T) {
+	t.Run("joined", func(t *testing.T) {
 		hub := newFakeHub(t, joined("rhc_same"))
 		c, _ := NewEnrollClient(hub.srv.URL, writeKeyFile(t, testKey), nil)
-		for i := 0; i < 2; i++ {
-			res, err := c.Enroll(context.Background(), EnrollRequest{Nonce: "same"})
-			if err != nil || res.Token != "rhc_same" || res.ClusterID != "c-rhc_same" {
-				t.Fatalf("attempt %d: %+v %v", i, res, err)
+		res, err := c.Enroll(context.Background(), EnrollRequest{})
+		if err != nil || res.Token != "rhc_same" || res.ClusterID != "c-rhc_same" || res.AgentURL != "ws://127.0.0.1:1/agent" {
+			t.Fatalf("%+v %v", res, err)
+		}
+	})
+
+	t.Run("the request carries no nonce or Secret name", func(t *testing.T) {
+		var raw map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&raw)
+			_, _ = w.Write([]byte(joined("rhc").body))
+		}))
+		defer srv.Close()
+		c, _ := NewEnrollClient(srv.URL, writeKeyFile(t, testKey), nil)
+		if _, err := c.Enroll(context.Background(), EnrollRequest{AgentUID: testClusterUID}); err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range []string{"nonce", "token_secret"} {
+			if _, ok := raw[k]; ok {
+				t.Errorf("request has %q", k)
 			}
 		}
 	})
 
-	t.Run("plaintext wss_url to a remote host is refused", func(t *testing.T) {
-		hub := newFakeHub(t, hubReply{status: 200, body: `{"status":"joined","cluster_id":"c","token":"rhc","wss_url":"ws://hub.example.com/agent"}`})
+	t.Run("a response without agent_url is refused", func(t *testing.T) {
+		hub := newFakeHub(t, hubReply{status: 200, body: `{"cluster_id":"c","token":"rhc"}`})
+		c, _ := NewEnrollClient(hub.srv.URL, writeKeyFile(t, testKey), nil)
+		if _, err := c.Enroll(context.Background(), EnrollRequest{}); err == nil {
+			t.Fatal("accepted a join with no agent address")
+		}
+	})
+
+	t.Run("plaintext agent_url to a remote host is refused", func(t *testing.T) {
+		hub := newFakeHub(t, hubReply{status: 200, body: `{"cluster_id":"c","token":"rhc","agent_url":"ws://hub.example.com/agent"}`})
 		c, _ := NewEnrollClient(hub.srv.URL, writeKeyFile(t, testKey), nil)
 		if _, err := c.Enroll(context.Background(), EnrollRequest{}); err == nil {
 			t.Fatal("accepted ws:// to a non-loopback host")
@@ -660,32 +462,6 @@ func TestEnrollClientStatusHandling(t *testing.T) {
 			t.Fatalf("err=%v calls=%d", err, len(hub.requests()))
 		}
 	})
-}
-
-func TestClassifyEnrollError(t *testing.T) {
-	fastEnrollDelays(t)
-	tests := []struct {
-		err        error
-		wantStatus string
-		wantDelay  func(time.Duration) bool
-	}{
-		{&EnrollError{StatusCode: 409, Code: "enrollment_closed"}, EnrollStatusRefused, func(d time.Duration) bool { return d < 0 }},
-		{&EnrollError{StatusCode: 409, Code: "already_connected"}, EnrollStatusWaiting, func(d time.Duration) bool { return d == 0 }},
-		{&EnrollError{StatusCode: 401, Code: "invalid_key"}, EnrollStatusWaiting, func(d time.Duration) bool { return d == 0 }},
-		{&EnrollError{StatusCode: 402}, EnrollStatusWaiting, func(d time.Duration) bool { return d >= enrollLongDelay }},
-		{&EnrollError{StatusCode: 503}, EnrollStatusWaiting, func(d time.Duration) bool { return d >= enrollNotReadyDelay && d < enrollLongDelay }},
-		{&EnrollError{StatusCode: 429, RetryAfter: 42 * time.Second, HasRetryAfter: true}, EnrollStatusWaiting, func(d time.Duration) bool { return d == 42*time.Second }},
-		{errors.New("dial tcp: refused"), EnrollStatusWaiting, func(d time.Duration) bool { return d == 0 }},
-	}
-	for _, tt := range tests {
-		status, msg, delay := classifyEnrollError(tt.err, "to join again, run: x")
-		if status != tt.wantStatus || !tt.wantDelay(delay) || msg == "" {
-			t.Errorf("%v: status=%s delay=%s msg=%q", tt.err, status, delay, msg)
-		}
-	}
-	if _, msg, _ := classifyEnrollError(&EnrollError{StatusCode: 409, Code: "enrollment_closed"}, "to join again, run: x"); !strings.HasSuffix(msg, "to join again, run: x") {
-		t.Errorf("closed message %q lacks the reset instruction", msg)
-	}
 }
 
 func TestResolveClusterName(t *testing.T) {
@@ -720,13 +496,7 @@ func TestResolveClusterName(t *testing.T) {
 }
 
 func TestRunStopsOnRepeatedRejectionOnlyWhenEnrolled(t *testing.T) {
-	var gotUID, gotSecret string
-	var mu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		gotUID = r.Header.Get(clusterUIDHeader)
-		gotSecret = r.Header.Get(tokenSecretHeader)
-		mu.Unlock()
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	}))
 	defer srv.Close()
@@ -737,20 +507,12 @@ func TestRunStopsOnRepeatedRejectionOnlyWhenEnrolled(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/agent"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	err := Run(ctx, Config{URL: wsURL, Token: "rhc", ClusterID: "c", Handler: http.NotFoundHandler(), Enrolled: true, ClusterUID: testClusterUID, TokenSecret: testSecretName})
+	err := Run(ctx, Config{URL: wsURL, Token: "rhc", ClusterID: "c", Handler: http.NotFoundHandler(), Enrolled: true})
 	if !errors.Is(err, ErrTokenRejected) {
 		t.Fatalf("Run = %v, want ErrTokenRejected", err)
 	}
-	mu.Lock()
-	if gotUID != testClusterUID {
-		t.Fatalf("%s = %q", clusterUIDHeader, gotUID)
-	}
-	if gotSecret != testSecretName {
-		t.Fatalf("%s = %q", tokenSecretHeader, gotSecret)
-	}
-	mu.Unlock()
 
-	// A token configured by hand keeps retrying, as before.
+	// A token configured by hand keeps retrying.
 	short, cancelShort := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancelShort()
 	if err := Run(short, Config{URL: wsURL, Token: "rhc", ClusterID: "c", Handler: http.NotFoundHandler()}); !errors.Is(err, context.DeadlineExceeded) {
@@ -758,19 +520,10 @@ func TestRunStopsOnRepeatedRejectionOnlyWhenEnrolled(t *testing.T) {
 	}
 }
 
-func TestClusterUIDHeaderOnlyForUUIDs(t *testing.T) {
-	if got := cloudHandshakeHeaders(Config{Token: "rhc", ClusterUID: testClusterUID}, false).Get(clusterUIDHeader); got != testClusterUID {
-		t.Fatalf("header = %q", got)
-	}
-	if _, ok := cloudHandshakeHeaders(Config{Token: "rhc", ClusterUID: "x\r\ninjected"}, false)[clusterUIDHeader]; ok {
-		t.Fatal("sent a non-UUID cluster UID")
-	}
-}
-
 func TestCAFileTrustsAPrivateHub(t *testing.T) {
 	hub := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"joined","cluster_id":"c","token":"rhc_tls","wss_url":"wss://hub.example.com/agent"}`))
+		_, _ = w.Write([]byte(`{"cluster_id":"c","token":"rhc_tls","agent_url":"wss://hub.example.com/agent"}`))
 	}))
 	defer hub.Close()
 	keyFile := writeKeyFile(t, testKey)
@@ -785,7 +538,7 @@ func TestCAFileTrustsAPrivateHub(t *testing.T) {
 	if err := os.WriteFile(caPath, pemBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ca, err := NewCAFile(caPath)
+	ca, err := LoadCAFile(caPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -793,7 +546,7 @@ func TestCAFileTrustsAPrivateHub(t *testing.T) {
 	if res, err := with.Enroll(context.Background(), EnrollRequest{}); err != nil || res.Token != "rhc_tls" {
 		t.Fatalf("with CA file: %+v %v", res, err)
 	}
-	if tlsCfg := hubTLSConfig(ca.Pool(), false); tlsCfg == nil || tlsCfg.RootCAs != ca.Pool() {
+	if tlsCfg := hubTLSConfig(ca, false); tlsCfg == nil || tlsCfg.RootCAs != ca {
 		t.Fatal("the dialer's TLS config does not carry the CA pool")
 	}
 
@@ -804,304 +557,37 @@ func TestCAFileTrustsAPrivateHub(t *testing.T) {
 	}
 }
 
-func stringMap(data map[string][]byte) map[string]string {
-	out := make(map[string]string, len(data))
-	for k, v := range data {
-		out[k] = string(v)
-	}
-	return out
-}
-
-// failNextGets makes the next n Secret reads fail with a server error.
-func failNextGets(cs *fake.Clientset) func(n int) {
-	var mu sync.Mutex
-	remaining := 0
-	cs.PrependReactor("get", "secrets", func(clienttesting.Action) (bool, runtime.Object, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if remaining > 0 {
-			remaining--
-			return true, nil, apierrors.NewInternalError(errors.New("etcdserver: request timed out"))
-		}
-		return false, nil, nil
-	})
-	return func(n int) {
-		mu.Lock()
-		remaining = n
-		mu.Unlock()
-	}
-}
-
-// clearSecretBehindReactors clears the Secret straight in the object tracker,
-// so the only reads that follow are Radar's own.
-func clearSecretBehindReactors(t *testing.T, cs *fake.Clientset) {
-	t.Helper()
-	obj, err := cs.Tracker().Get(secretsGVR, testNamespace, testSecretName)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s := obj.(*corev1.Secret).DeepCopy()
-	s.Data = nil
-	if err := cs.Tracker().Update(secretsGVR, s, testNamespace); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestEnrollmentSeesAResetDespiteAFailedRead(t *testing.T) {
-	cs := newTokenSecretClient(t, nil)
-	failGets := failNextGets(cs)
-	hub := newFakeHub(t, hubReply{status: 409, body: `{"error":"enrollment_closed"}`})
-	tunnel := newFakeTunnel()
-	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
-
-	eventually(t, "the refusal", func() bool {
-		return string(secretData(t, cs)[SecretKeyStatus]) == EnrollStatusRefused
-	})
-	time.Sleep(50 * time.Millisecond) // let Radar settle into its open-ended wait
-	hub.setReplies(joined("rhc_after_reset"))
-	failGets(1)
-	clearSecretBehindReactors(t, cs)
-	eventually(t, "a join after the reset", func() bool { return len(tunnel.started()) == 1 })
-}
-
-func TestTunnelStopsOnAResetDespiteAFailedRead(t *testing.T) {
-	cs := newTokenSecretClient(t, nil)
-	failGets := failNextGets(cs)
-	hub := newFakeHub(t, joined("rhc_one"))
-	tunnel := newFakeTunnel()
-	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
-
-	eventually(t, "the first tunnel", func() bool { return tunnel.isRunning() })
-	time.Sleep(50 * time.Millisecond)
-	hub.setReplies(joined("rhc_two"))
-	failGets(1)
-	clearSecretBehindReactors(t, cs)
-	eventually(t, "a second tunnel with the new token", func() bool {
-		started := tunnel.started()
-		return len(started) == 2 && started[1].Token == "rhc_two"
-	})
-}
-
-// writeFileNewer writes data and moves its modification time forward, so a
-// rewrite within the same clock tick still reads as a change.
-func writeFileNewer(t *testing.T, path string, data []byte, step int) {
-	t.Helper()
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	when := time.Now().Add(time.Duration(step) * time.Minute)
-	if err := os.Chtimes(path, when, when); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestCAFileRotationIsPickedUpWithoutARestart(t *testing.T) {
-	hub := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"joined","cluster_id":"c","token":"rhc_tls","wss_url":"wss://hub.example.com/agent"}`))
-	}))
-	defer hub.Close()
-	hubPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: hub.Certificate().Raw})
-
-	caPath := filepath.Join(t.TempDir(), "ca.crt")
-	writeFileNewer(t, caPath, unrelatedCAPEM(t), 0)
-	ca, err := NewCAFile(caPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, _ := NewEnrollClient(hub.URL, writeKeyFile(t, testKey), ca)
-	if _, err := client.Enroll(context.Background(), EnrollRequest{}); err == nil {
-		t.Fatal("trusted the Hub with the wrong CA")
-	}
-
-	writeFileNewer(t, caPath, hubPEM, 1)
-	if res, err := client.Enroll(context.Background(), EnrollRequest{}); err != nil || res.Token != "rhc_tls" {
-		t.Fatalf("rotated CA not picked up: %+v %v", res, err)
-	}
-	rotated := ca.Pool()
-	if tlsCfg := hubTLSConfig(ca.Pool(), false); tlsCfg.RootCAs != rotated {
-		t.Fatal("the dialer would not use the rotated pool")
-	}
-
-	// A broken rewrite keeps the last good pool.
-	writeFileNewer(t, caPath, []byte("half-written"), 2)
-	if ca.Pool() != rotated {
-		t.Fatal("a broken CA file replaced the last good pool")
-	}
-	if _, err := client.Enroll(context.Background(), EnrollRequest{}); err != nil {
-		t.Fatalf("enroll after a broken rewrite: %v", err)
-	}
-	if _, err := NewCAFile(filepath.Join(t.TempDir(), "missing")); err == nil {
-		t.Fatal("NewCAFile accepted a missing file")
-	}
-}
-
-// failRefusedWrites makes the next n writes that store enroll_status=refused
-// fail with a server error.
-func failRefusedWrites(cs *fake.Clientset) func(n int) {
-	var mu sync.Mutex
-	remaining := 0
-	cs.PrependReactor("update", "secrets", func(a clienttesting.Action) (bool, runtime.Object, error) {
-		mu.Lock()
-		defer mu.Unlock()
-		obj := a.(clienttesting.UpdateAction).GetObject().(*corev1.Secret)
-		if remaining > 0 && string(obj.Data[SecretKeyStatus]) == EnrollStatusRefused {
-			remaining--
-			return true, nil, apierrors.NewInternalError(errors.New("etcdserver: request timed out"))
-		}
-		return false, nil, nil
-	})
-	return func(n int) {
-		mu.Lock()
-		remaining = n
-		mu.Unlock()
-	}
-}
-
-func TestEnrollmentClosedStopsOnlyOnceRefusalIsStored(t *testing.T) {
-	cs := newTokenSecretClient(t, nil)
-	failWrites := failRefusedWrites(cs)
-	failWrites(1)
-	hub := newFakeHub(t, hubReply{status: 409, body: `{"error":"enrollment_closed"}`})
-	tunnel := newFakeTunnel()
-	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
-
-	eventually(t, "the refusal to be stored", func() bool {
-		return string(secretData(t, cs)[SecretKeyStatus]) == EnrollStatusRefused
-	})
-	if !strings.Contains(string(secretData(t, cs)[SecretKeyError]), testResetCommand) {
-		t.Fatalf("enroll_error = %q", secretData(t, cs)[SecretKeyError])
-	}
-}
-
-func TestTunnelRejectionIsRecordedDespiteAFailedRead(t *testing.T) {
-	cs := newTokenSecretClient(t, nil)
-	failGets := failNextGets(cs)
-	failWrites := failRefusedWrites(cs)
-	hub := newFakeHub(t, joined("rhc_one"))
-	tunnel := newFakeTunnel()
-	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
-
-	eventually(t, "the tunnel", func() bool { return tunnel.isRunning() })
-	time.Sleep(50 * time.Millisecond)
-	failGets(1)
-	failWrites(1)
-	tunnel.exit <- ErrTokenRejected
-
-	// Read through the tracker: a test read must not use up the injected
-	// failure meant for Radar.
-	eventually(t, "the refusal", func() bool {
-		obj, err := cs.Tracker().Get(secretsGVR, testNamespace, testSecretName)
-		return err == nil && string(obj.(*corev1.Secret).Data[SecretKeyStatus]) == EnrollStatusRefused
-	})
-	time.Sleep(50 * time.Millisecond)
-	if n := len(tunnel.started()); n != 1 {
-		t.Fatalf("the rejected token was used for %d more tunnel(s)", n-1)
-	}
-}
-
-func TestRestartFromStoredTokenSendsTheDerivedName(t *testing.T) {
-	hub := newFakeHub(t, joined("unused"))
-	cs := newTokenSecretClient(t, map[string][]byte{
-		SecretKeyToken:     []byte("rhc_stored"),
-		SecretKeyClusterID: []byte("c-stored"),
-		SecretKeyWSSURL:    []byte("ws://127.0.0.1:1/agent"),
-		SecretKeyStatus:    []byte(EnrollStatusJoined),
-	})
-	s, _ := cs.CoreV1().Secrets(testNamespace).Get(context.Background(), testSecretName, metav1.GetOptions{})
-	s.Data[SecretKeyHubOrigin] = []byte(hub.srv.URL)
-	if _, err := cs.CoreV1().Secrets(testNamespace).Update(context.Background(), s, metav1.UpdateOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	tunnel := newFakeTunnel()
-	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{Prefix: "nkp-"})
-
-	eventually(t, "the tunnel", func() bool { return len(tunnel.started()) == 1 })
-	cfg := tunnel.started()[0]
-	if cfg.ClusterName != "nkp-api.prod-eu.example.com" || cfg.ClusterUID != testClusterUID {
-		t.Fatalf("first handshake after restart: name %q, uid %q", cfg.ClusterName, cfg.ClusterUID)
-	}
-	if len(hub.requests()) != 0 {
-		t.Fatal("restart with a stored token called enroll")
-	}
-}
-
-// unrelatedCAPEM is a self-signed certificate no test server uses.
-func unrelatedCAPEM(t *testing.T) []byte {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "unrelated test CA"},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
-		IsCA:                  true,
-		BasicConstraintsValid: true,
-		KeyUsage:              x509.KeyUsageCertSign,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-}
-
-func TestEnrollDelaysForHubSideRefusals(t *testing.T) {
-	// Production values. A Hub with no org yet becomes ready the moment its
-	// admin signs in, so clusters installed first must show up within about
-	// half a minute, not ten.
-	for i := 0; i < 50; i++ {
-		_, _, notReady := classifyEnrollError(&EnrollError{StatusCode: 503, Code: "hub_not_ready"}, "")
-		if notReady < 30*time.Second || notReady >= 36*time.Second {
-			t.Fatalf("503 attempt %d waits %s, want 30s plus at most 20%% jitter", i, notReady)
-		}
-		_, _, limit := classifyEnrollError(&EnrollError{StatusCode: 402}, "")
-		if limit < 10*time.Minute || limit >= 12*time.Minute {
-			t.Fatalf("402 waits %s, want 10m plus at most 20%% jitter", limit)
-		}
-	}
-}
-
 func TestHubNotReadyKeepsRetryingWithoutBackingOff(t *testing.T) {
-	cs := newTokenSecretClient(t, nil)
+	fastEnrollDelays(t)
+	logs := captureLog(t)
+	cs := newEnrollClientset()
 	hub := newFakeHub(t, hubReply{status: 503, body: `{"error":"hub_not_ready"}`})
 	tunnel := newFakeTunnel()
 	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
 
 	eventually(t, "several 503 retries", func() bool { return len(hub.requests()) >= 5 })
-	eventually(t, "the not-ready reason recorded in enroll_error", func() bool {
-		return string(secretData(t, cs)[SecretKeyError]) == "the Hub is not ready to add clusters yet"
-	})
+	if !strings.Contains(logs(), "The Hub is not ready to add clusters yet. Trying again in ") {
+		t.Fatalf("log:\n%s", logs())
+	}
 	hub.setReplies(joined("rhc_ready"))
 	eventually(t, "a join once the Hub is ready", func() bool { return len(tunnel.started()) == 1 })
-	reqs := hub.requests()
-	for _, r := range reqs[1:] {
-		if r.Nonce != reqs[0].Nonce {
-			t.Fatal("a 503 retry started a new join attempt")
-		}
-	}
 }
 
-func TestTokenSecretHeaderOnlyForEnrolledValidNames(t *testing.T) {
-	if got := cloudHandshakeHeaders(Config{Token: "rhc", Enrolled: true, TokenSecret: "edge-radar-cloud-token"}, false).Get(tokenSecretHeader); got != "edge-radar-cloud-token" {
-		t.Fatalf("header = %q", got)
+func TestUntrustedHubCertificateNamesTheCABundle(t *testing.T) {
+	hub := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(joined("rhc").body))
+	}))
+	defer hub.Close()
+	c, _ := NewEnrollClient(hub.URL, writeKeyFile(t, testKey), nil)
+	_, err := c.Enroll(context.Background(), EnrollRequest{})
+	if err == nil {
+		t.Fatal("trusted a self-signed Hub without its CA")
 	}
-	for name, cfg := range map[string]Config{
-		"token mode":   {Token: "rhc", TokenSecret: "radar-cloud-token"},
-		"invalid name": {Token: "rhc", Enrolled: true, TokenSecret: "Bad_Name\r\n"},
-		"no name":      {Token: "rhc", Enrolled: true},
-	} {
-		if _, ok := cloudHandshakeHeaders(cfg, false)[tokenSecretHeader]; ok {
-			t.Errorf("%s: sent %s", name, tokenSecretHeader)
-		}
+	out := classifyEnrollError(err)
+	if !strings.HasPrefix(out.reason, "Radar does not trust the Hub's certificate. "+caBundleFix+" Details: ") {
+		t.Fatalf("reason = %q", out.reason)
 	}
-}
-
-func TestResetCommand(t *testing.T) {
-	if got := ResetCommand("radar", "radar-cloud-token"); got != testResetCommand {
-		t.Fatalf("got %s", got)
+	if untrustedCert(errors.New("dial tcp: connection refused")) {
+		t.Fatal("CA hint for an error that is not about the certificate")
 	}
 }
