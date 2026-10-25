@@ -5,7 +5,6 @@ import (
 	"slices"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -300,18 +299,7 @@ func observe(ref resourceid.Ref, obj apiruntime.Object) ownership.ObjectRead {
 	if err != nil {
 		return unavailable(ref, readreason.ReadError)
 	}
-	o := ownership.Observation{
-		Ref:             ref,
-		UID:             m.GetUID(),
-		ResourceVersion: m.GetResourceVersion(),
-	}
-	if refs := m.GetOwnerReferences(); len(refs) > 0 {
-		o.OwnerReferences = make([]metav1.OwnerReference, len(refs))
-		for i := range refs {
-			refs[i].DeepCopyInto(&o.OwnerReferences[i])
-		}
-	}
-	return ownership.ObjectRead{State: ownership.Present, Object: o}
+	return ownership.ObjectRead{State: ownership.Present, Object: ownership.Observe(ref, m)}
 }
 
 func mostStable(versions []string) string {
