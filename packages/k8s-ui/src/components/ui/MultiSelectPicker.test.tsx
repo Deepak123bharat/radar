@@ -53,7 +53,7 @@ describe('MultiSelectPicker', () => {
     expect(only).toContain('group-hover/row:opacity-100')
     expect(only).toContain('group-has-[:focus-visible]/row:opacity-100')
     expect(only).toContain('focus-visible:opacity-100')
-    expect(only).toContain('[@media(hover:none)]:opacity-100')
+    expect(only).toContain('any-pointer-coarse:opacity-100')
   })
 
   it('shows the filter input above the threshold and hides it below', () => {

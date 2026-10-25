@@ -157,12 +157,12 @@ export function MultiSelectPicker({
               </span>
             </label>
             {onSelectOnly && (
-              // Tailwind's hover: only matches devices that can hover, so touch needs its own rule.
+              // Touchscreens can coexist with a hover-capable mouse.
               <button
                 type="button"
                 onClick={() => onSelectOnly(item)}
                 aria-label={`Show only ${item}`}
-                className="shrink-0 mr-2 px-1.5 py-0.5 rounded border border-theme-border bg-theme-surface text-[11px] text-theme-text-secondary hover:bg-theme-elevated hover:text-theme-text-primary opacity-0 transition-opacity group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                className="shrink-0 mr-2 px-1.5 py-0.5 rounded border border-theme-border bg-theme-surface text-[11px] text-theme-text-secondary hover:bg-theme-elevated hover:text-theme-text-primary opacity-0 transition-opacity group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100 focus-visible:opacity-100 any-pointer-coarse:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
                 Only
               </button>
