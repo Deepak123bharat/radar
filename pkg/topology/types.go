@@ -465,9 +465,31 @@ type Relationships struct {
 	// Reflection distinguishes reflection links also retained in ConfigRefs/Consumers.
 	Reflection *ReflectionRelationships `json:"reflection,omitempty"`
 
-	Owner           *ResourceRef  `json:"owner,omitempty"`      // Parent via ownerReference (manages edge)
-	Deployment      *ResourceRef  `json:"deployment,omitempty"` // Grandparent Deployment (for Pods owned by ReplicaSets)
-	Children        []ResourceRef `json:"children,omitempty"`   // Resources this owns (manages edge)
+	// Owner is the owner Kubernetes acts through: the controller reference,
+	// else the only reference. Owners are every owner reference that resolves
+	// to an existing owner, Children every object whose owner reference
+	// resolves to this one. With Ownership set they come from owner
+	// references; without it, from the topology's manages edges.
+	Owner      *ResourceRef  `json:"owner,omitempty"`
+	Owners     []ResourceRef `json:"owners,omitempty"`
+	Deployment *ResourceRef  `json:"deployment,omitempty"` // Grandparent Deployment (for Pods owned by ReplicaSets)
+	Children   []ResourceRef `json:"children,omitempty"`
+	// OlderRevisions are Children kept apart because they only keep
+	// history: ReplicaSets that run no Pods and aren't their owner's current
+	// revision. See SplitOlderRevisions.
+	OlderRevisions []ResourceRef `json:"olderRevisions,omitempty"`
+	// Managers and Manages are management without an owner reference: GitOps
+	// member lists, class bindings, spec and status references. They never
+	// mean garbage collection. Set only with Ownership.
+	Managers []ResourceRef `json:"managers,omitempty"`
+	Manages  []ResourceRef `json:"manages,omitempty"`
+	// Ownership says how complete the owner-reference answers are.
+	Ownership *OwnershipCoverage `json:"ownership,omitempty"`
+	// manageSources and manageTargets are the resources this one's manages
+	// edges come from and go to, which ApplyOwnership sorts into ownership,
+	// management and display shortcuts.
+	manageSources, manageTargets []ResourceRef
+
 	Services        []ResourceRef `json:"services,omitempty"`   // Core Services selecting/exposing this
 	Ingresses       []ResourceRef `json:"ingresses,omitempty"`  // Ingresses routing to this
 	Gateways        []ResourceRef `json:"gateways,omitempty"`   // Gateway API Gateways routing to this
@@ -545,6 +567,99 @@ type CascadeDeletePreview struct {
 	Root         ResourceRef   `json:"root"`
 	RootResolved bool          `json:"rootResolved"`
 	Dependents   []ResourceRef `json:"dependents"`
+}
+
+// OwnershipCoverage says how complete a resource's owner-reference and
+// recorded-membership answers are. With UnavailableReason set nothing else is
+// answered, so an empty field there says nothing. Otherwise an omitted count
+// or flag is zero, and an omitted Manages or Managers means there was nothing
+// to qualify.
+type OwnershipCoverage struct {
+	// PrimaryOwnerState is the state of the owner reference when Owner is empty:
+	// "gone" or "replaced" when it names a deleted owner, "withheld" when the
+	// caller may not read the owner, "unknown", "unresolvable", "excluded"
+	// when it names an Event, or "several" when there are several references
+	// and none is a controller. Empty when there is no owner reference, or
+	// Owner is set.
+	PrimaryOwnerState string `json:"primaryOwnerState,omitempty"`
+	// OwnerRef is the owner the reference names when it is gone, replaced or
+	// unknown: the object's own metadata names it.
+	OwnerRef *ResourceRef `json:"ownerRef,omitempty"`
+	// OwnerReason is a readreason code saying why an "unknown" owner couldn't
+	// be checked.
+	OwnerReason string `json:"ownerReason,omitempty"`
+	// Children says how complete Children and OlderRevisions are together.
+	Children ChildrenCoverage `json:"children"`
+	// Manages is set for a GitOps manager kind whose status lists its
+	// members, whether or not that list could be read.
+	Manages *MembersCoverage `json:"manages,omitempty"`
+	// Managers is set when the search for the GitOps managers whose status
+	// lists the resource, for Managers, couldn't settle every one the caller
+	// may read.
+	Managers *ManagersCoverage `json:"managers,omitempty"`
+	// UnavailableReason is a reason code when Radar couldn't answer at all.
+	UnavailableReason string `json:"unavailableReason,omitempty"`
+}
+
+// ChildrenCoverage says how complete a resource's Children and
+// OlderRevisions are, together: OlderRevisions only sets some of them apart.
+type ChildrenCoverage struct {
+	// Complete: Children and OlderRevisions are every child the caller may
+	// read.
+	Complete bool `json:"complete"`
+	// NotChecked are the kinds and namespaces Radar couldn't search, and why.
+	NotChecked []OwnershipGap `json:"notChecked,omitempty"`
+	// Truncated: there were more children than the response lists; the cap
+	// applies before OlderRevisions are set apart.
+	Truncated bool `json:"truncated,omitempty"`
+	// Narrowed: the caller wasn't known to read everywhere children could be,
+	// so Children are the ones it may read.
+	Narrowed bool `json:"narrowed,omitempty"`
+}
+
+// OwnershipGap is a kind that Radar couldn't read, with a readreason code
+// saying why, from Radar's caches or the caller's access: in Namespace, or
+// with no Namespace in several namespaces, every one, or the cluster for a
+// cluster-scoped kind. An empty Kind stands for kinds discovery didn't list;
+// an empty Group is the core group.
+type OwnershipGap struct {
+	Group     string `json:"group,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	Reason    string `json:"reason"`
+}
+
+// ManagersCoverage says which GitOps managers the search for the resource's
+// Managers couldn't settle.
+type ManagersCoverage struct {
+	// Unreadable managers have a member list Radar can't read, so any of them
+	// may list the resource.
+	Unreadable int `json:"unreadable,omitempty"`
+	// Remote managers list an object at the resource's coordinates, in a
+	// cluster Radar can't confirm is this one.
+	Remote int `json:"remote,omitempty"`
+	// NotChecked are the manager kinds and namespaces Radar couldn't search,
+	// and why.
+	NotChecked []OwnershipGap `json:"notChecked,omitempty"`
+}
+
+// MembersCoverage says what a GitOps manager's status records of its
+// members beyond those Manages lists.
+type MembersCoverage struct {
+	// Membership is "recorded", "remote" (its destination isn't confirmed to
+	// be this cluster, so its members aren't listed) or "unreadable" (the
+	// status lists none Radar can read).
+	Membership string `json:"membership"`
+	// UnavailableReason is a readreason code when the member list couldn't be read,
+	// as opposed to the status recording none.
+	UnavailableReason string `json:"unavailableReason,omitempty"`
+	// Missing members Radar doesn't hold, Withheld ones the caller may not
+	// read, Unknown ones Radar can't say whether it holds.
+	Missing  int `json:"missing,omitempty"`
+	Withheld int `json:"withheld,omitempty"`
+	Unknown  int `json:"unknown,omitempty"`
+	// Truncated: there were more members than the response lists.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // ResourceWithRelationships wraps a K8s resource with computed relationships

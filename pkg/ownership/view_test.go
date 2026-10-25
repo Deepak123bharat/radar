@@ -529,3 +529,32 @@ func checkNarrows(t *testing.T, where string, full, v *ownership.View, caller ac
 		}
 	}
 }
+
+// managersWithGaps answers RecordingManagers with the session's answer plus gaps.
+type managersWithGaps struct {
+	ownership.ReadSession
+	gaps []ownership.Gap
+}
+
+func (s managersWithGaps) RecordingManagers(ref resourceid.Ref) ownership.RecordingManagersRead {
+	r := s.ReadSession.RecordingManagers(ref)
+	r.Gaps = append(r.Gaps, s.gaps...)
+	return r
+}
+
+// A caller learns which manager kinds Radar couldn't search, and where among
+// the namespaces it may read, but nothing of the namespaces it can't.
+func TestRecordingManagersKeepGapsTheCallerMayRead(t *testing.T) {
+	s, err := ownershiptest.Scan(ownershiptest.Fixture()).Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	everywhere := ownership.Gap{Kind: ownership.FluxHelmRelease, Reason: readreason.KindSyncPending}
+	alpha := ownership.Gap{Kind: ownership.ArgoApplication, Namespace: "alpha", Reason: readreason.KindSyncPending}
+	beta := ownership.Gap{Kind: ownership.ArgoApplication, Namespace: "beta", Reason: readreason.RadarForbidden}
+	v := ownership.NewView(managersWithGaps{s, []ownership.Gap{everywhere, alpha, beta}}, access{namespaces: []string{"alpha"}})
+	got := v.RecordingManagers(at("", "ConfigMap", "alpha", "cfg"))
+	if !slices.Contains(got.Gaps, everywhere) || !slices.Contains(got.Gaps, alpha) || slices.Contains(got.Gaps, beta) {
+		t.Fatalf("gaps = %v; want %v and %v, not %v", got.Gaps, everywhere, alpha, beta)
+	}
+}

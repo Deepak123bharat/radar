@@ -43,7 +43,7 @@ import type { NavigateToResource } from '../../utils/navigation'
 import { refToSelectedResource, pluralToKind, knownKindForPluralWithGroup, kindToPlural, kindToPluralWithGroup, apiVersionToGroup } from '../../utils/navigation'
 import { neighborhoodFor, seedNodeIds, topologyNodeResourceKind } from '../../utils/topology-neighborhood'
 import { TopologyGraph } from '../topology/TopologyGraph'
-import { gitOpsOwnerFromRelationships, type GitOpsOwnerRef } from '../../utils/gitops-owner'
+import { gitOpsOwnerFromRelationships, managerListing, type GitOpsOwnerRef } from '../../utils/gitops-owner'
 import { gitOpsRouteForResource } from '../../utils/gitops-route'
 import { buildResourceHierarchy, getAllEventsFromHierarchy, isProblematicEvent, type ResourceLane } from '../../utils/resource-hierarchy'
 import { TimelineSwimlanes, type TimeWindow } from '../timeline/TimelineSwimlanes'
@@ -57,7 +57,7 @@ import {
 import { ResourceRendererDispatch, getResourceStatus, diagnoseHealthHint, type DiagnoseHealthHint, type RendererOverrides } from '../shared/ResourceRendererDispatch'
 import type { ScalerDiagnosis } from '../resources/renderers/WorkloadRenderer'
 import { DetailShell, type DetailShellTab } from '../shared/DetailShell'
-import { HelmManagedByChip, ManagedByChip, type HelmOwnerRef } from '../shared/ManagedByChip'
+import { gitOpsOwnerKindLabel, HelmManagedByChip, ManagedByChip, type HelmOwnerRef } from '../shared/ManagedByChip'
 import { AlertBanner, getKindColorOutline, displayKindName, OperationalIssuesShownContext, ResourceRefBadge } from '../ui/drawer-components'
 import { Badge, type BadgeSeverity } from '../ui/Badge'
 import { Tooltip } from '../ui/Tooltip'
@@ -726,6 +726,18 @@ export function WorkloadView({
   const metadata = useMemo(() => extractMetadata(kind, resource), [kind, resource])
   const relationshipGitOpsOwner = useMemo(() => gitOpsOwnerFromRelationships(relationships), [relationships])
   const gitopsOwner = resolvedGitOpsOwner ?? relationshipGitOpsOwner
+  const listing = useMemo(
+    () => managerListing(gitopsOwner, relationships?.managers, gitOpsOwnerVerified, !relationships?.ownership?.managers),
+    [gitopsOwner, relationships?.managers, relationships?.ownership?.managers, gitOpsOwnerVerified],
+  )
+  // When the chip's manager is the only one whose status lists the resource,
+  // the chip says it all: Related Resources would repeat it.
+  const rendererRelationships = useMemo(
+    () => (relationships && listing?.state === 'confirmed' ? { ...relationships, managers: undefined } : relationships),
+    [relationships, listing],
+  )
+  // When they disagree, Related Resources says which manager the label names.
+  const trackedBy = listing?.state === 'conflict' && gitopsOwner ? `${gitOpsOwnerKindLabel(gitopsOwner)} ${gitopsOwner.namespace ? `${gitopsOwner.namespace}/` : ''}${gitopsOwner.name}` : undefined
   // When the resource itself is a portal GitOps CR (Application, Kustomization,
   // HelmRelease, etc.), surface a link to its dedicated GitOps detail page —
   // the drawer's renderer is thorough but the tab has the tree + insights +
@@ -1025,7 +1037,7 @@ export function WorkloadView({
             <p className="text-sm text-theme-text-tertiary">{namespace}</p>
             {(gitopsOwner || helmOwner || (gitOpsResourcePath && onNavigateGitOpsPath) || onOpenLiveTraffic) && (
               <div className="mt-1 flex flex-wrap items-center gap-1.5">
-                {gitopsOwner && <ManagedByChip owner={gitopsOwner} status={gitOpsOwnerStatus} verified={gitOpsOwnerVerified} pending={gitOpsOwnerPending} source={gitOpsOwnerSource} onOpen={onOpenGitOpsResource} />}
+                {gitopsOwner && <ManagedByChip owner={gitopsOwner} status={gitOpsOwnerStatus} verified={gitOpsOwnerVerified} pending={gitOpsOwnerPending} source={gitOpsOwnerSource} listing={listing} onOpen={onOpenGitOpsResource} />}
                 {helmOwner && <HelmManagedByChip owner={helmOwner} source={helmOwnerSource} onOpen={onOpenHelmRelease} />}
                 {gitOpsResourcePath && onNavigateGitOpsPath && (
                   <OpenInGitOpsChip onClick={() => onNavigateGitOpsPath(gitOpsResourcePath)} />
@@ -1112,7 +1124,8 @@ export function WorkloadView({
               <ResourceRendererDispatch
                 resource={selectedResource}
                 data={resource}
-                relationships={relationships}
+                relationships={rendererRelationships}
+                trackedBy={trackedBy}
                 certificateInfo={certificateInfo}
                 hpaDiagnosis={hpaDiagnosis}
                 scalerDiagnostics={scalerDiagnostics}
@@ -1210,7 +1223,7 @@ export function WorkloadView({
             </Tooltip>
           ),
           gitopsOwner && (
-            <ManagedByChip key="gitops" owner={gitopsOwner} status={gitOpsOwnerStatus} verified={gitOpsOwnerVerified} pending={gitOpsOwnerPending} source={gitOpsOwnerSource} onOpen={onOpenGitOpsResource} variant="block" />
+            <ManagedByChip key="gitops" owner={gitopsOwner} status={gitOpsOwnerStatus} verified={gitOpsOwnerVerified} pending={gitOpsOwnerPending} source={gitOpsOwnerSource} listing={listing} onOpen={onOpenGitOpsResource} variant="block" />
           ),
           helmOwner && (
             <HelmManagedByChip key="helm" owner={helmOwner} source={helmOwnerSource} onOpen={onOpenHelmRelease} variant="block" />
@@ -1325,7 +1338,8 @@ export function WorkloadView({
             <InfoTab
               resource={resource}
               selectedResource={selectedResource}
-              relationships={relationships}
+              relationships={rendererRelationships}
+              trackedBy={trackedBy}
               certificateInfo={certificateInfo}
               hpaDiagnosis={hpaDiagnosis}
               scalerDiagnostics={scalerDiagnostics}
@@ -1963,6 +1977,7 @@ function InfoTab({
   resource,
   selectedResource,
   relationships,
+  trackedBy,
   certificateInfo,
   hpaDiagnosis,
   scalerDiagnostics,
@@ -1999,6 +2014,7 @@ function InfoTab({
   resource: any
   selectedResource: SelectedResource
   relationships?: Relationships
+  trackedBy?: string
   certificateInfo?: any
   hpaDiagnosis?: HPADiagnosis
   scalerDiagnostics?: ScalerDiagnosis[]
@@ -2053,6 +2069,7 @@ function InfoTab({
           resource={selectedResource}
           data={resource}
           relationships={relationships}
+          trackedBy={trackedBy}
           certificateInfo={certificateInfo}
           hpaDiagnosis={hpaDiagnosis}
           scalerDiagnostics={scalerDiagnostics}

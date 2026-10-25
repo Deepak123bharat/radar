@@ -435,3 +435,85 @@ func (v *View) Members(manager resourceid.Ref) MembersAnswer {
 func compareGaps(a, b Gap) int {
 	return cmp.Or(cmp.Compare(a.Kind.Group, b.Kind.Group), cmp.Compare(a.Kind.Kind, b.Kind.Kind), cmp.Compare(a.Namespace, b.Namespace), cmp.Compare(a.Reason, b.Reason))
 }
+
+// RecordingManagersAnswer is what the local GitOps managers say of one object, as one
+// caller may see them.
+type RecordingManagersAnswer struct {
+	// Managers are the managers the caller may read whose member lists name
+	// the object, sorted.
+	Managers []Observation
+	// Unreadable are the managers the caller may read whose member lists
+	// can't be read, any of which may name the object, sorted.
+	Unreadable []resourceid.Ref
+	// Remote are the managers the caller may read whose lists name an
+	// object at the same coordinates in a cluster Radar can't confirm is this
+	// one, sorted.
+	Remote []resourceid.Ref
+	// Gaps are the search's gaps the caller may read; see RecordingManagersRead.Gaps.
+	Gaps []Gap
+	// searchGaps are all the search's gaps, for Searched.
+	searchGaps []Gap
+}
+
+// Searched reports whether the search read the member list of manager, a
+// manager the caller may read and Radar holds: no gap the search reported,
+// whether or not the caller may read it, leaves manager's kind unread where
+// manager is. A gap across all namespaces that stands for the namespaces
+// Radar doesn't collect leaves manager's own read.
+func (a RecordingManagersAnswer) Searched(manager resourceid.Ref) bool {
+	return !slices.ContainsFunc(a.searchGaps, func(g Gap) bool { return covers(g, manager) })
+}
+
+// covers reports whether a search's gap left ref's kind and place unread, ref
+// being an object Radar holds.
+func covers(g Gap, ref resourceid.Ref) bool {
+	switch {
+	case g.Kind != ref.GroupKind():
+		return false
+	case g.Namespace == ref.Namespace:
+		return true
+	case g.Namespace != "":
+		return false
+	}
+	return g.Reason != readreason.RadarNamespaceNotCollected
+}
+
+// RecordingManagers finds the local managers whose member lists name ref, among those
+// the caller may read; a manager the caller may not read takes no part. A
+// manager the view already read answers as it was read, and one it hadn't is
+// captured as found.
+func (v *View) RecordingManagers(ref resourceid.Ref) RecordingManagersAnswer {
+	found := v.session.RecordingManagers(ref)
+	a := RecordingManagersAnswer{searchGaps: found.Gaps}
+	for _, g := range found.Gaps {
+		// A gap the caller may not read would say what Radar collects where
+		// the caller can't look.
+		if v.access.CanRead(g.Kind, g.Namespace) == Allowed {
+			a.Gaps = append(a.Gaps, g)
+		}
+	}
+	for _, m := range found.Managers {
+		r, read := v.reads[m.Ref]
+		if !read {
+			r = accessRead{may: v.access.CanRead(m.Ref.GroupKind(), m.Ref.Namespace)}
+			if r.may == Allowed {
+				r.read = ObjectRead{State: Present, Object: m}
+			}
+			v.reads[m.Ref] = r
+		}
+		if r.may == Allowed && r.read.State == Present {
+			a.Managers = append(a.Managers, r.read.Object)
+		}
+	}
+	for _, m := range found.Unreadable {
+		if v.access.CanRead(m.GroupKind(), m.Namespace) == Allowed {
+			a.Unreadable = append(a.Unreadable, m)
+		}
+	}
+	for _, m := range found.Remote {
+		if v.access.CanRead(m.GroupKind(), m.Namespace) == Allowed {
+			a.Remote = append(a.Remote, m)
+		}
+	}
+	return a
+}
