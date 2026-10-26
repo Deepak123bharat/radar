@@ -738,8 +738,58 @@ export interface OwnershipCoverage {
     remote?: number
     notChecked?: OwnershipGap[]
   }
+  /** What manages this resource, from its own evidence or its nearest controller ancestor's. Absent means no answer (a Radar that predates it, or unavailableReason), never "none". */
+  manager?: ManagerAnswer
   /** A readreason code when Radar couldn't answer at all. */
   unavailableReason?: string
+}
+
+/** What manages a resource: the managers whose status lists name it and what its metadata claims. It names no winner the evidence doesn't support. */
+export interface ManagerAnswer {
+  /** none: no evidence in what Radar collects and the viewer may read, never "unmanaged". */
+  state: 'shared' | 'disagree' | 'agree' | 'listed' | 'claimed' | 'unknown' | 'none'
+  /** The manager to show first, never a verdict: the recorder for agree/listed; for shared, the one recorder a claim names, if exactly one; for claimed, the manager every claim names, if they agree. Its namespace is "" when it comes from a claim that names none. */
+  lead?: ResourceRef
+  /** The evidence on the resource itself. */
+  direct: ManagerEvidence
+  /** The nearest controller ancestor's evidence that settles it when the resource's own doesn't, or, when nothing does and the resource makes no claim that isn't copied, the nearest ancestor that makes one; state and lead then come from it. */
+  via?: ManagerEvidence
+  /** Other objects the walk passed that make claims, in chain order. When via is a fallback to the nearest claim, claims farther up stay here. */
+  between?: ManagerEvidence[]
+  /** Why a walk that found no settling evidence stopped short. Absent when evidence settled it first, or the walk reached the chain's top. */
+  chainEnd?: 'unfollowed' | 'cycle' | 'truncated'
+  /** The controller reference the walk couldn't follow, when chainEnd is unfollowed. */
+  stop?: {
+    at: ResourceRef
+    /** As primaryOwnerState: gone, replaced, withheld, unknown, unresolvable or excluded. */
+    state: string
+    /** The owner the reference names when it is gone, replaced or unknown. */
+    owner?: ResourceRef
+    /** A readreason code when the owner is unknown. */
+    reason?: string
+  }
+  /** The viewer's access is restricted, so the evidence is the part it may read. */
+  narrowed?: boolean
+}
+
+export interface ManagerEvidence {
+  object: ResourceRef
+  /** Local managers whose status lists name it. */
+  recorders?: ResourceRef[]
+  /** Managers its own metadata names. */
+  claims?: ManagerClaim[]
+}
+
+/** source, check, and the answer's state and chainEnd may gain values in newer Radars: show an unfamiliar one generically and never treat it as confirming. */
+export interface ManagerClaim {
+  /** Its namespace is "" when the metadata doesn't say. */
+  manager: ResourceRef
+  source: 'flux-helm-labels' | 'flux-kustomize-labels' | 'argo-tracking-id' | 'argo-instance-label' | 'helm-release'
+  check: 'recorded' | 'omitted' | 'unreadable' | 'remote' | 'missing' | 'not-recording' | 'unresolved' | 'withheld' | 'unchecked'
+  /** An Argo CD tracking ID naming another object. */
+  copied?: boolean
+  /** Copied, or an instance label or Helm release annotation on an object a controller owns: it doesn't stop the walk. One that isn't copied can still answer when nothing on the chain settles it. */
+  weak?: boolean
 }
 
 // Parsed X.509 certificate metadata (from backend cert parsing)

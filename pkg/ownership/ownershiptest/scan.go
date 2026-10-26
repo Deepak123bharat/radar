@@ -7,6 +7,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/skyhook-io/radar/pkg/gitops"
 	"github.com/skyhook-io/radar/pkg/ownership"
 	"github.com/skyhook-io/radar/pkg/readreason"
 	"github.com/skyhook-io/radar/pkg/resourceid"
@@ -300,6 +301,7 @@ func observation(o Object) ownership.Observation {
 	for _, ref := range o.OwnerReferences {
 		obs.OwnerReferences = append(obs.OwnerReferences, *ref.DeepCopy())
 	}
+	obs.Claims = gitops.Claims(o.Ref, o.Labels, o.Annotations)
 	return obs
 }
 
@@ -330,6 +332,12 @@ func (s scanSession) Members(manager resourceid.Ref) ownership.MembersRead {
 		slices.SortFunc(r.Members, compareRefs)
 		r.Members = slices.Compact(r.Members)
 	}
+	return r
+}
+
+func (s scanSession) Membership(manager resourceid.Ref) ownership.MembersRead {
+	r := s.Members(manager)
+	r.Members = nil
 	return r
 }
 

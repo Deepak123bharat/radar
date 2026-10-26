@@ -70,6 +70,7 @@ func ApplyOwnership(rel *Relationships, v *ownership.View, fetched ownership.Obs
 	// itself. The graph draws a HelmRelease's edges from its members' labels,
 	// and an Application's or Kustomization's from the same status list, for
 	// the workload and network kinds it draws.
+	cov.Manager = managerAnswer(v.Manager(subject))
 	managers := v.RecordingManagers(subject)
 	if len(managers.Unreadable)+len(managers.Remote)+len(managers.Gaps) > 0 {
 		cov.Managers = &ManagersCoverage{Unreadable: len(managers.Unreadable), Remote: len(managers.Remote), NotChecked: notChecked(managers.Gaps)}
@@ -315,4 +316,44 @@ func refOf(r resourceid.Ref) ResourceRef {
 // whose group is empty for the core group.
 func refIdentity(r ResourceRef) resourceid.Ref {
 	return resourceid.Ref{Group: r.Group, Kind: r.Kind, Namespace: r.Namespace, Name: r.Name}
+}
+
+func managerAnswer(a ownership.ManagerAnswer) *ManagerAnswer {
+	out := &ManagerAnswer{State: string(a.State), Direct: managerEvidence(a.Direct), ChainEnd: string(a.ChainEnd), Narrowed: a.Narrowed}
+	if a.Lead != nil {
+		lead := refOf(*a.Lead)
+		out.Lead = &lead
+	}
+	if a.Via != nil {
+		via := managerEvidence(*a.Via)
+		out.Via = &via
+	}
+	for _, e := range a.Between {
+		// An object kept only because its search had gaps says nothing here:
+		// the gaps aren't on the wire, and State already counts them.
+		if len(e.Claims) > 0 {
+			out.Between = append(out.Between, managerEvidence(e))
+		}
+	}
+	if a.Stop != nil {
+		out.Stop = &ManagerChainStop{At: refOf(a.Stop.At), State: a.Stop.Owner.State.String()}
+		switch a.Stop.Owner.State {
+		case ownership.OwnerGone, ownership.OwnerReplaced, ownership.OwnerUnknown:
+			// The reference on an object the caller reads names it.
+			out.Stop.Owner = namedOwner(ownership.OwnerAnswer{Reference: &a.Stop.Reference, Resolution: a.Stop.Owner})
+			out.Stop.Reason = string(a.Stop.Owner.Gap.Reason)
+		}
+	}
+	return out
+}
+
+func managerEvidence(e ownership.ManagerEvidence) ManagerEvidence {
+	out := ManagerEvidence{Object: refOf(e.Object)}
+	for _, r := range e.Recorders {
+		out.Recorders = append(out.Recorders, refOf(r))
+	}
+	for _, c := range e.Claims {
+		out.Claims = append(out.Claims, ManagerClaim{Manager: refOf(c.Manager), Source: string(c.Source), Check: string(c.Check), Copied: c.Copied, Weak: c.Weak})
+	}
+	return out
 }
