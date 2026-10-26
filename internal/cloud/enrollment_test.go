@@ -17,9 +17,13 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 const (
@@ -32,6 +36,16 @@ const (
 // cluster identity from.
 func newEnrollClientset() *fake.Clientset {
 	return fake.NewClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: types.UID(testClusterUID)}})
+}
+
+// newEnrollClientsetWithAPIServer also publishes kube-public/cluster-info
+// naming https://api.prod-eu.example.com:6443.
+func newEnrollClientsetWithAPIServer() *fake.Clientset {
+	kubeconfig := "apiVersion: v1\nkind: Config\nclusters:\n- name: \"\"\n  cluster:\n    server: https://api.prod-eu.example.com:6443\n"
+	return fake.NewClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: types.UID(testClusterUID)}},
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: "kube-public", Name: "cluster-info"}, Data: map[string]string{"kubeconfig": kubeconfig}},
+	)
 }
 
 func eventually(t *testing.T, what string, cond func() bool) {
@@ -193,7 +207,7 @@ func startEnroller(t *testing.T, cs *fake.Clientset, hub *fakeHub, keyFile strin
 		Namespace: testNamespace,
 		Release:   "radar",
 		Names:     names,
-		Tunnel:    Config{Handler: http.NotFoundHandler(), APIServerURL: "https://api.prod-eu.example.com:6443"},
+		Tunnel:    Config{Handler: http.NotFoundHandler()},
 	})
 	if err != nil {
 		t.Fatalf("newEnroller: %v", err)
@@ -237,7 +251,7 @@ func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
 
 func TestEnrollmentJoinsAndServesTheTunnelWithTheTokenInMemory(t *testing.T) {
 	fastEnrollDelays(t)
-	cs := newEnrollClientset()
+	cs := newEnrollClientsetWithAPIServer()
 	hub := newFakeHub(t, joined("rhc_one"))
 	tunnel := newFakeTunnel()
 	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{Prefix: "nkp-"})
@@ -270,6 +284,48 @@ func TestEnrollmentNeverWritesToKubernetes(t *testing.T) {
 		if a.GetResource().Resource == "secrets" || (a.GetVerb() != "get" && a.GetVerb() != "list" && a.GetVerb() != "watch") {
 			t.Fatalf("enrollment made a %s call on %s", a.GetVerb(), a.GetResource())
 		}
+	}
+}
+
+// A cluster-info read that fails while the API server is briefly unreachable
+// is retried: joining under the cluster-<uid> fallback would rename the
+// cluster in the Hub.
+func TestEnrollmentRetriesAnUnreadableAPIServerAddress(t *testing.T) {
+	fastEnrollDelays(t)
+	cs := newEnrollClientsetWithAPIServer()
+	failed := false
+	cs.PrependReactor("get", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+		if !failed {
+			failed = true
+			return true, nil, errors.New("connection refused")
+		}
+		return false, nil, nil
+	})
+	hub := newFakeHub(t, joined("rhc_one"))
+	tunnel := newFakeTunnel()
+	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
+
+	eventually(t, "the tunnel", func() bool { return len(tunnel.started()) == 1 })
+	if reqs := hub.requests(); len(reqs) != 1 || reqs[0].Name != "api.prod-eu.example.com" {
+		t.Fatalf("enroll requests = %+v, want one, named after the API server", reqs)
+	}
+}
+
+// A cluster that forbids reading cluster-info has no address to give, so
+// the cluster-<uid> name is its real default and Radar joins with it.
+func TestEnrollmentJoinsWhenTheAPIServerAddressIsForbidden(t *testing.T) {
+	fastEnrollDelays(t)
+	cs := newEnrollClientsetWithAPIServer()
+	cs.PrependReactor("get", "configmaps", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, "cluster-info", errors.New("denied"))
+	})
+	hub := newFakeHub(t, joined("rhc_one"))
+	tunnel := newFakeTunnel()
+	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
+
+	eventually(t, "the tunnel", func() bool { return len(tunnel.started()) == 1 })
+	if name := hub.requests()[0].Name; name != "cluster-0b6c7c43" {
+		t.Fatalf("name = %q, want the cluster-<uid> default", name)
 	}
 }
 

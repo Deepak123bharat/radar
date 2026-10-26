@@ -165,6 +165,14 @@ func (e *enroller) attempt(ctx context.Context) (*EnrollResult, time.Duration) {
 		uidCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		uid, err := DiscoverClusterUID(uidCtx, e.cfg.Client)
 		cancel()
+		var apiURL string
+		if err == nil {
+			// The default name comes from this URL: retry a failed read
+			// rather than join under a fallback name.
+			apiCtx, cancelAPI := context.WithTimeout(ctx, 10*time.Second)
+			apiURL, err = LookupAPIServerURL(apiCtx, e.cfg.Client)
+			cancelAPI()
+		}
 		if err != nil {
 			delay := e.nextBackoff()
 			reason := fmt.Sprintf("Cannot join yet: %v.", err)
@@ -172,7 +180,8 @@ func (e *enroller) attempt(ctx context.Context) (*EnrollResult, time.Duration) {
 			return nil, delay
 		}
 		e.uid = uid
-		e.name, e.source = ResolveClusterName(e.cfg.Names, e.cfg.Tunnel.APIServerURL, uid)
+		e.cfg.Tunnel.APIServerURL = apiURL
+		e.name, e.source = ResolveClusterName(e.cfg.Names, apiURL, uid)
 	}
 
 	req := EnrollRequest{
