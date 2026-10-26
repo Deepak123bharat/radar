@@ -110,9 +110,10 @@ type podRow struct {
 }
 
 type podRowSpec struct {
-	NodeName       string            `json:"nodeName,omitempty"`
-	Containers     []podRowContainer `json:"containers,omitempty"`
-	InitContainers []podRowContainer `json:"initContainers,omitempty"`
+	ReadinessGates []corev1.PodReadinessGate `json:"readinessGates,omitempty"`
+	NodeName       string                    `json:"nodeName,omitempty"`
+	Containers     []podRowContainer         `json:"containers,omitempty"`
+	InitContainers []podRowContainer         `json:"initContainers,omitempty"`
 	// Pod-level budget (PodLevelResources): the CPU/Mem column checks which
 	// requests/limits it sets.
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
@@ -120,6 +121,8 @@ type podRowSpec struct {
 
 type podRowContainer struct {
 	Name string `json:"name"`
+	// Presence alone distinguishes probe-confirmed OOM recovery from a ready process.
+	ReadinessProbe *struct{} `json:"readinessProbe,omitempty"`
 	// RestartPolicy is the native-sidecar marker — dropping it would
 	// silently mis-badge sidecar crash loops in podCrashHistoryLevel.
 	RestartPolicy *corev1.ContainerRestartPolicy `json:"restartPolicy,omitempty"`
@@ -140,10 +143,11 @@ type podRowStatus struct {
 }
 
 type podRowCondition struct {
-	Type    corev1.PodConditionType `json:"type"`
-	Status  corev1.ConditionStatus  `json:"status"`
-	Reason  string                  `json:"reason,omitempty"`
-	Message string                  `json:"message,omitempty"`
+	LastTransitionTime *metav1.Time            `json:"lastTransitionTime,omitempty"`
+	Type               corev1.PodConditionType `json:"type"`
+	Status             corev1.ConditionStatus  `json:"status"`
+	Reason             string                  `json:"reason,omitempty"`
+	Message            string                  `json:"message,omitempty"`
 }
 
 // podRowContainerStatus keeps the crash-forensics fields (state, lastState,
@@ -161,9 +165,10 @@ func summarizePodRow(p *corev1.Pod) any {
 	return &podRow{
 		Metadata: summaryRowMeta(&p.ObjectMeta),
 		Spec: podRowSpec{
+			ReadinessGates: p.Spec.ReadinessGates,
 			NodeName:       p.Spec.NodeName,
-			Containers:     summaryContainers(p.Spec.Containers, false),
-			InitContainers: summaryContainers(p.Spec.InitContainers, true),
+			Containers:     summaryContainers(p.Spec.Containers, false, len(p.Spec.ReadinessGates) > 0),
+			InitContainers: summaryContainers(p.Spec.InitContainers, true, false),
 			Resources:      p.Spec.Resources,
 		},
 		Status: podRowStatus{
@@ -172,14 +177,14 @@ func summarizePodRow(p *corev1.Pod) any {
 			Message:               p.Status.Message,
 			PodIP:                 p.Status.PodIP,
 			PodIPs:                p.Status.PodIPs,
-			Conditions:            summaryPodConditions(p.Status.Conditions),
+			Conditions:            summaryPodConditions(p.Status.Conditions, len(p.Spec.ReadinessGates) > 0),
 			ContainerStatuses:     summaryContainerStatuses(p.Status.ContainerStatuses),
 			InitContainerStatuses: summaryContainerStatuses(p.Status.InitContainerStatuses),
 		},
 	}
 }
 
-func summaryContainers(containers []corev1.Container, withRestartPolicy bool) []podRowContainer {
+func summaryContainers(containers []corev1.Container, withRestartPolicy, keepReadinessProbe bool) []podRowContainer {
 	if containers == nil {
 		return nil
 	}
@@ -187,6 +192,9 @@ func summaryContainers(containers []corev1.Container, withRestartPolicy bool) []
 	for i := range containers {
 		c := &containers[i]
 		row := podRowContainer{Name: c.Name}
+		if keepReadinessProbe && c.ReadinessProbe != nil {
+			row.ReadinessProbe = &struct{}{}
+		}
 		if withRestartPolicy {
 			row.RestartPolicy = c.RestartPolicy
 		}
@@ -198,13 +206,17 @@ func summaryContainers(containers []corev1.Container, withRestartPolicy bool) []
 	return out
 }
 
-func summaryPodConditions(conditions []corev1.PodCondition) []podRowCondition {
+func summaryPodConditions(conditions []corev1.PodCondition, keepTransitionTime bool) []podRowCondition {
 	if conditions == nil {
 		return nil
 	}
 	out := make([]podRowCondition, 0, len(conditions))
 	for _, c := range conditions {
-		out = append(out, podRowCondition{Type: c.Type, Status: c.Status, Reason: c.Reason, Message: c.Message})
+		row := podRowCondition{Type: c.Type, Status: c.Status, Reason: c.Reason, Message: c.Message}
+		if keepTransitionTime && !c.LastTransitionTime.IsZero() {
+			row.LastTransitionTime = &c.LastTransitionTime
+		}
+		out = append(out, row)
 	}
 	return out
 }

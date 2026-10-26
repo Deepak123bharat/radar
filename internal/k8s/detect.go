@@ -489,7 +489,8 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 				problems = append(problems, det)
 				continue
 			}
-			healthStr := health.Pod(pod, now).LegacyString()
+			podHealth := health.Pod(pod, now)
+			healthStr := podHealth.LegacyString()
 			earlyProbeTargetProblem, hasEarlyProbeTargetProblem := activeProbeTargetProblem(pod, "")
 			// A restart loop keeps its row through the ticks where the pod
 			// looks healthy between crashes; see restart_loop.go.
@@ -511,6 +512,9 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 			ownerGroup, ownerKind, ownerName := podOwnerKindName(cache, pod)
 			reason := health.PodProblemReason(pod, now)
 			message := health.PodProblemMessage(pod)
+			if reason == readinessGatesNotReadyReason {
+				message = podHealth.Message
+			}
 			if pf, ok := newestProbeFailure(probeFailures, pod, ""); ok && shouldUseProbeFailure(pod, reason, lastTermReason, pf.reason, now) {
 				reason = pf.reason
 				message = pf.message
@@ -583,6 +587,9 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 					cause, action = loop.diagnosis()
 				} else if reason == crashLoopReason {
 					cause, action = health.PodCrashLoopDiagnosis(pod, now)
+				} else if reason == readinessGatesNotReadyReason {
+					cause = "Pod readiness is blocked by a declared gate."
+					action = "Check the controller that reports the declared readiness gate condition and its related resource events."
 				} else {
 					cause, action = imagePullDiagnosis(reason, message)
 				}
@@ -703,7 +710,11 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 			}
 			// The evidence above classifies workload/rollout timing, not when this
 			// Pod's specific waiting or termination reason began.
-			setDetectionOnset(&detection, now, time.Time{})
+			var onset time.Time
+			if reason == readinessGatesNotReadyReason {
+				onset, _ = health.PodReadinessGateFailure(pod, now)
+			}
+			setDetectionOnset(&detection, now, onset)
 			if pinLoopSeverity {
 				loopRows = append(loopRows, loopRow{index: len(problems), owner: loopOwnerKey(pod, ownerGroup, ownerKind, ownerName), fast: loop.fast()})
 			}

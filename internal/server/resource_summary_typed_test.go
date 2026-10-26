@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -299,4 +300,37 @@ func TestSummarizePodRowKeepsPodLevelResources(t *testing.T) {
 	if got := dig(t, m, "spec", "resources", "limits", "cpu"); got != "2" {
 		t.Errorf("spec.resources.limits.cpu = %v — the CPU/Mem column reads the pod-level ceiling", got)
 	}
+}
+
+func TestPodSummaryKeepsReadinessGateEvidence(t *testing.T) {
+	p := &corev1.Pod{Spec: corev1.PodSpec{ReadinessGates: []corev1.PodReadinessGate{{ConditionType: "example.com/ready"}}}, Status: corev1.PodStatus{Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionFalse, Reason: "ReadinessGatesNotReady", LastTransitionTime: metav1.Unix(1700000000, 0)}, {Type: corev1.ContainersReady, Status: corev1.ConditionTrue, LastTransitionTime: metav1.Unix(1700000060, 0)}}}}
+	p.Spec.Containers = []corev1.Container{{Name: "app", ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/ready"}}}}}
+	raw, err := json.Marshal(summarizePodRow(p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got corev1.Pod
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Spec.ReadinessGates) != 1 || got.Spec.ReadinessGates[0] != p.Spec.ReadinessGates[0] {
+		t.Fatalf("gates lost: %s", raw)
+	}
+	for i, c := range got.Status.Conditions {
+		if !c.LastTransitionTime.Equal(&p.Status.Conditions[i].LastTransitionTime) {
+			t.Fatalf("transition lost: %s", raw)
+		}
+	}
+	if got.Spec.Containers[0].ReadinessProbe == nil || bytes.Contains(raw, []byte("httpGet")) {
+		t.Fatalf("need probe presence without its handler: %s", raw)
+	}
+	p.Spec.ReadinessGates = nil
+	raw, err = json.Marshal(summarizePodRow(p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("lastTransitionTime")) || bytes.Contains(raw, []byte("readinessProbe")) {
+		t.Fatalf("ungated rows pay unused timestamp cost: %s", raw)
+	}
+
 }

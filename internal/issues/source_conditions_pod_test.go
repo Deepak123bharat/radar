@@ -151,3 +151,29 @@ func TestGenericConditionsRespectCorePodCompletion(t *testing.T) {
 		})
 	}
 }
+
+func TestReadinessGateFailureDoesNotRequireADynamicWatch(t *testing.T) {
+	defer k8s.ResetTestState()
+	now := time.Now().UTC().Truncate(time.Second)
+	since := now.Add(-7 * time.Minute)
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "gate-blocked", Namespace: "test", CreationTimestamp: metav1.NewTime(now.Add(-time.Hour))}, Spec: corev1.PodSpec{ReadinessGates: []corev1.PodReadinessGate{{ConditionType: "example.com/ready"}}}, Status: corev1.PodStatus{Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{
+		{Type: corev1.PodReady, Status: corev1.ConditionFalse, Reason: "ReadinessGatesNotReady", Message: "gate controller has not reported ready", LastTransitionTime: metav1.NewTime(now.Add(-10 * time.Minute))},
+		{Type: corev1.ContainersReady, Status: corev1.ConditionTrue, LastTransitionTime: metav1.NewTime(since)},
+	}, ContainerStatuses: []corev1.ContainerStatus{{Name: "app", Ready: true, State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}}}
+	if err := k8s.InitTestResourceCache(fake.NewClientset(pod)); err != nil {
+		t.Fatal(err)
+	}
+	provider := NewCacheProvider()
+	found := false
+	for _, i := range Compose(provider, Filters{Namespaces: []string{"test"}}) {
+		if i.Source == SourceProblem && i.Name == pod.Name {
+			found = true
+			if i.Category != issuesapi.CategoryReadinessFailed || i.Severity != SeverityWarning || i.Message != "gate controller has not reported ready" || i.Cause != "Pod readiness is blocked by a declared gate." || i.Action == "" || !i.FirstSeen.Equal(since) {
+				t.Fatalf("wrong gate finding %+v", i)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("native gate issue absent")
+	}
+}

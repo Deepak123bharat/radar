@@ -159,7 +159,7 @@ export function podMatchesProblemCategory(problems: PodProblem[], restarts: numb
     case 'Unschedulable':
       return msgs.includes('Unschedulable')
     case 'Not Ready':
-      return msgs.includes('Not Ready') || msgs.some(m => m.includes('Probe'))
+      return msgs.includes('Not Ready') || msgs.some(m => m.includes('Probe') || m.includes('Readiness Gate'))
     case 'High Restarts':
       return restarts > 5
     case 'Init Failed':
@@ -169,7 +169,7 @@ export function podMatchesProblemCategory(problems: PodProblem[], restarts: numb
     case 'Failed':
       return msgs.includes('Failed') || msgs.includes('Unknown')
     case 'Other': {
-      const knownPatterns = ['CrashLoopBackOff', 'ImagePull', 'ErrImagePull', 'OOMKilled', 'Unschedulable', 'Not Ready', 'Probe', 'Init:', 'Exit Code', 'Failed', 'Unknown']
+      const knownPatterns = ['CrashLoopBackOff', 'ImagePull', 'ErrImagePull', 'OOMKilled', 'Unschedulable', 'Not Ready', 'Probe', 'Readiness Gate', 'Init:', 'Exit Code', 'Failed', 'Unknown']
       return problems.some(p => !knownPatterns.some(pat => p.message.includes(pat)) && p.message !== `${restarts} restarts`)
     }
     default:
@@ -293,6 +293,52 @@ function podCrashRestartTotal(pod: any): number {
     .reduce((sum, cs) => sum + (cs?.restartCount || 0), 0)
 }
 
+function podReadinessGateBlocked(pod: any): boolean {
+  const gates: { conditionType: string }[] = pod.spec?.readinessGates || []
+  if (pod.metadata?.deletionTimestamp || pod.status?.phase !== 'Running' || gates.length === 0) return false
+  const conditions: any[] = pod.status?.conditions || []
+  const ready = conditions.find(c => c.type === 'Ready')
+  const containersReady = conditions.find(c => c.type === 'ContainersReady')
+  if (ready?.status !== 'False' || ready.reason !== 'ReadinessGatesNotReady' || containersReady?.status !== 'True') return false
+  const now = Date.now()
+  let recent = false
+  for (const c of [ready, containersReady]) {
+    const since = Date.parse(c.lastTransitionTime || pod.metadata?.creationTimestamp)
+    if (!Number.isFinite(since)) continue
+    recent ||= since <= now + PENDING_STUCK_MINUTES * 60000 && now - since < PENDING_STUCK_MINUTES * 60000
+  }
+  if (recent) return false
+  return gates.some(g => {
+    const condition = conditions.find(c => c.type === g.conditionType)
+    return !condition || condition.status !== 'True'
+  })
+}
+
+// Match the health classifier's OOM recovery precedence before showing a gate failure.
+function readinessGateOOMRecovery(pod: any): string | null {
+  const now = Date.now()
+  for (const cs of pod.status?.containerStatuses || []) {
+    if (cs.lastState?.terminated?.reason !== 'OOMKilled') continue
+    const probe = pod.spec?.containers?.find((c: any) => c.name === cs.name)?.readinessProbe
+    if (cs.ready && probe) continue
+    const startedAt = Date.parse(cs.state?.running?.startedAt)
+    if (Number.isFinite(startedAt)) {
+      if (now - startedAt <= CRASH_SETTLE_MS) return cs.name
+      continue
+    }
+    const finishedAt = Date.parse(cs.lastState.terminated.finishedAt)
+    if (cs.state?.waiting || (Number.isFinite(finishedAt) && now - finishedAt <= CRASH_SETTLE_MS)) return cs.name
+  }
+  for (const cs of pod.status?.initContainerStatuses || []) {
+    if (cs.lastState?.terminated?.reason !== 'OOMKilled') continue
+    if (cs.state?.terminated?.exitCode === 0) continue
+    const startedAt = Date.parse(cs.state?.running?.startedAt)
+    if (Number.isFinite(startedAt) && now - startedAt > CRASH_SETTLE_MS) continue
+    return cs.name
+  }
+  return null
+}
+
 export function getPodStatus(pod: any): StatusBadge {
   const phase = pod.status?.phase || 'Unknown'
   const containerStatuses = pod.status?.containerStatuses || []
@@ -314,6 +360,12 @@ export function getPodStatus(pod: any): StatusBadge {
   // dashboard report it as an error regardless).
   if (phase === 'Failed') {
     return { text: 'Failed', color: healthColors.unhealthy, level: 'unhealthy' }
+  }
+
+  const gateBlocked = podReadinessGateBlocked(pod)
+  const gateOOM = gateBlocked ? readinessGateOOMRecovery(pod) : null
+  if (gateOOM) {
+    return { text: 'OOMKilled', color: healthColors.unhealthy, level: 'unhealthy' }
   }
 
   const crashHistoryLevel = phase !== 'Succeeded' && phase !== 'Unknown'
@@ -348,6 +400,9 @@ export function getPodStatus(pod: any): StatusBadge {
 
   switch (phase) {
     case 'Running': {
+      if (gateBlocked) {
+        return { text: 'Readiness gate blocked', color: healthColors.degraded, level: 'degraded' }
+      }
       // Degrade only on containers that are neither ready nor successfully done —
       // a completed container (exit 0) on a Running pod is finishing, not a fault.
       const ready = containerStatuses.filter((c: any) => c.ready).length
@@ -439,6 +494,12 @@ export function getPodPhaseDisplay(pod: any): PodPhaseDisplay {
     return { phase, text: 'Failed', level: 'unhealthy' }
   }
 
+  const gateBlocked = podReadinessGateBlocked(pod)
+  const gateOOM = gateBlocked ? readinessGateOOMRecovery(pod) : null
+  if (gateOOM) {
+    return { phase, text: `${phase} — OOMKilled`, level: 'unhealthy', hint: `Container "${gateOOM}" is recovering from an OOM kill.` }
+  }
+
   const crashHistoryLevel = phase !== 'Succeeded' && phase !== 'Unknown'
     ? podCrashHistoryLevel(pod)
     : null
@@ -477,6 +538,9 @@ export function getPodPhaseDisplay(pod: any): PodPhaseDisplay {
 
   switch (phase) {
     case 'Running': {
+      if (gateBlocked) {
+        return { phase, text: 'Running — Readiness gate blocked', level: 'degraded', hint: pod.status?.conditions?.find((c: any) => c.type === 'Ready')?.message }
+      }
       // A successfully-completed container (exit 0) is settled, not "not ready" —
       // don't degrade a completing pod over it (matches getPodStatus / timeline).
       const unsettled = containerStatuses.filter((c) => !containerSettledOk(c)).length
@@ -611,6 +675,10 @@ export function getPodProblems(pod: any): PodProblem[] {
     if (lastMsg.includes('failed to mount') || lastMsg.includes('failedattachvolume')) {
       problems.push({ severity: 'high', message: 'Volume Mount Failed', detail: lastMsgRaw || undefined })
     }
+  }
+
+  if (podReadinessGateBlocked(pod)) {
+    problems.push({ severity: 'medium', message: 'Readiness Gate Blocked', detail: conditions.find((c: any) => c.type === 'Ready')?.message })
   }
 
   // Check conditions
