@@ -9,7 +9,7 @@ import { DebugOverlay } from './components/DebugOverlay'
 import { GlobalDiagnoseButton } from './components/diagnose/LocalDiagnoseAction'
 import { investigationWorkspaceSearch, isInvestigationWorkspacePath, useDiagnoseLayout } from './components/diagnose/DiagnoseContext'
 import { DiagnoseSurface } from './components/diagnose/DiagnoseSurface'
-import { TopologyGraph, TopologySearch, TopologyBreadcrumb, TopologyFilterSidebar, TopologyControls, FreshnessControl, gitOpsRouteForKind, gitOpsRouteForResource, ScopePill, PaneLoader, usePhoneLayout } from '@skyhook-io/k8s-ui'
+import { TopologyGraph, TopologySearch, TopologyBreadcrumb, TopologyFilterSidebar, TopologyControls, FreshnessControl, gitOpsRouteForKind, gitOpsRouteForResource, ScopePill, PaneLoader, usePhoneLayout, PHONE_MEDIA_QUERY } from '@skyhook-io/k8s-ui'
 import { resetNavigationMap } from '@skyhook-io/k8s-ui/utils/navigation'
 import { topologyNodeResourceKind } from '@skyhook-io/k8s-ui/utils/topology-neighborhood'
 import { useAPIResources, findAPIResourceForRoute } from './api/apiResources'
@@ -135,7 +135,7 @@ type ExtendedMainView = MainView | 'traffic' | 'cost' | 'capacity' | 'cnpg' | 'w
 // Views that have been laid out for phone width (640px and below). The rest
 // keep their desktop width on a phone and scroll sideways; add a view here in
 // the PR that gives it a phone layout.
-const PHONE_READY_VIEWS: ReadonlySet<ExtendedMainView> = new Set<ExtendedMainView>(['issues', 'resources', 'helm', 'home'])
+const PHONE_READY_VIEWS: ReadonlySet<ExtendedMainView> = new Set<ExtendedMainView>(['issues', 'resources', 'helm', 'home', 'topology'])
 
 // Extract view from URL path
 function getViewFromPath(pathname: string): ExtendedMainView {
@@ -603,7 +603,11 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
   const [showPolicyEffect, setShowPolicyEffect] = useState(false)
   // Topology filter state
   const [visibleKinds, setVisibleKinds] = useState<Set<NodeKind>>(() => new Set(DEFAULT_VISIBLE_KINDS))
-  const [filterSidebarCollapsed, setFilterSidebarCollapsed] = useState(false)
+  // Phones start with the filters collapsed to their icon rail: expanded, the
+  // panel took two thirds of the width from the graph.
+  const [filterSidebarCollapsed, setFilterSidebarCollapsed] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia(PHONE_MEDIA_QUERY).matches,
+  )
   // Topology node-search → canvas focus request (nonce lets the same node re-focus)
   const [topologyFocus, setTopologyFocus] = useState<{ id: string; nonce: number } | null>(null)
   // The topology pane element — the search overlay portals into it so its
@@ -2185,8 +2189,12 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
                 </div>
               </div>
             ) : (
-              <>
-                {/* Filter sidebar */}
+              // On a phone, its own positioned box so the filter overlay below
+              // anchors to the topology area, not the whole content column.
+              <div className={isMobile ? 'relative flex flex-1 min-w-0 min-h-0' : 'contents'}>
+                {/* Filter sidebar. On phones, expanded it overlays the graph
+                    instead of squeezing it. */}
+                <div className={isMobile && !filterSidebarCollapsed ? 'absolute inset-y-0 left-0 z-20 flex shadow-theme-lg' : 'contents'}>
                 <TopologyFilterSidebar
                   nodes={filterSidebarNodes}
                   visibleKinds={visibleKinds}
@@ -2201,6 +2209,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
                     console.log(`[topology] User requested to show hidden kind: ${kind}`)
                   }}
                 />
+                </div>
 
                 <div ref={setTopologyPane} className="flex-1 relative">
                   <TopologyGraph
@@ -2220,8 +2229,9 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
                     {/* Overlay row: left column (namespace breadcrumb over search)
                         + controls. items-start pins the controls to the top even
                         when the breadcrumb grows the left column; w-full so
-                        justify-between spans the canvas. */}
-                    <div className="flex w-full items-start justify-between gap-2">
+                        justify-between spans the canvas. Phones: the controls
+                        wrap below the search instead of running off the canvas. */}
+                    <div className="flex w-full items-start justify-between gap-2 phone:flex-wrap">
                       <div className="flex flex-col items-start gap-2">
                         {namespaces.length === 1 && (
                           <TopologyBreadcrumb
@@ -2263,7 +2273,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
                     </div>
                   </TopologyGraph>
                 </div>
-              </>
+              </div>
             )}
           </>
         )}
