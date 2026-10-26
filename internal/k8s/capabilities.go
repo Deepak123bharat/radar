@@ -163,6 +163,7 @@ type CloudConnectCapability struct {
 type FeatureCapabilities struct {
 	HelmSourceIdentity    bool `json:"helmSourceIdentity"`
 	ResourceReadCoverage  bool `json:"resourceReadCoverage"`
+	SearchCoverage        bool `json:"searchCoverage"`
 	YAMLReview            bool `json:"yamlReview"`
 	YAMLSchemas           bool `json:"yamlSchemas"`
 	WorkloadImages        bool `json:"workloadImages"`

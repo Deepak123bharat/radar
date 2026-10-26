@@ -5,6 +5,7 @@ import { knownKindForPluralWithGroup, pluralToKind } from '@skyhook-io/k8s-ui/ut
 import { useEffect, useRef, useCallback, useMemo } from 'react'
 import type { KueueAdmissionResponse } from '@skyhook-io/k8s-ui/types/scheduling'
 import { canonicalReadCode, readActionFor } from '@skyhook-io/k8s-ui/utils/read-actions'
+import type { SearchCoverage } from '@skyhook-io/k8s-ui/types/read-coverage'
 import type { GitOpsWriteEvidence } from '@skyhook-io/k8s-ui/utils/gitops-write-guard'
 import type {
   AppHistory,
@@ -2008,10 +2009,12 @@ export interface SearchResult {
   total: number;
   searched: number;
   total_matched: number;
-  /** "time_limit" when scan report findings were only partly searched. */
+  /** From Radars that predate search coverage: "time_limit" when scan report findings were only partly searched. */
   incomplete_findings?: string;
-  /** Some namespaces' scan reports were left out, access not confirmed yet. */
+  /** From Radars that predate search coverage: some namespaces' scan reports were left out, access not confirmed yet. */
   access_incomplete?: boolean;
+  /** Absent from Radars that predate search coverage, which say nothing about it. */
+  coverage?: SearchCoverage;
 }
 
 const SEARCH_MIN_QUERY = 2;
@@ -2029,15 +2032,16 @@ export function useSearch(
     context?: "summary" | "none";
     enabled?: boolean;
     globalNs?: boolean;
+    /** Re-query on an interval decided from the latest response. */
+    refetchInterval?: (data: SearchResult | undefined) => number | false;
   },
 ) {
   const trimmed = query.trim();
   const enabled = (opts?.enabled ?? true) && trimmed.length >= SEARCH_MIN_QUERY;
   const limit = opts?.limit ?? 20;
   const context = opts?.context ?? "summary";
-  // globalNs makes search ignore the per-user namespace-switcher pick and scan
-  // the user's full RBAC ceiling (scope then comes only from the query's `ns:`
-  // tokens). The omnibar opts in so ⌘K is a genuinely global lookup.
+  // Searches always ignore the saved namespace pick. Keep globalNs as the
+  // explicit global-search marker used by the omnibar and embedded hosts.
   const globalNs = opts?.globalNs ?? false;
   return useQuery<SearchResult>({
     queryKey: ["search", trimmed, limit, context, globalNs],
@@ -2048,6 +2052,7 @@ export function useSearch(
       ),
     enabled,
     staleTime: 2000,
+    refetchInterval: (q) => opts?.refetchInterval?.(q.state.data) ?? false,
     placeholderData: (prev) => prev, // keepPreviousData
   });
 }
