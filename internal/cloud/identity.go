@@ -88,9 +88,6 @@ func ResolveClusterName(opts NameOptions, apiServerURL, clusterUID string) (name
 		base, source = "cluster-"+short, NameSourceUID
 	}
 	room := MaxClusterNameRunes - utf8.RuneCountInString(opts.Prefix) - utf8.RuneCountInString(opts.Suffix)
-	if room < 1 {
-		room = 1
-	}
 	if utf8.RuneCountInString(base) > room {
 		base = string([]rune(base)[:room])
 	}

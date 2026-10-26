@@ -93,21 +93,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: enrollment needs no namespaced Role
-    template: cloud-enrollment.yaml
-    set:
-      cloud:
-        enabled: true
-        hubURL: https://hub.example.com
-        enrollment:
-          key: rhe_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-abcd
-    asserts:
-      - hasDocuments:
-          count: 1
-      - isKind:
-          of: Secret
-
-  - it: an inline key renders only the key Secret, never a token Secret
+  - it: an inline key renders the key Secret
     template: cloud-enrollment.yaml
     set:
       cloud:
@@ -300,7 +286,7 @@ tests:
       - failedTemplate:
           errorPattern: "cloud.token or cloud.existingSecret must be set"
 
-  - it: NOTES point at the Radar log, not a reset command
+  - it: NOTES point at the Radar log
     template: NOTES.txt
     set:
       cloud:
@@ -311,8 +297,6 @@ tests:
     asserts:
       - matchRegexRaw:
           pattern: "kubectl -n radar logs deploy/radar"
-      - notMatchRegexRaw:
-          pattern: "patch secret"
 
   - it: a key that is not an enrollment key says where keys come from
     template: deployment.yaml

@@ -39,13 +39,13 @@ type Config struct {
 	CA *x509.CertPool
 
 	// Enrolled marks a token this Radar obtained by enrolling. A token the
-	// Hub keeps rejecting then ends Run with ErrTokenRejected instead of
-	// retrying forever, so the caller can enroll again for a new one.
+	// Hub rejects (401) ends Run with ErrTokenRejected instead of retrying
+	// forever, so the caller can enroll again for a new one.
 	Enrolled bool
 
-	// OnSession, when set, is called with true when a tunnel session opens
-	// and false when it ends. It runs on Run's goroutine and must not block.
-	OnSession func(connected bool)
+	// OnConnected, when set, is called each time a tunnel session opens. It
+	// runs on Run's goroutine and must not block.
+	OnConnected func()
 
 	// Token is the cluster bearer token issued by the Cloud install wizard.
 	// Format: rhc_<random>.
@@ -134,7 +134,6 @@ func Run(ctx context.Context, cfg Config) error {
 	const maxBackoff = 30 * time.Second
 
 	failures := 0
-	rejected := 0
 
 	for {
 		if ctx.Err() != nil {
@@ -147,12 +146,7 @@ func Run(ctx context.Context, cfg Config) error {
 		if err != nil {
 			failures++
 			if cfg.Enrolled && errors.Is(err, errEnrolledTokenRejected) {
-				rejected++
-				if rejected >= tokenRejectedThreshold {
-					return ErrTokenRejected
-				}
-			} else {
-				rejected = 0
+				return ErrTokenRejected
 			}
 			log.Printf("[cloud] dial failed: %v (retry in %s)", err, backoff)
 			if failures == warnAfterFailures {
@@ -170,12 +164,11 @@ func Run(ctx context.Context, cfg Config) error {
 			continue
 		}
 		failures = 0
-		rejected = 0
 
 		log.Printf("[cloud] connected to Radar Cloud; serving streams")
 		connectedAt := time.Now()
-		if cfg.OnSession != nil {
-			cfg.OnSession(true)
+		if cfg.OnConnected != nil {
+			cfg.OnConnected()
 		}
 
 		if cfg.SelfUpgradeAvailable != nil {
@@ -184,9 +177,6 @@ func Run(ctx context.Context, cfg Config) error {
 		err = serve(ctx, sess, cfg.Handler)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("[cloud] session ended: %v", err)
-		}
-		if cfg.OnSession != nil {
-			cfg.OnSession(false)
 		}
 
 		if ctx.Err() != nil {
@@ -210,16 +200,11 @@ func Run(ctx context.Context, cfg Config) error {
 
 const selfUpgradeRecheckInterval = 3 * time.Minute
 
-// ErrTokenRejected ends Run for an enrolled token the Hub answered 401 to
-// tokenRejectedThreshold times in a row. More than one answer is required so
-// a single bad response from a Hub mid-restart does not replace a token that
-// still works.
+// ErrTokenRejected ends Run for an enrolled token the Hub answered 401 to.
+// The caller joins again with the key, which lands on the same cluster entry.
 var ErrTokenRejected = errors.New("the Hub rejected this cluster's token")
 
 var errEnrolledTokenRejected = errors.New("the Hub rejected this cluster's token (401)")
-
-// A var so tests can stop on the first rejection.
-var tokenRejectedThreshold = 3
 
 // warnAfterFailures is how many consecutive dial failures escalate to a WARN.
 // A var so a test can reach the escalation without sitting through the

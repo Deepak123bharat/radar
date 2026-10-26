@@ -138,7 +138,8 @@ repository.
 
 An owner creates the key in Radar Hub under **Settings > Enrollment keys**. The
 Hub shows it once. On a self-hosted Hub, the install key from the Hub's config
-works too.
+works too. If the key is set to wait for approval, a new cluster waits until an
+owner approves it on the Hub's Clusters page.
 
 The key is a password for all these clusters. Anyone who holds it can add a
 cluster to your Hub, or show up as one of the clusters that joined with it.
@@ -223,8 +224,9 @@ namespace UID>` when that is not available. To choose the name, set
 `cloud.clusterName` per cluster, for example
 `--set cloud.clusterName=prod-eu`. To keep the picked name but mark where it
 runs, set a prefix or suffix shared by a group of clusters, for example
-`cloud.clusterNamePrefix: eu-`. A cluster renamed in the Hub keeps the Hub's
-name.
+`cloud.clusterNamePrefix: eu-`. The latest change wins: a cluster renamed in
+the Hub keeps the Hub's name across restarts, until the name Radar sends
+changes (a new `clusterName`, prefix or suffix, or a new API server host).
 
 #### How it behaves
 
@@ -233,9 +235,8 @@ name.
   restart lands on the same cluster entry in the Hub, with its name and
   history, because the Hub matches the kube-system namespace UID, the
   namespace and the Helm release.
-- When the Hub stops accepting the token, for example because the cluster was
-  removed or another start of the same cluster joined, Radar joins again on
-  its own.
+- When the Hub stops accepting the token, for example because another start of
+  the same cluster joined, Radar joins again on its own.
 - When the Hub refuses to add the cluster, Radar keeps trying, and its log
   says why it isn't joining.
 - The Hub keeps one connection per cluster. Another Radar with the same

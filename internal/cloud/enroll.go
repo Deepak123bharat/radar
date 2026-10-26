@@ -78,9 +78,6 @@ type EnrollClient struct {
 	HubOrigin string
 	KeyFile   string
 	HTTP      *http.Client
-	// CA, when set, adds a CA bundle to the system roots. It is re-read for
-	// every call, so a rotated bundle needs no restart.
-	CA *x509.CertPool
 }
 
 // NewEnrollClient builds a client for hubOrigin. A nil ca means the system
@@ -94,7 +91,6 @@ func NewEnrollClient(hubOrigin, keyFile string, ca *x509.CertPool) (*EnrollClien
 		HubOrigin: origin,
 		KeyFile:   keyFile,
 		HTTP:      &http.Client{Timeout: enrollRequestTimeout},
-		CA:        ca,
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = hubTLSConfig(ca, false)

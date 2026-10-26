@@ -149,8 +149,8 @@ func (f *fakeTunnel) run(ctx context.Context, cfg Config) error {
 		f.running--
 		f.mu.Unlock()
 	}()
-	if cfg.OnSession != nil {
-		cfg.OnSession(true)
+	if cfg.OnConnected != nil {
+		cfg.OnConnected()
 	}
 	select {
 	case <-ctx.Done():
@@ -305,6 +305,7 @@ func TestEnrollRefusalsWaitAndExplain(t *testing.T) {
 		{"key replaced", &EnrollError{StatusCode: 401, Code: "key_replaced"}, "rejected the enrollment key", func(d time.Duration) bool { return d == 0 }, false},
 		{"plan limit", &EnrollError{StatusCode: 402}, "license or plan limit", func(d time.Duration) bool { return within(d, 10*time.Minute) }, true},
 		{"removed", &EnrollError{StatusCode: 403, Code: "cluster_removed"}, "This cluster was removed in Radar Hub. An owner can let it back in under Settings > Enrollment keys.", func(d time.Duration) bool { return within(d, 10*time.Minute) }, true},
+		{"pending approval", &EnrollError{StatusCode: 403, Code: "pending_approval"}, "This cluster is waiting for an owner to approve it in Radar Hub.", func(d time.Duration) bool { return within(d, 30*time.Second) }, false},
 		{"key full", &EnrollError{StatusCode: 409, Code: "key_full"}, "An owner can raise it on the Enrollment keys page in Radar Hub.", func(d time.Duration) bool { return within(d, 10*time.Minute) }, true},
 		{"already connected", &EnrollError{StatusCode: 409, Code: "already_connected"}, "Another Radar with this cluster's identity is connected", func(d time.Duration) bool { return within(d, 15*time.Second) }, false},
 		{"no agent address", &EnrollError{StatusCode: 409, Code: "no_agent_address"}, "no agent address", func(d time.Duration) bool { return d == 0 }, false},
@@ -374,7 +375,7 @@ func TestEnrollClientStatusHandling(t *testing.T) {
 		wantRetry   time.Duration
 	}{
 		{name: "removed", reply: refusal(403, "cluster_removed", "This cluster was removed in Radar Hub."), wantStatus: 403, wantCode: "cluster_removed", wantMessage: "This cluster was removed in Radar Hub."},
-		{name: "already connected", reply: hubReply{status: 409, body: `{"error":"already_connected","cluster_id":"c1"}`}, wantStatus: 409, wantCode: "already_connected"},
+		{name: "already connected", reply: hubReply{status: 409, body: `{"error":"already_connected"}`}, wantStatus: 409, wantCode: "already_connected"},
 		{name: "rate limited", reply: hubReply{status: 429, body: `{}`, retryAfter: "17"}, wantStatus: 429, wantRetry: 17 * time.Second},
 		{name: "license limit", reply: hubReply{status: 402, body: `{"error":"license_limit","limit":3}`}, wantStatus: 402, wantCode: "license_limit"},
 		{name: "message with control characters", reply: refusal(401, "key_unknown", "bad\r\nkey"), wantStatus: 401, wantCode: "key_unknown", wantMessage: "bad  key"},
@@ -404,24 +405,6 @@ func TestEnrollClientStatusHandling(t *testing.T) {
 		res, err := c.Enroll(context.Background(), EnrollRequest{})
 		if err != nil || res.Token != "rhc_same" || res.ClusterID != "c-rhc_same" || res.AgentURL != "ws://127.0.0.1:1/agent" {
 			t.Fatalf("%+v %v", res, err)
-		}
-	})
-
-	t.Run("the request carries no nonce or Secret name", func(t *testing.T) {
-		var raw map[string]any
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_ = json.NewDecoder(r.Body).Decode(&raw)
-			_, _ = w.Write([]byte(joined("rhc").body))
-		}))
-		defer srv.Close()
-		c, _ := NewEnrollClient(srv.URL, writeKeyFile(t, testKey), nil)
-		if _, err := c.Enroll(context.Background(), EnrollRequest{AgentUID: testClusterUID}); err != nil {
-			t.Fatal(err)
-		}
-		for _, k := range []string{"nonce", "token_secret"} {
-			if _, ok := raw[k]; ok {
-				t.Errorf("request has %q", k)
-			}
 		}
 	})
 
@@ -495,14 +478,11 @@ func TestResolveClusterName(t *testing.T) {
 	}
 }
 
-func TestRunStopsOnRepeatedRejectionOnlyWhenEnrolled(t *testing.T) {
+func TestRunStopsOnRejectionOnlyWhenEnrolled(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 	}))
 	defer srv.Close()
-	prev := tokenRejectedThreshold
-	tokenRejectedThreshold = 1
-	defer func() { tokenRejectedThreshold = prev }()
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/agent"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

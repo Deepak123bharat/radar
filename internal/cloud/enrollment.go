@@ -37,7 +37,7 @@ type EnrollmentConfig struct {
 
 	// Tunnel is the template for the tunnel once joined: Handler,
 	// SelfUpgradeAvailable, APIServerURL and the like. URL, Token, ClusterID,
-	// ClusterName, CA, Enrolled and OnSession are filled in here.
+	// ClusterName, CA, Enrolled and OnConnected are filled in here.
 	Tunnel Config
 }
 
@@ -191,7 +191,7 @@ func (e *enroller) attempt(ctx context.Context) (*EnrollResult, time.Duration) {
 	}
 	if err == nil {
 		e.lastReason = ""
-		log.Printf("[cloud] joined %s as cluster %s (%q)", e.cfg.HubOrigin, res.ClusterID, e.displayName())
+		log.Printf("[cloud] joined %s as cluster %s (%q)", e.cfg.HubOrigin, res.ClusterID, e.name)
 		return res, 0
 	}
 
@@ -239,6 +239,8 @@ func classifyEnrollError(err error) enrollOutcome {
 		return long("The Hub refused to add this cluster: its license or plan limit is reached.")
 	case he.StatusCode == http.StatusForbidden && he.Code == "cluster_removed":
 		return long("This cluster was removed in Radar Hub. An owner can let it back in under Settings > Enrollment keys.")
+	case he.StatusCode == http.StatusForbidden && he.Code == "pending_approval":
+		return enrollOutcome{reason: reason("This cluster is waiting for an owner to approve it in Radar Hub."), delay: jitter(enrollNotReadyDelay)}
 	case he.StatusCode == http.StatusConflict && he.Code == "key_full":
 		return long("This enrollment key has reached its cluster limit. An owner can raise it on the Enrollment keys page in Radar Hub.")
 	case he.StatusCode == http.StatusConflict && he.Code == "already_connected":
@@ -296,24 +298,13 @@ func (e *enroller) serveTunnel(ctx context.Context, res *EnrollResult) (bool, er
 	tunnel.URL = res.AgentURL
 	tunnel.Token = res.Token
 	tunnel.ClusterID = res.ClusterID
-	tunnel.ClusterName = e.displayName()
+	tunnel.ClusterName = e.name
 	tunnel.CA = e.cfg.CA
 	tunnel.Enrolled = true
 	var connected atomic.Bool
-	tunnel.OnSession = func(up bool) {
-		if up {
-			connected.Store(true)
-		}
-	}
+	tunnel.OnConnected = func() { connected.Store(true) }
 	err := e.runTunnel(ctx, tunnel)
 	return connected.Load(), err
-}
-
-func (e *enroller) displayName() string {
-	if e.name != "" {
-		return e.name
-	}
-	return e.cfg.Names.Exact
 }
 
 func (e *enroller) wait(ctx context.Context, d time.Duration) {
