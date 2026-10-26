@@ -9,7 +9,7 @@
 // remedy, the prefix names that identity: user_ for the access of the user
 // asking (a person, or an agent acting as one), radar_ for Radar's own
 // Kubernetes identity and what it collects. kind_
-// codes are a kind's loading lifecycle; namespace_ and outside_ codes are how
+// codes cover kind resolution, support and loading; namespace_ and outside_ codes are how
 // the request targeted namespaces; cluster_ and connection_ are Radar's
 // cluster connection; the rest describe the request or the answer itself.
 // Each code's Action says what resolves it.
@@ -63,11 +63,6 @@ const (
 	// OutsideNamespacePin: a namespace the request names is outside Radar's
 	// --namespace-scope pin, which whoever runs Radar sets.
 	OutsideNamespacePin Code = "outside_namespace_pin"
-	// OutsideNamespaceSelection: the target is outside a namespace selection
-	// the server applied to the read. The picker's stored selection is not
-	// one: data reads never inherit it, and the UI sends it as named
-	// namespaces.
-	OutsideNamespaceSelection Code = "outside_namespace_selection"
 	// UserNamespaceNotVisible: the namespace is not among those the user can
 	// see, or does not exist; the code does not say which.
 	UserNamespaceNotVisible Code = "user_namespace_not_visible"
@@ -138,7 +133,6 @@ var actions = map[Code]Action{
 	KindUnknown:                ActionChangeRequest,
 	KindNotWatchable:           ActionChangeRequest,
 	OutsideNamespacePin:        ActionRadarConfig,
-	OutsideNamespaceSelection:  ActionChangeRequest,
 	UserNamespaceNotVisible:    ActionChangeRequest,
 	NamespaceNotFound:          ActionChangeRequest,
 	NamespaceRequired:          ActionChangeRequest,
@@ -197,7 +191,7 @@ var precedence = []Code{
 	ClusterDisconnected, ClusterConnecting, ConnectionChanged,
 	KindSyncPending, UserPermissionCheckFailed,
 	UserForbidden, UserNoNamespaceAccess, UserNamespaceNotVisible, NamespaceNotFound,
-	OutsideNamespaceSelection, OutsideNamespacePin,
+	OutsideNamespacePin,
 	RadarCredentialsRejected, RadarForbidden, RadarKindNotCollected,
 	KindSyncTimedOut, RadarNamespaceNotCollected, FilterEvalFailed, ReadError,
 	ObjectNotFound,

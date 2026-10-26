@@ -544,8 +544,9 @@ Both tools return `guidance` as an array of interpretation notes; read notes abo
 
 ## Resource reads: coverage and errors
 
-Every `list_resources` result says what it covers. A list that served nothing,
-and any `get_resource` failure, is an MCP tool error with a code. Workload and
+Every `list_resources` result says what it covers. A list with no usable
+inventory (nothing readable, an oversized result, or a changed connection), and
+any `get_resource` failure, is an MCP tool error with a code. Workload and
 GitOps `diagnose` root reads apply the same readiness checks. Codes are defined
 in `pkg/readreason`, and the coverage types in `pkg/resourceapi`; REST resource
 reads and search use the same codes.
@@ -658,7 +659,7 @@ namespace whose informer has synced is read even while another is loading. A
 namespace you name that Radar doesn't collect, or was refused in, is a gap too;
 on an unscoped request those namespaces narrow it (`namespace_collection`) instead.
 
-Secrets, LimitRanges and Trivy Operator reports need your exact permission
+Secrets, Roles, RoleBindings, LimitRanges and Trivy Operator reports need your exact permission
 on that kind, not just namespace visibility: namespaces you can see but can't
 list them in are a `user_forbidden` gap (or `user_permission_check_failed`
 when the check didn't complete), and a get needs `get` in the namespace. A
@@ -705,14 +706,16 @@ sentence names every cause and the namespaces each affects. When something
 other than your own access narrowed an unscoped request (what Radar collects,
 or its pin), the sentence says that too. A get of an object that isn't there is
 `object_not_found`, and only once Radar has confirmed it read that namespace;
-otherwise the code says why it couldn't look.
+otherwise the code says why it couldn't look. A get that finds its object
+returns it even while that kind is still loading: the object exists, and only
+a miss needs a complete read.
 
 | Code | Meaning | What resolves it |
 |---|---|---|
 | `user_forbidden` | Your own RBAC denies the exact operation. | Your access |
 | `user_no_namespace_access` | Your access reaches no namespace in the request's scope (Radar checks list Pods or Deployments there). | Your access |
 | `user_namespace_not_visible` | A namespace you named is not among those you can see, or does not exist; the code doesn't say which. | Check the name, or your access |
-| `namespace_not_found` | A namespace you named doesn't exist. Only a caller who can see every namespace is told this, and only when Radar collects Namespaces. | Check the name; `list_namespaces` lists them |
+| `namespace_not_found` | A namespace you named doesn't exist. Only a caller who can see every namespace is told this, and only when Radar collects Namespaces. It comes before `outside_namespace_pin`: a mistyped name is the likelier cause. REST lists and gets answer the same way, and a missing namespace beside existing ones is a gap while the others are read. | Check the name; `list_namespaces` lists them |
 | `user_permission_check_failed` | Radar could not complete your permission check. | Retry |
 | `radar_forbidden` | Kubernetes refused Radar's service account or kubeconfig identity. | Radar's access — granting yours does not help |
 | `radar_credentials_rejected` | Kubernetes rejected Radar's credentials, on this read or when Radar connected and checked its access. If a read's rejection persists, Radar's connection goes down and reads report `cluster_disconnected`. One recorded at connect leaves that namespace unread, beside the others, until Radar reconnects. | Refresh Radar's credentials; for one recorded at connect, then reconnect Radar (`POST /api/connection/retry`) |
