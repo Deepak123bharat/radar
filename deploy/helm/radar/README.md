@@ -145,6 +145,11 @@ The key is a password for all these clusters. Anyone who holds it can add a
 cluster to your Hub, or show up as one of the clusters that joined with it.
 Keep it in a Secret, not in values committed to Git.
 
+The key also decides which organization a cluster joins. A cluster that
+switches to another organization's key joins that organization as a new
+cluster; its entry in the first organization stays, offline, until an owner
+there removes it.
+
 1. Store the key in a Secret. The commands are safe to run again, for example
    to put a new key in place:
 
