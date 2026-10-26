@@ -230,11 +230,11 @@ export function ClusterHealthCard({
 
   return (
     <div className="rounded-xl bg-theme-surface shadow-theme-sm overflow-hidden">
-      {/* Main health section - three columns */}
-      <div className="px-6 py-5 border-b border-theme-border/50">
-        <div className="flex items-stretch gap-8">
+      {/* Main health section - three columns; stacked on phones */}
+      <div className="px-6 py-5 border-b border-theme-border/50 phone:px-4">
+        <div className="flex items-stretch gap-8 phone:flex-col phone:gap-5">
           {/* Left: Cluster info */}
-          <div className="flex flex-col justify-center w-[300px] shrink-0 pr-8 border-r border-theme-border/50">
+          <div className="flex flex-col justify-center w-[300px] shrink-0 pr-8 border-r border-theme-border/50 phone:w-auto phone:pr-0 phone:border-r-0">
             <div className="flex items-center gap-2 mb-1.5">
               {platformInfo.icon ? (
                 <img src={platformInfo.icon} alt={platformInfo.name} className="w-5 h-5 object-contain" />
@@ -336,18 +336,19 @@ export function ClusterHealthCard({
           </div>
 
           {/* Center: Three health rings */}
-          <div className="flex-1 flex items-center justify-center gap-12">
+          {/* Phones: the three rings share one row; each ring's status lines stack. */}
+          <div className="flex-1 flex items-center justify-center gap-12 phone:grid phone:grid-cols-3 phone:items-start phone:gap-2">
             {/* Pods Ring */}
             {isRestricted('pods') ? (
               <RestrictedRing label="Pods" />
             ) : (
               <button
                 onClick={() => onNavigateToKind('pods')}
-                className="flex flex-col items-center gap-2 hover:-translate-y-1 hover:scale-105 transition-all duration-200"
+                className="flex flex-col items-center gap-2 phone:min-w-0 hover:-translate-y-1 hover:scale-105 transition-all duration-200"
               >
                 <HealthRing segments={podsRingSegments} size={88} strokeWidth={8} label={String(podsTotal)} />
-                <span className="text-sm font-semibold uppercase tracking-wider text-theme-text-secondary">Pods</span>
-                <div className="flex items-center gap-2 text-xs font-mono">
+                <span className="text-sm font-semibold uppercase tracking-wider text-theme-text-secondary phone:text-[11px] phone:tracking-wide">Pods</span>
+                <div className="flex items-center gap-2 text-xs font-mono phone:flex-col phone:gap-0.5">
                   {health.healthy > 0 && (
                     <span className="flex items-center gap-0.5 text-green-500">
                       <CheckCircle className="w-3 h-3" />
@@ -376,11 +377,11 @@ export function ClusterHealthCard({
             ) : (
               <button
                 onClick={() => onNavigateToKind('deployments')}
-                className="flex flex-col items-center gap-2 hover:-translate-y-1 hover:scale-105 transition-all duration-200"
+                className="flex flex-col items-center gap-2 phone:min-w-0 hover:-translate-y-1 hover:scale-105 transition-all duration-200"
               >
                 <HealthRing segments={deploymentsRingSegments} size={88} strokeWidth={8} label={String(counts.deployments.total)} />
-                <span className="text-sm font-semibold uppercase tracking-wider text-theme-text-secondary">Deployments</span>
-                <div className="flex items-center gap-2 text-xs font-mono">
+                <span className="text-sm font-semibold uppercase tracking-wider text-theme-text-secondary phone:text-[11px] phone:tracking-wide">Deployments</span>
+                <div className="flex items-center gap-2 text-xs font-mono phone:flex-col phone:gap-0.5">
                   <span className="text-green-500">{counts.deployments.available} available</span>
                   {counts.deployments.unavailable > 0 && (
                     <span className="text-red-500">{counts.deployments.unavailable} unavailable</span>
@@ -395,11 +396,11 @@ export function ClusterHealthCard({
             ) : (
               <button
                 onClick={() => onNavigateToKind('nodes')}
-                className="flex flex-col items-center gap-2 hover:-translate-y-1 hover:scale-105 transition-all duration-200"
+                className="flex flex-col items-center gap-2 phone:min-w-0 hover:-translate-y-1 hover:scale-105 transition-all duration-200"
               >
                 <HealthRing segments={nodesRingSegments} size={88} strokeWidth={8} label={String(counts.nodes.total)} />
-                <span className="text-sm font-semibold uppercase tracking-wider text-theme-text-secondary">Nodes</span>
-                <div className="flex items-center gap-2 text-xs font-mono">
+                <span className="text-sm font-semibold uppercase tracking-wider text-theme-text-secondary phone:text-[11px] phone:tracking-wide">Nodes</span>
+                <div className="flex items-center gap-2 text-xs font-mono phone:flex-col phone:gap-0.5">
                   <span className="text-green-500">{counts.nodes.ready} ready</span>
                   {cordonedCount > 0 && (
                     <span className="text-yellow-500">{cordonedCount} cordoned</span>
@@ -416,7 +417,7 @@ export function ClusterHealthCard({
           </div>
 
           {/* Right: Resource utilization */}
-          <div className="flex flex-col justify-center w-[300px] shrink-0 pl-8 border-l border-theme-border/50">
+          <div className="flex flex-col justify-center w-[300px] shrink-0 pl-8 border-l border-theme-border/50 phone:w-auto phone:pl-0 phone:border-l-0">
             <div className="flex items-center gap-2 mb-3">
               <Boxes className="w-4 h-4 text-theme-text-tertiary" />
               <span className="text-[10px] uppercase tracking-wider text-theme-text-tertiary">Resource Utilization</span>
@@ -476,10 +477,10 @@ export function ClusterHealthCard({
         </div>
       </div>
 
-      {/* Secondary resources row — matches top row's 3-column layout */}
-      <div className="flex items-stretch px-6 py-2.5 bg-theme-surface/30">
+      {/* Secondary resources row — matches top row's 3-column layout; stacked on phones */}
+      <div className="flex items-stretch px-6 py-2.5 bg-theme-surface/30 phone:flex-col phone:gap-3 phone:px-4 phone:py-3">
         {/* Left column: Warning indicators (aligned with cluster info) */}
-        <div className="flex flex-col justify-center gap-1 w-1/4 shrink-0 pr-4 border-r border-theme-border/50">
+        <div className="flex flex-col justify-center gap-1 w-1/4 shrink-0 pr-4 border-r border-theme-border/50 phone:w-auto phone:flex-row phone:flex-wrap phone:pr-0 phone:border-r-0">
           {health.warningEvents > 0 && (
             <Tooltip content="Native Kubernetes Warning events (e.g., ImagePullBackOff, FailedScheduling)" wrapperClassName="w-fit">
             <button
@@ -505,7 +506,7 @@ export function ClusterHealthCard({
         </div>
 
         {/* Center column: Resources (aligned with health rings) */}
-        <div className="w-1/2 grid grid-cols-3 items-center justify-items-center px-4">
+        <div className="w-1/2 grid grid-cols-3 items-center justify-items-center px-4 phone:w-auto phone:flex phone:flex-wrap phone:gap-x-1 phone:px-0">
           {secondaryResources.map((res) => (
             <button
               key={res.kind}
@@ -529,7 +530,7 @@ export function ClusterHealthCard({
         </div>
 
         {/* Right column: Browse All (aligned with resource utilization) */}
-        <div className="flex items-center justify-center w-1/4 shrink-0 pl-4 border-l border-theme-border/50">
+        <div className="flex items-center justify-center w-1/4 shrink-0 pl-4 border-l border-theme-border/50 phone:w-auto phone:justify-start phone:pl-0 phone:border-l-0">
           <button
             onClick={onNavigateToView}
             className="flex items-center gap-2 text-base font-medium text-theme-text-secondary hover:text-theme-text-primary transition-colors"
