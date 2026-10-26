@@ -62,9 +62,9 @@ type Options struct {
 
 	// Ownership, when set, answers the relationships' Owner from owner
 	// references in place of the topology's manages edges, for fetched, the
-	// object Build describes. Build reads only Owner and the owner state of
-	// rel.Ownership, so a host needn't search for children (see
-	// topology.ApplyOwner). rel is never nil.
+	// object Build describes. Build reads only Owner, the owner state and the
+	// manager answer (rel.Ownership.Manager) of rel.Ownership, so a host
+	// needn't search for children (see topology.ApplyOwner). rel is never nil.
 	Ownership func(rel *topology.Relationships, fetched ownership.Observation)
 
 	// RelIndex is the topology inverted-edge index. Pass a shared instance
@@ -242,6 +242,10 @@ func Build(ctx context.Context, obj runtime.Object, opts Options) *ResourceConte
 		rc.ManagedBy = filterRefs(ctx, opts.AccessChecker,
 			toContextRefs(managedBy),
 			"managedBy", omitted)
+	}
+
+	if answered && rel.Ownership != nil && rel.Ownership.Manager != nil {
+		rc.Manager = managerContext(rel.Ownership.Manager)
 	}
 
 	if rel != nil && rel.Owner != nil {
@@ -1593,6 +1597,55 @@ func (s *refSet) refs(kind, group string) []ContextRef {
 // ---------------------------------------------------------------------------
 // Topology ref → ContextRef
 // ---------------------------------------------------------------------------
+
+// managerContext compacts a manager answer: the evidence that answers, the
+// resource's or its controller's, and in AlsoClaimed the claims that didn't
+// settle it, each on its object. Copied claims are dropped. Every reference
+// in it is one the caller may read, or metadata on one.
+func managerContext(m *topology.ManagerAnswer) *ManagerContext {
+	out := &ManagerContext{State: m.State, Narrowed: m.Narrowed}
+	if m.Lead != nil {
+		lead := toContextRef(*m.Lead)
+		out.Lead = &lead
+	}
+	evidence := m.Direct
+	if m.Via != nil {
+		evidence = *m.Via
+		via := toContextRef(m.Via.Object)
+		out.Via = &via
+	}
+	out.ListedBy = toContextRefs(evidence.Recorders)
+	out.Claims = claimContexts(evidence, false)
+	if m.Via != nil {
+		out.AlsoClaimed = claimContexts(m.Direct, true)
+	}
+	for _, e := range m.Between {
+		out.AlsoClaimed = append(out.AlsoClaimed, claimContexts(e, true)...)
+	}
+	return out
+}
+
+// claimContexts are e's claims but the copied ones, which name another object;
+// with on, each says which object makes it.
+func claimContexts(e topology.ManagerEvidence, on bool) []ManagerClaimContext {
+	var out []ManagerClaimContext
+	for _, c := range e.Claims {
+		if c.Copied {
+			continue
+		}
+		cc := ManagerClaimContext{Manager: toContextRef(c.Manager), Check: c.Check}
+		if on {
+			object := toContextRef(e.Object)
+			cc.On = &object
+		}
+		out = append(out, cc)
+	}
+	return out
+}
+
+func toContextRef(r topology.ResourceRef) ContextRef {
+	return ContextRef{Kind: r.Kind, Group: r.Group, Namespace: r.Namespace, Name: r.Name}
+}
 
 // toContextRefs translates a slice of topology.ResourceRef into ContextRefs.
 // Sorted by (kind, namespace, name) for determinism — golden tests rely on

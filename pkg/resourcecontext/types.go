@@ -34,10 +34,14 @@ import (
 // emerges that needs deterministic prose, add it as a separate
 // `explain_resource` tool rather than re-introducing it inline here.
 type ResourceContext struct {
-	Reflection      *ReflectionContext `json:"reflection,omitempty"`
-	Tier            ContextTier        `json:"tier"`
-	Owner           *ContextRef        `json:"owner,omitempty"`
-	ManagedBy       []ContextRef       `json:"managedBy,omitempty"`
+	Reflection *ReflectionContext `json:"reflection,omitempty"`
+	Tier       ContextTier        `json:"tier"`
+	Owner      *ContextRef        `json:"owner,omitempty"`
+	ManagedBy  []ContextRef       `json:"managedBy,omitempty"`
+	// Manager is what manages the resource, weighed from GitOps managers'
+	// status lists and the resource's own tracking metadata, or its
+	// controller's when its own doesn't settle it.
+	Manager         *ManagerContext    `json:"manager,omitempty"`
 	Exposes         []ContextRef       `json:"exposes,omitempty"`        // Union of upstream routing resources and backends; retained for compatibility.
 	ExposedBy       []ContextRef       `json:"exposedBy,omitempty"`      // Upstream resources routing to this resource.
 	Backends        []ContextRef       `json:"backends,omitempty"`       // Resources this routes to.
@@ -135,6 +139,49 @@ type ScalerRef struct {
 	// is one KEDA created rather than one a person wrote.
 	ManagedBy  *ContextRef `json:"managedBy,omitempty"`
 	HPASummary *HPASummary `json:"hpaSummary,omitempty"`
+}
+
+// ManagerContext is what manages a resource, compacted from its ownership
+// answer. It names no winner the evidence doesn't support.
+type ManagerContext struct {
+	// State: "agree" or "listed" (one GitOps manager's status lists it),
+	// "disagree" (a list names it and its metadata names another manager),
+	// "shared" (several lists name it), "claimed" (only its metadata names a
+	// manager), "unknown" (no evidence, and Radar couldn't look everywhere) or
+	// "none" (no evidence in what Radar reads; not "unmanaged"). A native Helm
+	// release's annotations count only without GitOps evidence: Flux's
+	// helm-controller writes them for the release it manages.
+	State string `json:"state"`
+	// Lead is the manager to look at first, when the state has one.
+	Lead *ContextRef `json:"lead,omitempty"`
+	// Via is the controller ancestor whose evidence answers, when the
+	// resource's own doesn't, as for a Pod whose Deployment a list names.
+	Via *ContextRef `json:"via,omitempty"`
+	// ListedBy are the managers whose status lists name the resource, or
+	// Via.
+	ListedBy []ContextRef `json:"listedBy,omitempty"`
+	// Claims are the managers the metadata of the resource, or Via, names,
+	// with what checking each found.
+	Claims []ManagerClaimContext `json:"claims,omitempty"`
+	// AlsoClaimed are the managers named by the metadata of the objects the
+	// walk passed and, with Via, of the resource itself: metadata commonly
+	// inherited from a template or a parent, which didn't settle the question
+	// but isn't disproven either.
+	AlsoClaimed []ManagerClaimContext `json:"alsoClaimed,omitempty"`
+	// Narrowed: the caller may read only part of what could name a manager.
+	Narrowed bool `json:"narrowed,omitempty"`
+}
+
+// ManagerClaimContext is a manager named by metadata.
+type ManagerClaimContext struct {
+	Manager ContextRef `json:"manager"`
+	// Check: "recorded", "omitted" (its list was read and doesn't name the
+	// resource), "unreadable", "remote", "missing", "not-recording" (a native
+	// Helm release), "unresolved" (no namespace), "withheld" (the caller may
+	// not read the manager) or "unchecked" (Radar couldn't establish what its list says).
+	Check string `json:"check"`
+	// On is the object whose metadata makes the claim, in AlsoClaimed.
+	On *ContextRef `json:"on,omitempty"`
 }
 
 // ManagedByRef is the compact form of a "managed-by" pointer used in

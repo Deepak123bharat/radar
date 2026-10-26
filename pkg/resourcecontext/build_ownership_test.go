@@ -100,3 +100,57 @@ func TestBuildKeepsManagedByWithoutTopology(t *testing.T) {
 		t.Fatalf("managedBy with ownership = %+v, without = %+v", with.ManagedBy, without.ManagedBy)
 	}
 }
+
+// The manager answer reaches the resource context compacted: the evidence
+// that answers, the controller's when it does, and no copied claim.
+func TestBuildCompactsTheManagerAnswer(t *testing.T) {
+	pod := &corev1.Pod{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web-1-a", UID: "uid-pod"},
+	}
+	app := topology.ResourceRef{Group: "argoproj.io", Kind: "Application", Namespace: "argocd", Name: "shop"}
+	other := topology.ResourceRef{Group: "argoproj.io", Kind: "Application", Name: "old"}
+	deploy := topology.ResourceRef{Group: "apps", Kind: "Deployment", Namespace: "shop", Name: "web"}
+	rc := Build(context.Background(), pod, Options{AccessChecker: allowAllChecker{}, Ownership: func(rel *topology.Relationships, _ ownership.Observation) {
+		rel.Ownership = &topology.OwnershipCoverage{Manager: &topology.ManagerAnswer{
+			State: "agree", Lead: &app, Narrowed: true,
+			Direct: topology.ManagerEvidence{Object: topology.ResourceRef{Kind: "Pod", Namespace: "shop", Name: "web-1-a"}, Claims: []topology.ManagerClaim{
+				{Manager: topology.ResourceRef{Group: "argoproj.io", Kind: "Application", Name: "tmpl"}, Source: "argo-instance-label", Check: "unresolved", Weak: true},
+			}},
+			Via: &topology.ManagerEvidence{Object: deploy, Recorders: []topology.ResourceRef{app}, Claims: []topology.ManagerClaim{
+				{Manager: app, Source: "argo-tracking-id", Check: "recorded"},
+				{Manager: other, Source: "argo-tracking-id", Check: "missing", Copied: true},
+			}},
+		}}
+	}})
+	m := rc.Manager
+	if m == nil || m.State != "agree" || m.Lead == nil || m.Lead.Name != "shop" || m.Via == nil || m.Via.Name != "web" || !m.Narrowed {
+		t.Fatalf("manager %+v; want agree, led by shop, via the Deployment, narrowed", m)
+	}
+	if len(m.ListedBy) != 1 || len(m.Claims) != 1 || m.Claims[0].Check != "recorded" {
+		t.Fatalf("listedBy %+v claims %+v; want the Deployment's evidence without the copied claim", m.ListedBy, m.Claims)
+	}
+	if len(m.AlsoClaimed) != 1 || m.AlsoClaimed[0].Manager.Name != "tmpl" || m.AlsoClaimed[0].On == nil || m.AlsoClaimed[0].On.Kind != "Pod" {
+		t.Fatalf("alsoClaimed %+v; want the Pod's own weak claim, on the Pod", m.AlsoClaimed)
+	}
+}
+
+// A claim the walk passed is kept even when no ancestor answers.
+func TestBuildKeepsClaimsOnTheWayWithoutVia(t *testing.T) {
+	pod := &corev1.Pod{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: "web-1-a", UID: "uid-pod"},
+	}
+	rs := topology.ResourceRef{Group: "apps", Kind: "ReplicaSet", Namespace: "shop", Name: "web-1"}
+	rc := Build(context.Background(), pod, Options{AccessChecker: allowAllChecker{}, Ownership: func(rel *topology.Relationships, _ ownership.Observation) {
+		rel.Ownership = &topology.OwnershipCoverage{Manager: &topology.ManagerAnswer{
+			State:   "claimed",
+			Direct:  topology.ManagerEvidence{Object: topology.ResourceRef{Kind: "Pod", Namespace: "shop", Name: "web-1-a"}, Claims: []topology.ManagerClaim{{Manager: topology.ResourceRef{Group: "argoproj.io", Kind: "Application", Name: "pod-app"}, Source: "argo-instance-label", Check: "unresolved", Weak: true}}},
+			Between: []topology.ManagerEvidence{{Object: rs, Claims: []topology.ManagerClaim{{Manager: topology.ResourceRef{Group: "argoproj.io", Kind: "Application", Name: "rs-app"}, Source: "argo-instance-label", Check: "unresolved", Weak: true}}}},
+		}}
+	}})
+	m := rc.Manager
+	if m == nil || m.Via != nil || len(m.AlsoClaimed) != 1 || m.AlsoClaimed[0].Manager.Name != "rs-app" || m.AlsoClaimed[0].On == nil || m.AlsoClaimed[0].On.Kind != "ReplicaSet" {
+		t.Fatalf("manager %+v; want the ReplicaSet's claim in alsoClaimed", m)
+	}
+}
