@@ -355,6 +355,7 @@ const COMPARE_COLUMN_STYLE: React.CSSProperties = {
 const CHECKBOX_COLUMN_WIDTH = 40
 const PHONE_PINNED_CELL = 'phone:sticky phone:left-[var(--pin-left)] phone:z-[1] phone:bg-theme-surface'
 const PHONE_PINNED_HEAD = 'phone:sticky phone:left-[var(--pin-left)] phone:z-[3]'
+const PHONE_NAME_MAX_VW = 45
 function phonePinnedLeft(compareMode: boolean | undefined, showCheckbox: boolean | undefined, column: 'compare' | 'checkbox' | 'name'): React.CSSProperties {
   const compare = compareMode ? COMPARE_COLUMN_WIDTH : 0
   const checkbox = showCheckbox ? CHECKBOX_COLUMN_WIDTH : 0
@@ -5892,14 +5893,30 @@ export function ResourcesView({
   // Fixed-width columns can consume the table's flexible space and collapse
   // the required name column. Keep a real table minimum and let the container
   // scroll horizontally when the viewport is too narrow.
+  // Phones pin a leading Name column (see PHONE_PINNED_CELL). Cap it at
+  // PHONE_NAME_MAX_VW percent of the screen so a width saved on desktop can't
+  // make the pinned column cover it; the saved width itself is left alone.
+  // Tracked through resizes and rotation, which can stay within phone width.
+  const [phoneViewportWidth, setPhoneViewportWidth] = useState(() => (typeof window === 'undefined' ? 0 : window.innerWidth))
+  useEffect(() => {
+    if (!isPhone) return
+    const onResize = () => setPhoneViewportWidth(window.innerWidth)
+    onResize()
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [isPhone])
+  const phoneNameCap = isPhone && columns[0]?.key === 'name' ? Math.round(phoneViewportWidth * PHONE_NAME_MAX_VW / 100) : Infinity
   const tableMinWidth = useMemo(() => {
     const compareColumnWidth = compareMode ? COMPARE_COLUMN_WIDTH : 0
-    const baseMinWidth = columns.reduce((sum, col) => sum + (columnWidths[col.key] || getColumnMinWidth(col, extraColumnsByKey)), compareColumnWidth)
+    const baseMinWidth = columns.reduce((sum, col, i) => {
+      const width = columnWidths[col.key] || getColumnMinWidth(col, extraColumnsByKey)
+      return sum + (i === 0 && col.key === 'name' ? Math.min(width, phoneNameCap) : width)
+    }, compareColumnWidth)
     const flexibleNameColumn = columns.find(col => col.key === 'name' && !columnWidths[col.key])
 
     if (!hasResizedColumns || !flexibleNameColumn) return baseMinWidth
     return baseMinWidth + getColumnMinWidth(flexibleNameColumn, extraColumnsByKey)
-  }, [columns, columnWidths, compareMode, hasResizedColumns, extraColumnsByKey, headerFontEpoch])
+  }, [columns, columnWidths, compareMode, hasResizedColumns, extraColumnsByKey, headerFontEpoch, phoneNameCap])
 
   // Stable virtuoso components — memoized to avoid remounting the table on every render
   const virtuosoComponents = useMemo(() => ({
@@ -5921,13 +5938,15 @@ export function ResourcesView({
             */}
             {compareMode && <col style={{ width: COMPARE_COLUMN_WIDTH }} />}
             {isCheckboxMode && <col style={{ width: '40px' }} />}
-            {columns.map(col => (
+            {columns.map((col, i) => (
               <col
                 key={col.key}
                 style={{
-                  width: columnWidths[col.key]
-                    ? `${columnWidths[col.key]}px`
-                    : col.key === 'name' ? undefined : `${getColumnMinWidth(col, extraColumnsByKey)}px`,
+                  width: i === 0 && col.key === 'name' && phoneNameCap !== Infinity
+                    ? `min(${columnWidths[col.key] || getColumnMinWidth(col, extraColumnsByKey)}px, ${PHONE_NAME_MAX_VW}vw)`
+                    : columnWidths[col.key]
+                      ? `${columnWidths[col.key]}px`
+                      : col.key === 'name' ? undefined : `${getColumnMinWidth(col, extraColumnsByKey)}px`,
                 }}
               />
             ))}
@@ -5938,7 +5957,7 @@ export function ResourcesView({
       )
     }),
     TableRow: VirtuosoTableRow,
-  }), [columns, columnWidths, hasResizedColumns, compareMode, tableMinWidth, isCheckboxMode, extraColumnsByKey, headerFontEpoch])
+  }), [columns, columnWidths, hasResizedColumns, compareMode, tableMinWidth, isCheckboxMode, extraColumnsByKey, headerFontEpoch, phoneNameCap])
 
   // Calculate filter options with counts based on current resources (before filtering)
   const filterOptions = useMemo(() => {
@@ -7031,7 +7050,7 @@ export function ResourcesView({
                         })()}
                         {/* Resize handle with visible divider */}
                         <div
-                          className="absolute right-0 top-0 bottom-0 w-3 cursor-col-resize flex items-center justify-center"
+                          className="absolute right-0 top-0 bottom-0 w-3 cursor-col-resize flex items-center justify-center phone:hidden"
                           style={{ transform: 'translateX(50%)' , zIndex: 10 }}
                           onMouseDown={(e) => {
                             const th = e.currentTarget.parentElement!
