@@ -1461,6 +1461,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		TrafficRecords:        true,
 		GitOpsWriteEvidence:   true,
 		HelmSourceIdentity:    true,
+		NamespaceCollection:   true,
 	}
 	caps.AuthEnabled = s.authConfig.Enabled()
 	caps.ConfigManagement = s.configManagement()
