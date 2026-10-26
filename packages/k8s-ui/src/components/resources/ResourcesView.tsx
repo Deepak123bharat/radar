@@ -207,8 +207,9 @@ import { BackupCell, RestoreCell, ScheduleCell, BackupStorageLocationCell, Volum
 import { isVeleroResource } from './resource-utils-velero'
 import { CNPGClusterCell, CNPGBackupCell, CNPGScheduledBackupCell, CNPGPoolerCell, CNPGObjectStoreCell, CNPGDeclarativeCell, CNPGImageCatalogCell } from './renderers/cnpg-cells'
 import { isApiGroup, CNPG_GROUP } from './resource-utils-cnpg'
-import { ManagedResourceCell, CompositeResourceCell, CrossplaneProviderCell, CrossplaneProviderConfigCell, CompositionCell, XRDCell } from './renderers/crossplane-cells'
-import { isManagedResource, isComposite } from './resource-utils-crossplane'
+import { CrossplaneStatusCell, ManagedResourceCell, CompositeResourceCell, CrossplaneProviderCell, CrossplaneProviderConfigCell, CompositionCell, XRDCell } from './renderers/crossplane-cells'
+import { getCrossplaneStatus, isManagedResource, isComposite, getCrossplanePauseState } from './resource-utils-crossplane'
+import { CrossplanePauseChip } from './renderers/CrossplanePauseContext'
 import { VirtualServiceCell, DestinationRuleCell, IstioGatewayCell, ServiceEntryCell, PeerAuthenticationCell, AuthorizationPolicyCell } from './renderers/istio-cells'
 import { KnativeServiceCell, ConfigurationCell as KnativeConfigurationCell, RevisionCell as KnativeRevisionCell, RouteCell as KnativeRouteCell, BrokerCell, TriggerCell, EventTypeCell, PingSourceCell, ApiServerSourceCell, ContainerSourceCell, SinkBindingCell, ChannelCell, InMemoryChannelCell, SubscriptionCell, SequenceCell, ParallelCell, DomainMappingCell, ServerlessServiceCell, KnativeIngressCell, KnativeCertificateCell } from './renderers/knative-cells'
 import { IngressRouteCell, MiddlewareCell, TraefikServiceCell, ServersTransportCell, TLSOptionCell } from './renderers/traefik-cells'
@@ -3152,12 +3153,12 @@ function buildPrinterColumn(def: PrinterColumnDef, index: number, table: Printer
       // A column the vendor named Ready/Healthy/Established carries the only
       // scannable signal these kinds have — they have no curated Status column.
       // Rendering it as grey text would leave a screen of uniform "True".
-      const tone = printerCellTone(def, value)
+      const tone = printerCellTone(def, value, resource)
       if (tone) {
         return (
           // The value, not the column's description — the header tooltip
           // carries that. A cell tooltip exists to reveal a truncated value.
-          <Tooltip content={text}>
+          <Tooltip content={tone === 'neutral' ? `${text} · ${String(value).trim().toLowerCase() === 'false' ? 'Controller recorded reconciliation paused' : 'Last reported readiness while reconciliation is paused'}` : text}>
             <span className={clsx('badge', healthColors[tone])}>{text}</span>
           </Tooltip>
         )
@@ -5378,8 +5379,16 @@ export function ResourcesView({
       if (issue) return issueTitle(issue)
       if (operationalIssuesIncomplete) return 'Unknown'
     }
+    if (column === 'status') {
+      const managedColumns = isLikelyCrossplaneMRGroup(selectedKind.name, selectedKind.group ?? '')
+      if ((managedColumns && isManagedResource(resource))
+        || ((!hasCuratedColumns(selectedKind.name, selectedKind.group) || managedColumns)
+          && getCrossplanePauseState(resource) === 'acknowledged')) {
+        return getCrossplaneStatus(resource).text
+      }
+    }
     return getCellFilterValue(resource, column, kind)
-  }, [operationalIssues, operationalIssuesIncomplete, selectedKind.group])
+  }, [operationalIssues, operationalIssuesIncomplete, selectedKind.name, selectedKind.group])
 
   // Get sortable value from a resource for a given column
   const getSortValue = useCallback((resource: any, column: string, kind?: string): string | number => {
@@ -7402,11 +7411,12 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
   if (column === 'name') {
     const isTerminating = !!meta.deletionTimestamp
     const nameClass = clsx('text-sm font-medium truncate block', isTerminating ? 'text-theme-text-tertiary line-through' : 'text-theme-text-primary')
+    const pauseState = isManagedResource(resource) || isComposite(resource) || getCrossplanePauseState(resource) === 'acknowledged' ? getCrossplanePauseState(resource) : null
     const audit = auditBadges?.[`${meta.namespace || ''}/${meta.name}`]
     const auditTotal = audit ? audit.danger + audit.warning : 0
     return (
       <div className="flex items-center gap-1.5 min-w-0">
-        <Tooltip content={meta.name} wrapperClassName={findingMatch ? 'min-w-0' : undefined}>
+        <Tooltip content={meta.name} wrapperClassName={findingMatch || pauseState ? 'min-w-0' : undefined}>
           {nameHref ? (
             <a
               href={nameHref}
@@ -7421,6 +7431,7 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
           )}
         </Tooltip>
         <CopyNameButton name={meta.name} />
+        <CrossplanePauseChip state={pauseState} compact />
         {findingMatch && (
           <Tooltip content={findingMatch.text}>
             <span className="shrink-0 text-xs italic text-theme-text-tertiary cursor-help">
@@ -7469,6 +7480,9 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
 
   // Kind-specific columns (normalize CRD singular names like 'ScaledObject' → 'scaledobjects')
   const kindLower = normalizeKindToPlural(kind, group)
+  if (column === 'status' && isLikelyCrossplaneMRGroup(kind, group ?? '') && isManagedResource(resource)) {
+    return <ManagedResourceCell resource={resource} column={column} />
+  }
   if (group && !hasCuratedColumns(kind, group)) {
     return <GenericCell resource={resource} column={column} />
   }
@@ -8054,6 +8068,9 @@ function CellContent({ resource, kind, column, group, majorityNodeMinorVersion, 
 function GenericCell({ resource, column }: { resource: any; column: string }) {
   switch (column) {
     case 'status': {
+      if (isManagedResource(resource) || isComposite(resource) || getCrossplanePauseState(resource) === 'acknowledged') {
+        return <CrossplaneStatusCell resource={resource} />
+      }
       const derived = getGenericResourceStatus(resource)
       if (!derived) return <span className="text-sm text-theme-text-tertiary">-</span>
       return (

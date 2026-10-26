@@ -1013,7 +1013,7 @@ Deliberately narrow: the absence of a ScheduledBackup does not prove a cluster i
 
 **Managed Resource Detail View** (the generic MR renderer — works for every provider, including Upbound AWS/GCP/Azure, provider-kubernetes, provider-helm, and any community provider):
 - Kind, API group, external-name annotation, deletion + management policies
-- Paused banner (`crossplane.io/paused: "true"`) — reconciliation suppressed by operator intent
+- Neutral pause chip plus visible reconciliation context when `crossplane.io/paused` is exactly `"true"`; distinguishes a request from recorded `Synced=False/ReconcilePaused` acknowledgement. Acknowledged pause shows readiness as last reported, and the expected pause condition adds no failing-condition count. Independent failures stay visible.
 - Alert banner when `Synced=False` or `Ready=False` with the upstream cloud error verbatim
 - Linked `ProviderConfig` and (when this MR is composed) linked parent Composite via owner-ref walk
 - Collapsed `spec.forProvider` and `status.atProvider` JSON for deep diagnosis
@@ -1021,7 +1021,7 @@ Deliberately narrow: the absence of a ScheduledBackup does not prove a cluster i
 **Composite / Claim Detail View** — the killer feature:
 - Linked Composition and CompositionRevision (when pinned)
 - **Composed Resources list** — every entry in `spec.crossplane.resourceRefs` (v2) or `spec.resourceRefs` (v1) rendered as a clickable row with **its own live status badge**, fetched per-row via React Query. Clicking opens the composed resource's drawer.
-- Paused banner when `crossplane.io/paused: "true"`
+- The same neutral pause context as managed resources, scoped to this resource’s reconciler; it does not assert that composed resources or the bound XR are paused.
 - For v1 Claims: linked bound XR
 
 **Composition Detail View:**
@@ -1054,6 +1054,12 @@ Deliberately narrow: the absence of a ScheduledBackup does not prove a cluster i
 **Resource Browser:** MR list shows kind / external name / provider config / status; Provider list shows package, revision, status; Composition list shows mode, composite kind, function count; XRD list shows generated kind and claim kind.
 
 **Topology:** Radar connects a v1 Claim to its bound XR, and an XR to its composed Managed Resources. Edges follow Crossplane's v1 and v2 spec references; only resources Radar already watches and can read are shown.
+
+**Pause display:** Exact annotation intent plus recorded `Synced=False/ReconcilePaused` also qualifies pause context before an XR or Claim has resource references; this does not infer its resource type or enable composite-specific features. An annotation-only request without a recognized Crossplane shape remains unclassified. A neutral chip stays beside the row name, including XR/Claim tables using CRD printer columns. Condition-derived printer values retain their raw text; only exact condition-source metadata plus corroborated pause changes the expected Synced=False or recorded Ready=True tone. Older Radar servers omit that source metadata, so their printer cells keep generic tones alongside the neutral pause chip. Deletion requested while pause intent is set gets an inline warning that reconciliation may defer this resource’s controller cleanup. No pause age or freshness is inferred from condition transition times. Without exact annotation intent, `ReconcilePaused` remains an alert with its raw reason. A newer UI against a server predating the pause Issue rule can still show that server’s warning Issue.
+
+For shape-detected XRs and Claims without printer columns, the primary table status, filter and sort share the Crossplane status helper even when unpaused, matching the detail header.
+
+The topology graph retains its recorded readiness color and does not add this pause chip; opening the resource shows the reconciliation context.
 
 **Issues:** `Synced=False/ReconcilePaused` does not add a warning when `crossplane.io/paused` is exactly `"true"`. Other failure conditions remain eligible under the usual condition and generation filters; unlike Cluster Audit, the pause annotation does not exclude the whole resource from Issues. Pausing through empty `managementPolicies` is not covered by this rule.
 

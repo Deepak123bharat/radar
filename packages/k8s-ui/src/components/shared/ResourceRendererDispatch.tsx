@@ -295,6 +295,7 @@ import {
 import type { ComposedRefStatus } from '../resources/renderers/CompositeRenderer'
 import {
   getCrossplaneStatus,
+  getCrossplanePauseState,
   getProviderStatus,
   getProviderConfigStatus,
   isManagedResource,
@@ -1369,6 +1370,8 @@ export function getResourceStatus(kind: string, data: any): { text: string; colo
     const status = getKnativeConditionStatus(data)
     return { text: status.text, color: status.color }
   }
+
+  if (getCrossplanePauseState(data) === 'acknowledged') return getCrossplaneStatus(data)
 
   const derived = getGenericResourceStatus(data)
   if (derived) return { text: derived.text, color: HEALTH_BADGE_COLORS[derived.tone] }
