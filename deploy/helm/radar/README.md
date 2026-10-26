@@ -254,7 +254,7 @@ changes (a new `clusterName`, prefix or suffix, or a new API server host).
   ignored, and the install renders exactly as a token install.
 - `replicaCount` must be 1, and the Deployment uses the `Recreate` strategy.
 - `cloud.insecureSkipVerify` is refused: use `cloud.caBundle` instead.
-- It needs Radar 1.19.0 or later.
+- It needs Radar 1.18.2 or later.
 
 #### If the key leaks
 

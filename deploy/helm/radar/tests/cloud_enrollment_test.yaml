@@ -199,7 +199,7 @@ tests:
           existingSecret: hub-enrollment
     asserts:
       - failedTemplate:
-          errorPattern: "requires Radar 1.19.0 or later"
+          errorPattern: "requires Radar 1.18.2 or later"
 
   - it: an old image without enrollment still renders
     template: deployment.yaml

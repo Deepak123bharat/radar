@@ -45,8 +45,8 @@
        Only release-style tags are checked; others can't be compared. */}}
 {{- if $enroll }}
 {{- $tag := toString .Values.image.tag }}
-{{- if and (regexMatch "^v?[0-9]+\\.[0-9]+\\.[0-9]+" $tag) (semverCompare "<1.19.0-0" $tag) }}
-{{- fail (printf "cloud.enrollment requires Radar 1.19.0 or later, but image.tag pins %s. Unset image.tag to use the chart's version, or pin 1.19.0 or later." $tag) }}
+{{- if and (regexMatch "^v?[0-9]+\\.[0-9]+\\.[0-9]+" $tag) (semverCompare "<1.18.2-0" $tag) }}
+{{- fail (printf "cloud.enrollment requires Radar 1.18.2 or later, but image.tag pins %s. Unset image.tag to use the chart's version, or pin 1.18.2 or later." $tag) }}
 {{- end }}
 {{- end }}
 {{- if and $basePath .Values.cloud.enabled }}
