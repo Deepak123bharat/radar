@@ -815,6 +815,20 @@ watches for this scan; an empty result does not establish that unwatched kinds
 are healthy. These findings also feed Active Issues and AI resource/search
 summaries, but not dashboard health summaries or `cluster://health`.
 
+A `Ready=False/Deleting` condition is expected during the first 10 minutes of
+an actual deletion. This follows Radar's termination warning window, not a
+Kubernetes deadline. Other failure conditions remain eligible under the existing
+condition selector, including its suspension and whole-object generation gates.
+The same window tolerates an API-server deletion timestamp slightly ahead of
+Radar's clock; a farther-future timestamp does not establish expected progress.
+After that window, or when deletion timing is unavailable, the condition remains
+a fallback when no stuck-deletion finding is available. It never takes priority
+over an independent error, including a qualified older-generation observation.
+Deletion itself advances a custom resource's generation. If its top-level
+`status.observedGeneration` then lags, the existing generation gate can withhold
+even a pre-deletion error; only a readable stuck-deletion finding covers the
+prolonged deletion until that gate clears.
+
 Findings start at warning after 10 minutes. At 30 minutes, controller-owned
 finalizers follow this policy:
 
