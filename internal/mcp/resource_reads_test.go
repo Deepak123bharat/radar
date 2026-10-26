@@ -108,11 +108,11 @@ func TestResourceReadsReadyContract(t *testing.T) {
 			listKinds := map[schema.GroupVersionResource]string{}
 			var kinds []resourceid.Builtin
 			for _, b := range resourceid.Builtins {
-				if _, _, cluster := k8s.ClusterOnlyKindGVR(b.Resource); cluster || b.Kind == "Secret" {
+				if _, _, cluster := k8s.ClusterOnlyKindGVR(b.Resource); cluster || b.Kind == "Secret" || b.Kind == "APIService" {
 					kinds = append(kinds, b)
 				}
 			}
-			kinds = append(kinds, resourceid.Builtin{Kind: "CustomResourceDefinition", Resource: "customresourcedefinitions", Group: "apiextensions.k8s.io", Version: "v1"}, resourceid.Builtin{Kind: "Widget", Resource: "widgets", Group: "example.test", Version: "v1", Namespaced: true})
+			kinds = append(kinds, resourceid.Builtin{Kind: "Widget", Resource: "widgets", Group: "example.test", Version: "v1", Namespaced: true})
 			for _, b := range kinds {
 				version := b.Version
 				if version == "" {
@@ -322,9 +322,9 @@ func TestResourceReadsDynamicPendingAndCollectorDenial(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(k8s.ResetTestState)
-			kinds := []resourceid.Builtin{{Kind: "Widget", Resource: "widgets", Group: "example.test", Version: "v1", Namespaced: true}, {Kind: "CustomResourceDefinition", Resource: "customresourcedefinitions", Group: "apiextensions.k8s.io", Version: "v1"}}
+			kinds := []resourceid.Builtin{{Kind: "Widget", Resource: "widgets", Group: "example.test", Version: "v1", Namespaced: true}}
 			for _, b := range resourceid.Builtins {
-				if _, _, cluster := k8s.ClusterOnlyKindGVR(b.Resource); cluster && !k8s.TypedKindOwnsGroup(b.Kind, b.Group) {
+				if _, _, cluster := k8s.ClusterOnlyKindGVR(b.Resource); (cluster || b.Kind == "APIService") && !k8s.TypedKindOwnsGroup(b.Kind, b.Group) {
 					kinds = append(kinds, b)
 				}
 			}
@@ -375,7 +375,7 @@ func TestResourceReadsDynamicPendingAndCollectorDenial(t *testing.T) {
 						want := "kind_sync_pending"
 						if denied {
 							want = "radar_forbidden"
-						} else if b.Kind == "CustomResourceDefinition" && verb == "get" {
+						} else if (b.Kind == "CustomResourceDefinition" || b.Kind == "APIService") && verb == "get" {
 							want = "object_not_found"
 						}
 						if err == nil || !strings.HasPrefix(err.Error(), want+":") || (want != "object_not_found" && strings.Contains(err.Error(), "object_not_found")) {
@@ -1300,7 +1300,7 @@ func TestResourceReadsDynamicStallIsPerNamespace(t *testing.T) {
 func TestResourceReadsColdDynamicKinds(t *testing.T) {
 	kinds := []resourceid.Builtin{{Kind: "Widget", Resource: "widgets", Group: "example.test", Version: "v1", Namespaced: true}}
 	for _, b := range resourceid.Builtins {
-		if _, _, cluster := k8s.ClusterOnlyKindGVR(b.Resource); cluster && !k8s.TypedKindOwnsGroup(b.Kind, b.Group) {
+		if _, _, cluster := k8s.ClusterOnlyKindGVR(b.Resource); (cluster || b.Kind == "APIService") && !k8s.TypedKindOwnsGroup(b.Kind, b.Group) {
 			kinds = append(kinds, b)
 		}
 	}
