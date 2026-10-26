@@ -8,7 +8,7 @@ import { usePhoneLayout } from '../../hooks/usePhoneLayout'
 import { MultiSelectPicker } from '../ui/MultiSelectPicker'
 import type { NamespaceCollection } from '../../utils/namespace-collection'
 import { NamespaceCollectionChip } from './NamespaceCollectionChip'
-import { NamespaceCollectionDetails } from './NamespaceCollectionDetails'
+import { NamespaceCollectionDetails, COLLECTION_NOTE } from './NamespaceCollectionDetails'
 
 /**
  * Backend-reported namespace scope. Mirrors Radar's `/cluster/namespace-scope`
@@ -261,7 +261,7 @@ export const NamespacePicker = forwardRef<NamespacePickerHandle, NamespacePicker
   const isDisabled = disabled || loading || pending || cacheScopeLocked
   const canClearAll = scope.canClearNamespace || activeCount === 0
   const tooltipContent = disabled && disabledTooltip
-    ? disabledTooltip
+    ? dropdownNote ? `${disabledTooltip} ${COLLECTION_NOTE}` : disabledTooltip
     : scope.cacheScoped
       ? scope.namespaceRescope
         ? `Radar is watching only ${scope.cacheScopeNamespace || triggerLabel} to stay fast on large clusters. Pick another namespace to re-point it (takes a moment; closes open terminals).`

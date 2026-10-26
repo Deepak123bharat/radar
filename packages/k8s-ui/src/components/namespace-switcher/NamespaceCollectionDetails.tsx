@@ -8,11 +8,13 @@ import {
 
 const INCOMPLETE = 'Radar can\u2019t list every namespace here, so it may collect in more than these.'
 
+export const COLLECTION_NOTE = 'Radar collects some kinds only in some namespaces.'
+
 /** Which kinds Radar collects in which namespaces, laid out for a panel. */
 export function NamespaceCollectionDetails({ collection }: { collection: NamespaceCollection }) {
   return (
     <>
-      <p className="font-medium text-theme-text-primary">Radar collects some kinds only in some namespaces.</p>
+      <p className="font-medium text-theme-text-primary">{COLLECTION_NOTE}</p>
       <ul className="mt-2 divide-y divide-theme-border border-t border-theme-border">
         {collection.groups.map(group => (
           <GroupRow key={group.kinds.map(({ kind }) => kind).join(',')} group={group} />

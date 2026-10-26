@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { CircleDashed } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Tooltip } from '../ui/Tooltip'
@@ -7,9 +7,7 @@ import { useAnimatedUnmount } from '../../hooks/useAnimatedUnmount'
 import { useKeepInViewport } from '../../hooks/useKeepInViewport'
 import { TRANSITION_MENU, overlayExitMs, overlayTransitionStyle } from '../../utils/animation'
 import type { NamespaceCollection } from '../../utils/namespace-collection'
-import { NamespaceCollectionDetails } from './NamespaceCollectionDetails'
-
-const TOOLTIP = 'Radar collects some kinds only in some namespaces.'
+import { COLLECTION_NOTE, NamespaceCollectionDetails } from './NamespaceCollectionDetails'
 
 /** A labelled button rather than a hover tooltip, so touch and keyboard users can reach it. */
 export function NamespaceCollectionChip({
@@ -26,6 +24,16 @@ export function NamespaceCollectionChip({
   const panelRef = useRef<HTMLDivElement>(null)
   useKeepInViewport(panelRef, shouldRender)
   const disclosure = useDisclosure(open)
+
+  // useKeepInViewport only moves the panel sideways, so a long list scrolls inside the room below the button.
+  const [roomBelow, setRoomBelow] = useState<number>()
+  useLayoutEffect(() => {
+    if (!open) return
+    const fit = () => setRoomBelow(window.innerHeight - (buttonRef.current?.getBoundingClientRect().bottom ?? 0) - 12)
+    fit()
+    window.addEventListener('resize', fit)
+    return () => window.removeEventListener('resize', fit)
+  }, [open])
 
   // Listeners exist only while open, so a closed chip never swallows an Escape meant for something else.
   useEffect(() => {
@@ -60,7 +68,7 @@ export function NamespaceCollectionChip({
   return (
     <div ref={rootRef} className={clsx('relative', segment ? 'flex items-stretch' : 'inline-flex')}>
       {/* preserveWrapperWhenDisabled: remounting the button would drop keyboard focus. */}
-      <Tooltip content={TOOLTIP} delay={500} position="bottom" disabled={open} preserveWrapperWhenDisabled>
+      <Tooltip content={COLLECTION_NOTE} delay={500} position="bottom" disabled={open} preserveWrapperWhenDisabled>
         <button
           ref={buttonRef}
           type="button"
@@ -89,12 +97,12 @@ export function NamespaceCollectionChip({
           tabIndex={-1}
           inert={!open}
           className={clsx(
-            'absolute left-0 top-full z-50 mt-1 w-72 max-w-[calc(100vw-1rem)] origin-top-left rounded-lg border border-theme-border bg-theme-surface p-3 text-xs shadow-theme-lg focus:outline-none',
+            'absolute left-0 top-full z-50 mt-1 w-72 max-w-[calc(100vw-1rem)] origin-top-left overflow-y-auto overscroll-contain rounded-lg border border-theme-border bg-theme-surface p-3 text-xs shadow-theme-lg focus:outline-none',
             TRANSITION_MENU,
             isOpen ? 'opacity-100 scale-100' : 'opacity-0 scale-[0.97]',
             !open && 'pointer-events-none',
           )}
-          style={overlayTransitionStyle(isOpen, 'menu')}
+          style={{ ...overlayTransitionStyle(isOpen, 'menu'), maxHeight: roomBelow }}
         >
           <NamespaceCollectionDetails collection={collection} />
         </div>

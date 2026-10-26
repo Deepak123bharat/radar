@@ -43,7 +43,6 @@ export const RADAR_FEATURES = {
   gitopsWriteEvidence: { label: 'GitOps revert warnings', flag: 'gitopsWriteEvidence', flagShippedWithEndpoint: true },
   serviceEndpointSlices: { label: 'Service EndpointSlice inventories', flag: 'serviceEndpointSlices', flagShippedWithEndpoint: true },
   trafficRecords: { label: 'Flow records for a graph selection', flag: 'trafficRecords', flagShippedWithEndpoint: true },
-  namespaceCollection: { label: 'Namespace collection summary', flag: 'namespaceCollection', flagShippedWithEndpoint: true },
   helmSourceIdentity: { label: 'Helm source selection', flag: 'helmSourceIdentity', flagShippedWithEndpoint: true },
 } as const satisfies Record<string, RadarFeatureSpec>
 

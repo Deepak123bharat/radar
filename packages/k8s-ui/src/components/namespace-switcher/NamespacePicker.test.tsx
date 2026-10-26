@@ -194,6 +194,11 @@ describe('NamespacePicker collection', () => {
       const { text } = await renderOpen(unfiltered)
       expect(text).not.toContain('collects some kinds')
     })
+
+    it('adds the note to the disabled tooltip, since the dropdown can\u2019t open', async () => {
+      const { tooltip } = await renderOpen({ ...unfiltered, collection }, { disabled: true, disabledTooltip: 'Not available here.' })
+      expect(tooltip).toBe('Not available here. Radar collects some kinds only in some namespaces.')
+    })
   })
 })
 

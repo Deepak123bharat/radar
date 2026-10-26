@@ -86,6 +86,13 @@ describe('NamespaceCollectionChip', () => {
     expect(document.activeElement).toBe(button)
   })
 
+  it('limits the panel to the room below the button and scrolls inside it', async () => {
+    await render()
+    await open()
+    expect(panel()!.style.maxHeight).toBe(`${window.innerHeight - 12}px`)
+    expect(panel()!.className).toContain('overflow-y-auto')
+  })
+
   it('puts the panel right after the button so tabbing on enters it', async () => {
     await render()
     await open()

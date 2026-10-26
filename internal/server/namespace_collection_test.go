@@ -43,7 +43,6 @@ func newCollectionTestCache(t *testing.T, scopes map[string]k8score.ResourceScop
 	return &k8s.ResourceCache{ResourceCache: core}
 }
 
-// describeCollection renders each group as "Kind,Kind: namespace,namespace".
 func describeCollection(c *NamespaceCollection) []string {
 	if c == nil {
 		return nil
