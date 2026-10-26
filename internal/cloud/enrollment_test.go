@@ -135,6 +135,8 @@ type fakeTunnel struct {
 	configs []Config
 	running int
 	exit    chan error
+	// neverConnects: the tunnel ends before it ever comes up.
+	neverConnects bool
 }
 
 func newFakeTunnel() *fakeTunnel { return &fakeTunnel{exit: make(chan error, 1)} }
@@ -149,7 +151,7 @@ func (f *fakeTunnel) run(ctx context.Context, cfg Config) error {
 		f.running--
 		f.mu.Unlock()
 	}()
-	if cfg.OnConnected != nil {
+	if cfg.OnConnected != nil && !f.neverConnects {
 		cfg.OnConnected()
 	}
 	select {
@@ -271,8 +273,9 @@ func TestEnrollmentNeverWritesToKubernetes(t *testing.T) {
 	}
 }
 
+// Production delays: a token that worked and is then refused is replaced at
+// once, not after the join backoff.
 func TestTokenRejectedEnrollsAgain(t *testing.T) {
-	fastEnrollDelays(t)
 	cs := newEnrollClientset()
 	hub := newFakeHub(t, joined("rhc_one"), joined("rhc_two"))
 	tunnel := newFakeTunnel()
@@ -286,6 +289,23 @@ func TestTokenRejectedEnrollsAgain(t *testing.T) {
 	})
 	if n := len(hub.requests()); n != 2 {
 		t.Fatalf("enroll calls = %d, want 2", n)
+	}
+}
+
+// A token refused before the tunnel ever came up waits the join backoff, so
+// a Hub that refuses every new token isn't hammered.
+func TestTokenRefusedBeforeConnectingWaits(t *testing.T) {
+	cs := newEnrollClientset()
+	hub := newFakeHub(t, joined("rhc_one"), joined("rhc_two"))
+	tunnel := newFakeTunnel()
+	tunnel.neverConnects = true
+	startEnroller(t, cs, hub, writeKeyFile(t, testKey), tunnel, NameOptions{})
+
+	eventually(t, "the first tunnel", func() bool { return tunnel.isRunning() })
+	tunnel.exit <- ErrTokenRejected
+	time.Sleep(time.Second)
+	if n := len(hub.requests()); n != 1 {
+		t.Fatalf("enroll calls within a second = %d, want 1", n)
 	}
 }
 

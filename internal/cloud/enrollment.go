@@ -138,6 +138,14 @@ func (e *enroller) run(ctx context.Context) error {
 		if connected {
 			e.backoff = 0
 		}
+		// A token the Hub stopped accepting after it worked (a restart
+		// elsewhere, a rotation): join again at once. One refused before the
+		// tunnel ever came up waits, so a Hub that refuses every new token
+		// can't be hammered.
+		if connected && errors.Is(err, ErrTokenRejected) {
+			log.Printf("[cloud] The Hub no longer accepts this cluster's token. Joining again now.")
+			continue
+		}
 		delay = e.nextBackoff()
 		wait := delay.Round(time.Second)
 		if errors.Is(err, ErrTokenRejected) {
